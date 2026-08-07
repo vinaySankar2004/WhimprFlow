@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { font } from "../tokens/values";
+import { font, palette } from "../tokens/values";
 import { theme } from "./theme";
 import { Button, Card, Dot, PageTitle, Segmented } from "./ui";
 import {
+  modelLabel,
   requestAccessibility,
   requestInputMonitoring,
   requestMicrophone,
@@ -15,6 +16,8 @@ import {
 
 const MODES: { value: CleanupMode; label: string; hint: string }[] = [
   { value: "raw", label: "Raw", hint: "Paste exactly what you said" },
+  // The Local hint is replaced at render time by the model actually loaded; this
+  // string only shows if the status call never resolves.
   { value: "local", label: "Local", hint: "On-device model (offline)" },
   { value: "open_ai", label: "OpenAI", hint: "Cloud cleanup via OpenAI (or an OpenAI-compatible API like OpenRouter — set the base URL below)" },
   { value: "anthropic", label: "Anthropic", hint: "Cloud cleanup via Claude" },
@@ -26,6 +29,51 @@ const LEVELS: { value: CleanupLevel; label: string; hint: string }[] = [
   { value: "medium", label: "Medium", hint: "Edit for clarity and conciseness." },
   { value: "high", label: "High", hint: "Rewrite for brevity and polish." },
 ];
+
+/**
+ * The line under the Cleanup Engine tabs. Every mode but Local has a fixed
+ * description; Local names the GGUF actually loaded, so the pane stops claiming
+ * a generic "on-device model" regardless of what is really running.
+ */
+function LocalHint({ mode, status }: { mode: CleanupMode; status: Status }) {
+  const base = { fontSize: 12.5, marginTop: 10 } as const;
+
+  if (mode !== "local") {
+    return (
+      <div style={{ ...base, color: theme.textMuted }}>
+        {MODES.find((m) => m.value === mode)?.hint}
+      </div>
+    );
+  }
+
+  if (status.local_state === "missing") {
+    return (
+      <div style={{ ...base, color: palette.warn }}>
+        No local model found — add a .gguf to ~/Library/Application Support/WhimprFlow/models,
+        then reopen WhimprFlow.
+      </div>
+    );
+  }
+
+  if (status.local_state === "loading" || !status.local_model) {
+    return <div style={{ ...base, color: theme.textMuted }}>Loading model…</div>;
+  }
+
+  return (
+    <div style={{ ...base, color: theme.textMuted }} title={status.local_model}>
+      <strong style={{ color: theme.textBody, fontWeight: 600 }}>
+        {modelLabel(status.local_model)}
+      </strong>{" "}
+      — running on-device
+      {status.asr_model && (
+        <span title={status.asr_model}>
+          {" · speech recognition: "}
+          {modelLabel(status.asr_model)}
+        </span>
+      )}
+    </div>
+  );
+}
 
 function SectionTitle({ children, sub }: { children: React.ReactNode; sub?: string }) {
   return (
@@ -141,9 +189,7 @@ export function SettingsPane({
           value={settings.cleanup_mode}
           onChange={(v) => onChange({ ...settings, cleanup_mode: v })}
         />
-        <div style={{ color: theme.textMuted, fontSize: 12.5, marginTop: 10 }}>
-          {MODES.find((m) => m.value === settings.cleanup_mode)?.hint}
-        </div>
+        <LocalHint mode={settings.cleanup_mode} status={status} />
 
         <KeyField
           label="OpenAI API key"

@@ -16,12 +16,56 @@ export interface Settings {
   sound_on_start: boolean;
 }
 
+export type LocalModelState = "loading" | "ready" | "missing";
+
+/** Nothing granted, nothing loaded — the pre-load and browser-preview fallback. */
+export const EMPTY_STATUS: Status = {
+  accessibility: false,
+  microphone: false,
+  input_monitoring: false,
+  has_openai_key: false,
+  has_anthropic_key: false,
+  local_state: "loading",
+  local_model: null,
+  asr_model: null,
+};
+
 export interface Status {
   accessibility: boolean;
   microphone: boolean;
   input_monitoring: boolean;
   has_openai_key: boolean;
   has_anthropic_key: boolean;
+  /** Load state of the on-device cleanup model. */
+  local_state: LocalModelState;
+  /** GGUF filename in use, when `local_state` is "ready". */
+  local_model: string | null;
+  /** Whisper model filename on disk, if any. */
+  asr_model: string | null;
+}
+
+/**
+ * Turn a model filename into something readable:
+ * `qwen3-4b-instruct-2507-q4_k_m.gguf` -> `Qwen3-4B-Instruct 2507 · Q4_K_M`
+ * `ggml-base.en.bin`                   -> `Base.en`
+ * Falls back to the bare filename for anything it doesn't recognise, so a model
+ * this never anticipated still displays its real name rather than nothing.
+ */
+export function modelLabel(filename: string): string {
+  const stem = filename.replace(/\.(gguf|bin)$/i, "").replace(/^ggml-/i, "");
+  // Quantisation suffix (q4_k_m, q5_0, f16…) is the last meaningful chunk.
+  const quant = stem.match(/[-_](f16|f32|q\d+(?:_[a-z0-9]+)*)$/i);
+  const base = quant ? stem.slice(0, -quant[0].length) : stem;
+  const words = base.split(/[-_]/).filter(Boolean).map((w) => {
+    if (/^\d+b$/i.test(w)) return w.toUpperCase(); // 4b -> 4B
+    if (/^\d+$/.test(w)) return w; // release tags like 2507
+    return w.charAt(0).toUpperCase() + w.slice(1);
+  });
+  // A trailing bare number is a release tag ("2507"), which reads better spaced
+  // off the model name than hyphenated into it.
+  const tag = words.length > 1 && /^\d+$/.test(words[words.length - 1]) ? words.pop() : null;
+  const label = words.join("-") + (tag ? ` ${tag}` : "");
+  return quant ? `${label} · ${quant[1].toUpperCase()}` : label;
 }
 
 export interface StatsSummary {
@@ -84,13 +128,8 @@ export async function getStatus(): Promise<Status> {
   try {
     return await invoke<Status>("get_status");
   } catch {
-    return {
-      accessibility: false,
-      microphone: false,
-      input_monitoring: false,
-      has_openai_key: false,
-      has_anthropic_key: false,
-    };
+    // Browser preview: no backend to ask, so nothing is loaded.
+    return { ...EMPTY_STATUS, local_state: "missing" };
   }
 }
 

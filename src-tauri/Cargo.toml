@@ -43,6 +43,18 @@ windows = { version = "0.58", features = [
 macos-accessibility-client = "0.0.1"
 # Frontmost-app detection (paste-target → per-app cleanup formatting). Already in
 # the tree via Tauri; declared here so we can call NSWorkspace directly.
-objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = [
+    "NSWorkspace",
+    "NSRunningApplication",
+    # Overlay pill: raise the window above the Dock and join full-screen Spaces.
+    "NSWindow",
+    "NSResponder",
+    # The pill is promoted to a non-activating NSPanel so it can float over other
+    # apps' full-screen Spaces, which a plain NSWindow cannot do at any level.
+    "NSPanel",
+    # Record-start ping (/System/Library/Sounds/Pop.aiff).
+    "NSSound",
+] }
 objc2-foundation = { version = "0.3", features = ["NSString"] }
 objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMediaFormat"] }

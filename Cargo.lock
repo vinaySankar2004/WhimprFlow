@@ -4937,6 +4937,7 @@ dependencies = [
  "arboard",
  "keyring",
  "macos-accessibility-client",
+ "objc2",
  "objc2-app-kit",
  "objc2-av-foundation",
  "objc2-foundation",

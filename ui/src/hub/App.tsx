@@ -17,6 +17,7 @@ import {
   type Settings,
   type Status,
   DEFAULT_SETTINGS,
+  EMPTY_STATUS,
 } from "./api";
 
 // Placeholder screens that are routed but not yet built.
@@ -47,13 +48,7 @@ export function App() {
   const [page, setPage] = useState<Page>("home");
   const [settings, setLocalSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [entered, setEntered] = useState(false);
-  const [status, setStatus] = useState<Status>({
-    accessibility: false,
-    microphone: false,
-    input_monitoring: false,
-    has_openai_key: false,
-    has_anthropic_key: false,
-  });
+  const [status, setStatus] = useState<Status>(EMPTY_STATUS);
 
   const refresh = () => getStatus().then(setStatus);
 

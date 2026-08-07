@@ -240,8 +240,11 @@ impl StateMachine {
         if let Some(session) = session {
             actions.push(Action::DiscardCapture { session });
         }
+        // Cancelled only — NOT followed by Idle here. Both would be drained by the
+        // shell microseconds apart, so "Discarded" would never actually render. The
+        // shell lets the terminal state linger and then returns to idle, the same way
+        // it already does for Done.
         actions.push(Action::ShowBar(BarState::Cancelled));
-        actions.push(Action::ShowBar(BarState::Idle));
         actions
     }
 }

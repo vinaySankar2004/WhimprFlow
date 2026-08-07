@@ -1,5 +1,11 @@
 # WhimprFlow
 
+> **This is Vinayak Sankaranarayanan's own continuation of WhimprFlow.** It began as
+> the MIT-licensed proof of concept linked in [LICENSE](LICENSE), and is now developed
+> independently here — this repository is where the project goes from here, and new
+> features land in it directly. The original license and copyright are retained, as MIT
+> requires.
+
 A **local-first, cross-platform voice dictation app** — hold a key, speak, and clean text lands wherever your cursor is. Speech is transcribed on-device with Whisper and cleaned up (filler removal, self-corrections, punctuation, lists/newlines) by a local LLM, with an optional cloud path. It re-creates the workflow of a Wispr-Flow-style dictation tool from scratch, with its own name, palette, and code.
 
 > ⚠️ **This is a proof of concept, vibe-coded in a few hours.** It works and the core loop is real, but it is rough and needs a lot of polish, testing, and hardening before it's anything like production quality. Treat it as a starting point, not a finished product.

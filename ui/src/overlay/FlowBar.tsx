@@ -115,18 +115,73 @@ function StopButton() {
   );
 }
 
+// Keyframes for the states that need to move. Inline styles can't express
+// @keyframes, and the overlay has no stylesheet, so the component carries its own.
+const KEYFRAMES = `
+@keyframes whimpr-pill-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.94); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes whimpr-live-pulse {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(0.82); }
+}
+@keyframes whimpr-spin { to { transform: rotate(360deg); } }
+`;
+
+/** The "we are recording right now" tell: a pulsing red dot, like every record button. */
+function LiveDot() {
+  return (
+    <span
+      style={{
+        flex: "0 0 auto",
+        width: 8,
+        height: 8,
+        borderRadius: 9999,
+        background: "#FF5A52",
+        boxShadow: "0 0 0 3px rgba(255,90,82,0.22)",
+        animation: "whimpr-live-pulse 1.1s ease-in-out infinite",
+      }}
+    />
+  );
+}
+
+/** Indeterminate ring — makes "working" visually distinct from "listening". */
+function Spinner() {
+  return (
+    <span
+      style={{
+        flex: "0 0 auto",
+        width: 13,
+        height: 13,
+        borderRadius: 9999,
+        border: `2px solid rgba(255,255,255,0.22)`,
+        borderTopColor: palette.accent400,
+        animation: "whimpr-spin 0.7s linear infinite",
+      }}
+    />
+  );
+}
+
 export function FlowBar() {
   const [state, setState] = useState<BarState>("idle");
   const [bars, setBars] = useState<number[]>([]);
 
   useEffect(() => {
-    let un1: (() => void) | undefined;
-    let un2: (() => void) | undefined;
-    tauriListen<StateEvent>("whimpr://flowbar/state", (p) => setState(p.state)).then((u) => (un1 = u));
-    tauriListen<WaveformEvent>("whimpr://audio/waveform", (p) => setBars(p.bars)).then((u) => (un2 = u));
+    // listen() resolves asynchronously, so a cleanup that runs before it settles
+    // (StrictMode's double-mount) would otherwise leak a duplicate listener pair
+    // and double-apply every state event.
+    let cancelled = false;
+    const unlisteners: Array<() => void> = [];
+    const register = (p: Promise<() => void>) =>
+      p.then((un) => (cancelled ? un() : unlisteners.push(un)));
+
+    register(tauriListen<StateEvent>("whimpr://flowbar/state", (p) => setState(p.state)));
+    register(tauriListen<WaveformEvent>("whimpr://audio/waveform", (p) => setBars(p.bars)));
+
     return () => {
-      un1?.();
-      un2?.();
+      cancelled = true;
+      unlisteners.forEach((un) => un());
     };
   }, []);
 
@@ -142,12 +197,11 @@ export function FlowBar() {
           ? "Discarded"
           : "Done";
 
-  // Pill dimensions per state.
-  const dims = isIdle
-    ? { w: 76, h: 16 }
-    : recording
-      ? { w: 250, h: 44 }
-      : { w: 180, h: 36 };
+  // Idle draws nothing at all. The old empty 76×16 pill was a near-black bar on a
+  // dark desktop — invisible in practice, but still a permanent object on screen.
+  if (isIdle) return null;
+
+  const dims = recording ? { w: 260, h: 46 } : { w: 190, h: 38 };
 
   return (
     <div
@@ -161,6 +215,7 @@ export function FlowBar() {
         userSelect: "none",
       }}
     >
+      <style>{KEYFRAMES}</style>
       <div
         aria-label={`WhimprFlow ${state}`}
         style={{
@@ -170,27 +225,38 @@ export function FlowBar() {
           gap: 10,
           height: dims.h,
           width: dims.w,
-          padding: recording ? "0 8px" : 0,
+          padding: recording ? "0 8px" : "0 12px",
           background: pillFill.base,
-          border: `1px solid rgba(255,255,255,0.10)`,
+          // Recording gets an accent rim + glow so it reads as live from the corner
+          // of the eye; the calmer states keep the plain hairline border.
+          border: recording
+            ? `1px solid ${palette.accent500}`
+            : `1px solid rgba(255,255,255,0.10)`,
           borderRadius: 9999,
-          boxShadow: pillFill.shadow,
+          boxShadow: recording
+            ? `${pillFill.shadow}, 0 0 0 4px rgba(34,195,182,0.16), 0 0 18px rgba(34,195,182,0.28)`
+            : pillFill.shadow,
           color: palette.pillText,
           transition: `width ${geometry.morphMs}ms ${motionEase}, height ${geometry.morphMs}ms ${motionEase}`,
+          animation: `whimpr-pill-in ${geometry.morphMs}ms ${motionEase}`,
           overflow: "hidden",
           fontSize: 13,
         }}
       >
-        {isIdle ? null : recording ? (
+        {recording ? (
           <>
             <CancelButton />
+            <LiveDot />
             <div style={{ flex: 1, minWidth: 0 }}>
               <DottedWaveform bars={bars} />
             </div>
             <StopButton />
           </>
         ) : processing ? (
-          <span style={{ color: palette.pillTextMuted }}>{statusText}</span>
+          <>
+            <Spinner />
+            <span style={{ color: palette.pillTextMuted }}>{statusText}</span>
+          </>
         ) : (
           <span style={{ color: palette.pillTextMuted }}>{statusText}</span>
         )}

@@ -29,32 +29,124 @@ struct BarStatePayload {
     state: &'static str,
 }
 
-/// Anchor the overlay window bottom-center of its monitor.
-fn position_overlay(w: &WebviewWindow) {
+/// Anchor the overlay window bottom-center of the monitor the user is on.
+///
+/// Two things this gets right that the obvious version does not: it anchors to the
+/// monitor's WORK AREA (which already excludes the Dock and menu bar, so the pill
+/// can't tuck itself underneath the Dock), and it prefers the CURRENT monitor over
+/// the primary one, so on a multi-display desk the pill appears on the screen being
+/// looked at. Cheap enough to re-run on every record-start.
+pub(crate) fn position_overlay(w: &WebviewWindow) {
     // current_monitor() can be None before the window maps; fall back sensibly.
     let monitor = w
-        .primary_monitor()
+        .current_monitor()
         .ok()
         .flatten()
-        .or_else(|| w.current_monitor().ok().flatten())
+        .or_else(|| w.primary_monitor().ok().flatten())
         .or_else(|| w.available_monitors().ok().and_then(|m| m.into_iter().next()));
     let Some(monitor) = monitor else {
         eprintln!("[whimpr] no monitor found — overlay stays at default position");
         return;
     };
     let scale = monitor.scale_factor();
-    let msize = monitor.size();
-    let mpos = monitor.position();
+    let area = monitor.work_area();
     let Ok(wsize) = w.outer_size() else { return };
-    let inset = (40.0 * scale) as i32;
-    let x = mpos.x + (msize.width as i32 - wsize.width as i32) / 2;
-    let y = mpos.y + msize.height as i32 - wsize.height as i32 - inset;
+    let inset = (12.0 * scale) as i32;
+    let x = area.position.x + (area.size.width as i32 - wsize.width as i32) / 2;
+    let y = area.position.y + area.size.height as i32 - wsize.height as i32 - inset;
     let _ = w.set_position(tauri::PhysicalPosition { x, y });
     eprintln!(
-        "[whimpr] overlay placed: monitor {}x{} @({},{}) scale {:.1} -> window {}x{} @({},{})",
-        msize.width, msize.height, mpos.x, mpos.y, scale, wsize.width, wsize.height, x, y
+        "[whimpr] overlay placed: work area {}x{} @({},{}) scale {:.1} -> window {}x{} @({},{})",
+        area.size.width, area.size.height, area.position.x, area.position.y, scale,
+        wsize.width, wsize.height, x, y
     );
 }
+
+/// Float the pill above the Dock and let it follow the user into full-screen Spaces.
+///
+/// Tauri's `always_on_top` maps to NSFloatingWindowLevel (3), which is BELOW the
+/// Dock (20) — that is why a bottom-anchored pill reads as "not showing up". Raising
+/// to 25 clears the Dock while staying under the screen saver. The collection
+/// behavior is the other half: without FullScreenAuxiliary a window simply does not
+/// exist on another app's full-screen Space, which is exactly where someone dictating
+/// tends to be.
+/// Turn the overlay's NSWindow into a non-activating NSPanel.
+///
+/// This is the difference between "floats over other windows" and "floats over
+/// other SPACES". A full-screen app gets its own Space, and a plain NSWindow cannot
+/// join it at any window level — raising the level does nothing, because the window
+/// is not on that Space at all. Only a panel with NonactivatingPanel, combined with
+/// CanJoinAllSpaces, follows the user into another app's full-screen Space.
+///
+/// Swapping an object's class at runtime is the same technique tauri-nspanel uses;
+/// AppKit is fine with it here because NSPanel adds no instance variables over
+/// NSWindow. Non-activating also means clicking the pill never steals focus from the
+/// app being dictated into — which the paste path depends on.
+#[cfg(target_os = "macos")]
+fn promote_overlay_to_panel(w: &WebviewWindow) {
+    use objc2::runtime::AnyClass;
+    use objc2_app_kit::{NSPanel, NSWindowStyleMask};
+
+    let Ok(ptr) = w.ns_window() else { return };
+    if ptr.is_null() {
+        return;
+    }
+    let Some(panel_cls) = AnyClass::get(c"NSPanel") else {
+        eprintln!("[whimpr] NSPanel class not found — overlay stays a plain window");
+        return;
+    };
+    // SAFETY: main thread only, and the pointer is the live NSWindow Tauri created.
+    unsafe {
+        objc2::ffi::object_setClass(ptr.cast(), (panel_cls as *const AnyClass).cast());
+        let panel: &NSPanel = &*(ptr as *const NSPanel);
+        panel.setStyleMask(panel.styleMask() | NSWindowStyleMask::NonactivatingPanel);
+        panel.setFloatingPanel(true);
+        panel.setBecomesKeyOnlyIfNeeded(true);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn promote_overlay_to_panel(_w: &WebviewWindow) {}
+
+#[cfg(target_os = "macos")]
+fn raise_overlay_level(w: &WebviewWindow) {
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+
+    let Ok(ptr) = w.ns_window() else { return };
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY: Tauri hands back the NSWindow backing this webview window; we only
+    // touch it on the main thread (callers dispatch via run_on_main_thread).
+    unsafe {
+        let ns: &NSWindow = &*(ptr as *const NSWindow);
+        let before = ns.level();
+        ns.setLevel(OVERLAY_WINDOW_LEVEL);
+        ns.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::Stationary,
+        );
+        // Order front WITHOUT making it key: the app being dictated into must keep
+        // keyboard focus, or the paste lands in the wrong place.
+        ns.orderFrontRegardless();
+        eprintln!(
+            "[whimpr] overlay level {} -> {} (wanted {}), collectionBehavior {:?}",
+            before,
+            ns.level(),
+            OVERLAY_WINDOW_LEVEL,
+            ns.collectionBehavior()
+        );
+    }
+}
+
+/// Above the Dock (20) and normal app windows (0), below the screen saver.
+/// NSStatusWindowLevel; not exported as a constant by objc2-app-kit.
+#[cfg(target_os = "macos")]
+const OVERLAY_WINDOW_LEVEL: isize = 25;
+
+#[cfg(not(target_os = "macos"))]
+fn raise_overlay_level(_w: &WebviewWindow) {}
 
 fn build_overlay(app: &tauri::App) -> tauri::Result<WebviewWindow> {
     let overlay = WebviewWindowBuilder::new(
@@ -64,19 +156,27 @@ fn build_overlay(app: &tauri::App) -> tauri::Result<WebviewWindow> {
     )
     .title("WhimprBar")
     // Tight window so it only catches clicks right around the pill, not a big
-    // invisible box over the app behind it.
-    .inner_size(300.0, 72.0)
+    // invisible box over the app behind it. Sized with enough margin for the
+    // recording state's accent glow, which would otherwise clip at the edges.
+    .inner_size(340.0, 92.0)
     .decorations(false)
     .transparent(true)
     .shadow(false)
     .always_on_top(true)
+    .visible_on_all_workspaces(true)
     .skip_taskbar(true)
     .focused(false)
     .resizable(false)
     .visible(true)
     .build()?;
     position_overlay(&overlay);
-    let _ = overlay.show();
+    // Panel first: changing the style mask can reset window state, so the level and
+    // collection behavior are applied after it.
+    promote_overlay_to_panel(&overlay);
+    raise_overlay_level(&overlay);
+    // Idle renders nothing, so the window must not swallow clicks aimed at whatever
+    // is underneath it. Recording turns this back off so Cancel/Stop stay clickable.
+    let _ = overlay.set_ignore_cursor_events(true);
     Ok(overlay)
 }
 
@@ -91,6 +191,29 @@ fn build_hub(app: &tauri::App) -> tauri::Result<WebviewWindow> {
 
 fn emit_bar_state(app: &tauri::AppHandle, state: &'static str) {
     let _ = app.emit_to(OVERLAY_LABEL, "whimpr://flowbar/state", BarStatePayload { state });
+}
+
+/// Keep the overlay window in step with what the pill is showing.
+///
+/// `interactive` = the pill has buttons on screen (recording), so it must accept
+/// clicks; otherwise it renders nothing and must let clicks through to the app
+/// underneath. Recording also re-anchors the window, which is what puts the pill on
+/// the display currently in use rather than wherever it was at launch.
+///
+/// Called from the hotkey tap thread, so the NSWindow work is hopped to the main
+/// thread and nothing here blocks: a slow tap callback gets the event tap killed.
+pub(crate) fn sync_overlay_window(app: &tauri::AppHandle, interactive: bool) {
+    let Some(overlay) = app.get_webview_window(OVERLAY_LABEL) else { return };
+    let _ = overlay.set_ignore_cursor_events(!interactive);
+    let _ = app.run_on_main_thread(move || {
+        if interactive {
+            position_overlay(&overlay);
+        }
+        // Re-assert the level on EVERY state change, not just recording: activating
+        // another app, switching Space, or changing display can all knock the window
+        // back down the stack, and once it is behind the frontmost app it is useless.
+        raise_overlay_level(&overlay);
+    });
 }
 
 #[tauri::command]
@@ -142,16 +265,26 @@ struct StatusReport {
     input_monitoring: bool,
     has_openai_key: bool,
     has_anthropic_key: bool,
+    /// "loading" | "ready" | "missing" — the local cleanup worker's model.
+    local_state: &'static str,
+    /// GGUF filename actually in use, when `local_state` is "ready".
+    local_model: Option<String>,
+    /// Whisper model filename actually on disk, if any.
+    asr_model: Option<String>,
 }
 
 #[tauri::command]
 fn get_status() -> StatusReport {
+    let local = hotkey::local_model_status();
     StatusReport {
         accessibility: paste::is_trusted(),
         microphone: paste::microphone_granted(),
         input_monitoring: paste::input_monitoring_granted(),
         has_openai_key: has_key("openai_api_key"),
         has_anthropic_key: has_key("anthropic_api_key"),
+        local_state: local.state,
+        local_model: local.model,
+        asr_model: hotkey::asr_model_name(),
     }
 }
 

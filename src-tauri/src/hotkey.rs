@@ -19,6 +19,21 @@ pub struct DictEntryDto {
     pub auto: bool,
 }
 
+/// What the local cleanup model is doing, for the Hub's Cleanup Engine pane.
+/// `state` is "loading" while the worker starts, then "ready" (with the GGUF
+/// filename in `model`) or "missing" when no model / worker binary was found.
+#[derive(Clone)]
+pub struct LocalModelStatus {
+    pub state: &'static str,
+    pub model: Option<String>,
+}
+
+impl Default for LocalModelStatus {
+    fn default() -> Self {
+        Self { state: "loading", model: None }
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
     use std::os::raw::c_void;
@@ -106,6 +121,33 @@ mod imp {
     static SETTINGS: OnceLock<Mutex<whimpr_core::Settings>> = OnceLock::new();
     static DICTIONARY: OnceLock<Mutex<whimpr_core::DictionaryStore>> = OnceLock::new();
     static STATS: OnceLock<Mutex<whimpr_core::StatsStore>> = OnceLock::new();
+    /// What the local cleanup worker is doing, for the Hub to display. Deliberately
+    /// NOT read off `LOCAL`: `LocalWorker::cleanup` holds that mutex for the whole
+    /// multi-second generation, so a status command that locked it would freeze the
+    /// Hub mid-dictation. This one is held for microseconds.
+    static LOCAL_STATUS: OnceLock<Mutex<super::LocalModelStatus>> = OnceLock::new();
+
+    fn set_local_status(state: &'static str, model: Option<String>) {
+        let slot = LOCAL_STATUS.get_or_init(|| Mutex::new(super::LocalModelStatus::default()));
+        *slot.lock().unwrap() = super::LocalModelStatus { state, model };
+    }
+
+    /// The local cleanup model's load state + filename, for `get_status`.
+    pub fn local_model_status() -> super::LocalModelStatus {
+        LOCAL_STATUS
+            .get_or_init(|| Mutex::new(super::LocalModelStatus::default()))
+            .lock()
+            .unwrap()
+            .clone()
+    }
+
+    /// Filename of the whisper model that was actually loaded, if any.
+    pub fn asr_model_name() -> Option<String> {
+        let p = model_path();
+        p.exists()
+            .then(|| p.file_name()?.to_str().map(|s| s.to_string()))
+            .flatten()
+    }
 
     #[derive(Clone, Serialize)]
     struct BarPayload {
@@ -145,6 +187,25 @@ mod imp {
     fn support_dir() -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_default();
         PathBuf::from(home).join("Library/Application Support/WhimprFlow")
+    }
+
+    /// Record which permissions this launch actually has, so the installer can tell
+    /// the user whether an update kept its grants. It cannot ask macOS directly:
+    /// AXIsProcessTrusted answers for the *calling* process, so the same check run
+    /// from a shell reports the terminal's permissions, not the app's. Only the app
+    /// itself can answer honestly, so it writes the answer down.
+    fn write_permission_snapshot() {
+        let dir = support_dir();
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let json = format!(
+            "{{\"accessibility\":{},\"microphone\":{},\"input_monitoring\":{}}}\n",
+            crate::paste::is_trusted(),
+            crate::paste::microphone_granted(),
+            crate::paste::input_monitoring_granted()
+        );
+        let _ = std::fs::write(dir.join("permissions.json"), json);
     }
     fn settings_path() -> PathBuf {
         support_dir().join("settings.json")
@@ -421,6 +482,9 @@ mod imp {
     fn emit_bar(app: &AppHandle, state: &'static str) {
         eprintln!("[whimpr] pill -> {state}");
         let _ = app.emit_to(OVERLAY_LABEL, "whimpr://flowbar/state", BarPayload { state });
+        // Only the recording states draw clickable controls; everything else either
+        // renders nothing (idle) or is a passive label, so let clicks fall through.
+        crate::sync_overlay_window(app, matches!(state, "recording" | "locked"));
     }
 
     /// Feed one input into the shared state machine and enact its actions.
@@ -441,11 +505,19 @@ mod imp {
         match action {
             Action::ShowBar(bar) => {
                 emit_bar(app, bar_name(bar));
-                // Let the "done" tick linger briefly before returning to idle.
-                if bar == BarState::Done {
+                // Terminal states are messages, not steady states: show them long
+                // enough to be read, then clear the pill off the screen. Errors get
+                // longer because they're the ones worth actually reading.
+                let linger_ms = match bar {
+                    BarState::Done => 500,
+                    BarState::Cancelled => 900,
+                    BarState::Error => 1800,
+                    _ => 0,
+                };
+                if linger_ms > 0 {
                     let app2 = app.clone();
                     std::thread::spawn(move || {
-                        std::thread::sleep(Duration::from_millis(500));
+                        std::thread::sleep(Duration::from_millis(linger_ms));
                         emit_bar(&app2, "idle");
                     });
                 }
@@ -542,9 +614,28 @@ mod imp {
             }
             // The ASR path (StopCaptureAndFinalize) now drives pipeline completion.
             Action::RunPipeline { .. } => {}
-            // PlayPing / WarnSessionCap: no-ops for now.
+            Action::PlayPing => {
+                if current_settings().sound_on_start {
+                    play_ping(app);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// The record-start ping. NSSound is AppKit and wants the main thread, while
+    /// this runs on the CGEventTap callback thread — which must never block, or the
+    /// hook exceeds its timeout and macOS silently removes the tap. So hop, and keep
+    /// the closure trivial.
+    fn play_ping(app: &AppHandle) {
+        let _ = app.run_on_main_thread(|| {
+            use objc2_app_kit::NSSound;
+            use objc2_foundation::ns_string;
+            // A system sound, so nothing has to ship in the bundle.
+            if let Some(sound) = unsafe { NSSound::soundNamed(ns_string!("Pop")) } {
+                unsafe { sound.play() };
+            }
+        });
     }
 
     extern "C" fn tap_callback(
@@ -625,7 +716,18 @@ mod imp {
         // Start the local cleanup worker in the background (model load takes a few
         // seconds; the first local cleanup waits for it, subsequent ones are fast).
         std::thread::spawn(|| {
+            set_local_status("loading", None);
+            let model = crate::local_llm::model_path();
             let worker = crate::local_llm::spawn_default();
+            if worker.is_some() {
+                let name = model
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string());
+                set_local_status("ready", name);
+            } else {
+                set_local_status("missing", None);
+            }
             let _ = LOCAL.set(Mutex::new(worker));
         });
 
@@ -642,6 +744,7 @@ mod imp {
             );
             crate::paste::prompt_accessibility();
         }
+        write_permission_snapshot();
         // Input Monitoring is NOT the gate for a CGEventTap — kept only as diagnostics.
         eprintln!(
             "[whimpr] (info) Input Monitoring: {}",
@@ -665,6 +768,9 @@ mod imp {
                 std::thread::sleep(Duration::from_millis(500));
             }
             eprintln!("[whimpr] Accessibility present — creating global Fn tap");
+            // Trust just flipped (or was there all along) — refresh the snapshot so a
+            // grant made after launch isn't reported as still missing.
+            write_permission_snapshot();
             let port = unsafe {
                 CGEventTapCreate(
                     K_CG_SESSION_EVENT_TAP,
@@ -696,8 +802,9 @@ mod imp {
 
 #[cfg(target_os = "macos")]
 pub use imp::{
-    current_settings, dictionary_add, dictionary_entries, dictionary_learn, dictionary_remove,
-    history, install, rebuild_providers, stats_summary, update_settings,
+    asr_model_name, current_settings, dictionary_add, dictionary_entries, dictionary_learn,
+    dictionary_remove, history, install, local_model_status, rebuild_providers, stats_summary,
+    update_settings,
 };
 
 // Windows uses the real (but unverified) platform layer in `crate::win`.
@@ -706,6 +813,26 @@ pub use crate::win::{
     current_settings, dictionary_add, dictionary_entries, dictionary_learn, dictionary_remove,
     history, install, rebuild_providers, stats_summary, update_settings,
 };
+
+// The Windows layer tracks no load state of its own, so answer from the filesystem:
+// a present model is reported ready. Less precise than the macOS path (it cannot see
+// a failed worker spawn) but honest about what is on disk.
+#[cfg(not(target_os = "macos"))]
+pub fn local_model_status() -> LocalModelStatus {
+    let p = crate::local_llm::model_path();
+    match p.exists() {
+        true => LocalModelStatus {
+            state: "ready",
+            model: p.file_name().and_then(|n| n.to_str()).map(str::to_string),
+        },
+        false => LocalModelStatus { state: "missing", model: None },
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn asr_model_name() -> Option<String> {
+    None
+}
 
 // Other platforms (Linux, etc.): inert stubs so the crate still builds.
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
