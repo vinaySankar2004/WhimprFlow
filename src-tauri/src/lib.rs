@@ -174,6 +174,19 @@ fn build_hub(app: &tauri::App) -> tauri::Result<WebviewWindow> {
         .build()
 }
 
+/// Bring the Hub back — from the tray's Open item, or a Dock click.
+///
+/// The window is only ever hidden, never destroyed (see the `CloseRequested`
+/// handler), so it is always there to re-show. Order matters: `set_focus` is a
+/// no-op on a hidden or minimized window, so unhide and unminimize first, and
+/// `show` is what makes the app frontmost again after the red button hid it.
+fn show_hub(app: &tauri::AppHandle) {
+    let Some(hub) = app.get_webview_window(HUB_LABEL) else { return };
+    let _ = hub.unminimize();
+    let _ = hub.show();
+    let _ = hub.set_focus();
+}
+
 /// Keep the overlay window in step with what the pill is showing.
 ///
 /// `interactive` = the pill has buttons on screen (recording), so it must accept
@@ -397,6 +410,19 @@ pub fn run() {
             cancel_dictation,
             set_api_key
         ])
+        // The red button hides the Hub, it does not close it. Closing would DESTROY
+        // the window — the app would keep running (the overlay holds it open) with no
+        // way back: `get_webview_window(HUB_LABEL)` returns None from then on, so the
+        // tray's Open item and the Dock icon both become dead. Hiding keeps the window
+        // (and its webview state) around for `show_hub`.
+        .on_window_event(|window, event| {
+            if window.label() == HUB_LABEL {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             // Regular app: shows in the Dock with a normal, focusable main window.
             // (Can switch to a menu-bar-only accessory app later for the Wispr look.)
@@ -420,12 +446,7 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => {
-                        if let Some(w) = app.get_webview_window(HUB_LABEL) {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
+                    "open" => show_hub(app),
                     "quit" => app.exit(0),
                     _ => {}
                 });
@@ -436,6 +457,14 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running WhimprFlow");
+        .build(tauri::generate_context!())
+        .expect("error while building WhimprFlow")
+        .run(|app, event| {
+            // Dock click. `has_visible_windows` is not a useful signal here: the
+            // overlay is a window and is technically visible whenever the pill is up,
+            // so it would report true with the Hub hidden. Just re-show the Hub.
+            if let tauri::RunEvent::Reopen { .. } = event {
+                show_hub(app);
+            }
+        });
 }

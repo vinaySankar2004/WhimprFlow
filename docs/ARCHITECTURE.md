@@ -266,6 +266,23 @@ cargo run -p whimpr-asr --example transcribe --release -- <model.bin> <clip.wav>
 
 It prints the unprompted transcript, the prompted one, and which would be kept.
 
+## The Hub window
+
+The Hub is the ordinary app window — settings, history, dictionary. Its red button
+**hides** it rather than closing it: `CloseRequested` is intercepted, the close is
+prevented, and the window is hidden. Letting the close through would destroy the
+window while the app kept running (the overlay holds the process open), and a
+destroyed window is unrecoverable — `get_webview_window("main")` returns `None`
+from then on, so the tray's *Open WhimprFlow* item and the Dock icon would both
+silently do nothing.
+
+Two paths bring it back, and both go through `show_hub`: the tray menu item, and
+`RunEvent::Reopen`, which is what a Dock click raises. `Reopen`'s
+`has_visible_windows` flag is deliberately ignored — the overlay is a window and
+counts as visible while the pill is up, so the flag says "true" with the Hub
+nowhere on screen. `show_hub` unminimizes before showing and shows before
+focusing, because `set_focus` is a no-op on a hidden or minimized window.
+
 ## The overlay pill
 
 A transparent, always-on-top window that renders idle / recording / processing.

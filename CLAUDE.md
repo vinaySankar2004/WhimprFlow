@@ -13,7 +13,7 @@ odd parts are odd. Everything below is the working agreement on top of it.
 ```bash
 ./dev.sh                                  # Vite + app, hot reload
 ./scripts/install-macos.sh                # build + install to /Applications + verify permissions
-cargo test -p whimpr-core -p whimpr-ipc   # 72 tests, fast, no models needed
+cargo test -p whimpr-core -p whimpr-ipc   # 74 tests, fast, no models needed
 cd ui && node_modules/.bin/tsc --noEmit   # typecheck the UI
 cargo run -p whimpr-llm-worker --example dictionary_check --release            # dictionary, end to end
 cargo run -p whimpr-llm-worker --example dictionary_check --release -- --audit # your own dictionary, no model
@@ -70,6 +70,11 @@ These are not hypotheticals; each one bit during development.
   app — for a feature that only matters while dictating. It is enabled by `emit_bar`
   for the live states and disabled otherwise, which is also the only reason it can
   safely be the app's one *consuming* tap. Do not merge the two taps.
+- **Closing the Hub must hide it, never close it.** The app survives a real close —
+  the overlay keeps the process alive — but the window is *destroyed*, and
+  `get_webview_window("main")` returns `None` forever after, so the tray's Open item
+  and the Dock icon both go dead with no error anywhere. `CloseRequested` is
+  intercepted for exactly this reason. It reads as "the tray menu is broken".
 - **Do not "fix" the in-process Fn tap on principle.** The callback is cheap, heavy
   work already runs on spawned threads, and tap-disabled-by-timeout is caught and
   re-enabled. Move it to the sidecar when a real symptom appears, not before.
