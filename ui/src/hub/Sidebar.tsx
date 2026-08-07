@@ -45,7 +45,16 @@ function NavItem({ item, active, onClick }: { item: NavDef; active: boolean; onC
   );
 }
 
-export function Sidebar({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
+export function Sidebar({
+  page,
+  setPage,
+  engine,
+}: {
+  page: Page;
+  setPage: (p: Page) => void;
+  /** Short name of the live cleanup engine — see {@link modeLabel}. */
+  engine: string;
+}) {
   return (
     <aside
       style={{
@@ -58,7 +67,10 @@ export function Sidebar({ page, setPage }: { page: Page; setPage: (p: Page) => v
         padding: "20px 14px 16px",
       }}
     >
-      {/* Wordmark + Local badge */}
+      {/* Wordmark + the engine actually doing the cleanup. This badge used to be
+          the hardcoded word "Local", which meant picking OpenAI in Settings left
+          the app still saying LOCAL — the single clearest reason a mode switch
+          looked like it had not taken. */}
       <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 8px 20px" }}>
         <span
           style={{
@@ -84,7 +96,7 @@ export function Sidebar({ page, setPage }: { page: Page; setPage: (p: Page) => v
             padding: "2px 7px",
           }}
         >
-          Local
+          {engine}
         </span>
       </div>
 

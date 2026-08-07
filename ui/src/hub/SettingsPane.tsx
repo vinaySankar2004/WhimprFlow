@@ -27,11 +27,19 @@ const MODES: { value: CleanupMode; label: string; hint: string }[] = [
   { value: "anthropic", label: "Anthropic", hint: "Cloud cleanup via Claude" },
 ];
 
+/** The short name the sidebar badge shows for the engine that is actually live. */
+export function modeLabel(mode: CleanupMode): string {
+  return MODES.find((m) => m.value === mode)?.label ?? mode;
+}
+
 const LEVELS: { value: CleanupLevel; label: string; hint: string }[] = [
   { value: "none", label: "None", hint: "Transcribe exactly what you said, including mistakes." },
+  {
+    value: "messaging",
+    label: "Messaging",
+    hint: "Same cleanup, written the way you text: all lowercase, punctuation only where it's needed.",
+  },
   { value: "light", label: "Light", hint: "Clean up filler words and grammar. (Recommended)" },
-  { value: "medium", label: "Medium", hint: "Edit for clarity and conciseness." },
-  { value: "high", label: "High", hint: "Rewrite for brevity and polish." },
 ];
 
 const TRIGGERS: { value: TriggerMode; label: string; hint: string }[] = [
@@ -142,6 +150,155 @@ function LocalHint({ mode, status }: { mode: CleanupMode; status: Status }) {
     </div>
   );
 }
+
+/**
+ * The Cleanup Engine card. The tabs *browse* the engines; nothing changes until
+ * "Use this engine" is pressed. Switching used to apply instantly, which read as
+ * broken rather than fast — a tab that highlights the moment you touch it looks
+ * identical whether or not anything was saved. The commit step and the "In use"
+ * marker make the live engine unambiguous, and the sidebar badge agrees with them.
+ *
+ * Only the browsed engine's own fields are shown. Raw and Local have no key to
+ * set, and an API key field under "Paste exactly what you said" invites the
+ * reasonable conclusion that Raw needs one.
+ */
+function EngineCard({
+  settings,
+  onChange,
+  status,
+  refresh,
+}: {
+  settings: Settings;
+  onChange: (s: Settings) => void;
+  status: Status;
+  refresh: () => void;
+}) {
+  const [browsing, setBrowsing] = useState<CleanupMode>(settings.cleanup_mode);
+  // Settings arrive from the backend after the first render, and can change from
+  // elsewhere; follow them rather than stranding the tabs on a stale engine.
+  const [lastLive, setLastLive] = useState<CleanupMode>(settings.cleanup_mode);
+  if (lastLive !== settings.cleanup_mode) {
+    setLastLive(settings.cleanup_mode);
+    setBrowsing(settings.cleanup_mode);
+  }
+
+  const live = browsing === settings.cleanup_mode;
+  // Cleanup falls back to the on-device model when a cloud key can't be read, so
+  // say that here rather than letting it be discovered as "my cleanup is different".
+  const missingKey =
+    (browsing === "open_ai" && !status.has_openai_key) ||
+    (browsing === "anthropic" && !status.has_anthropic_key);
+
+  return (
+    <Card style={{ marginBottom: 16 }}>
+      <SectionTitle sub="Where your dictation is cleaned up before it's typed.">Cleanup Engine</SectionTitle>
+      <Segmented
+        options={MODES.map((m) => ({ value: m.value, label: m.label }))}
+        value={browsing}
+        onChange={setBrowsing}
+      />
+      <LocalHint mode={browsing} status={status} />
+
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14 }}>
+        {live ? (
+          <span style={{ fontSize: 13, fontWeight: 600, color: theme.accentDeep }}>
+            ✓ In use
+          </span>
+        ) : (
+          <Button onClick={() => onChange({ ...settings, cleanup_mode: browsing })}>
+            Use this engine
+          </Button>
+        )}
+        {!live && (
+          <span style={{ fontSize: 12.5, color: theme.textMuted }}>
+            {modeLabel(settings.cleanup_mode)} is still doing the cleanup.
+          </span>
+        )}
+      </div>
+      {missingKey && (
+        <div style={{ fontSize: 12.5, color: palette.warn, marginTop: 10 }}>
+          No key set — this engine falls back to the on-device model, so cleanup still
+          runs but not where you asked.
+        </div>
+      )}
+
+      {browsing === "open_ai" && (
+        <>
+          <KeyField
+            label="OpenAI API key"
+            configured={status.has_openai_key}
+            onSave={(k) => {
+              setApiKey("openai", k);
+              setTimeout(refresh, 400);
+            }}
+          />
+          <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 6 }}>
+                Base URL (blank = OpenAI; e.g. https://openrouter.ai/api/v1 for OpenRouter)
+              </div>
+              <input
+                type="text"
+                value={settings.openai_base_url}
+                placeholder="https://openrouter.ai/api/v1"
+                onChange={(e) => onChange({ ...settings, openai_base_url: e.target.value })}
+                style={fieldStyle}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 6 }}>
+                Model (e.g. an OpenRouter model slug)
+              </div>
+              <input
+                type="text"
+                value={settings.openai_model}
+                placeholder="meta-llama/llama-3.3-70b-instruct:free"
+                onChange={(e) => onChange({ ...settings, openai_model: e.target.value })}
+                style={fieldStyle}
+              />
+            </div>
+          </div>
+        </>
+      )}
+
+      {browsing === "anthropic" && (
+        <>
+          <KeyField
+            label="Anthropic API key"
+            configured={status.has_anthropic_key}
+            onSave={(k) => {
+              setApiKey("anthropic", k);
+              setTimeout(refresh, 400);
+            }}
+          />
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 6 }}>Model</div>
+            <input
+              type="text"
+              value={settings.anthropic_model}
+              placeholder="claude-haiku-4-5"
+              onChange={(e) => onChange({ ...settings, anthropic_model: e.target.value })}
+              style={fieldStyle}
+            />
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
+const fieldStyle: React.CSSProperties = {
+  width: "100%",
+  background: theme.cardBgSubtle,
+  border: `1px solid ${theme.border}`,
+  borderRadius: 10,
+  padding: "9px 12px",
+  color: theme.textBody,
+  fontFamily: font.mono,
+  fontSize: 13,
+  outline: "none",
+  boxSizing: "border-box",
+};
 
 function SectionTitle({ children, sub }: { children: React.ReactNode; sub?: string }) {
   return (
@@ -258,80 +415,7 @@ export function SettingsPane({
     <div style={{ maxWidth: 720 }}>
       <PageTitle>Settings</PageTitle>
 
-      <Card style={{ marginBottom: 16 }}>
-        <SectionTitle sub="Where your dictation is cleaned up before it's typed.">Cleanup Engine</SectionTitle>
-        <Segmented
-          options={MODES.map((m) => ({ value: m.value, label: m.label }))}
-          value={settings.cleanup_mode}
-          onChange={(v) => onChange({ ...settings, cleanup_mode: v })}
-        />
-        <LocalHint mode={settings.cleanup_mode} status={status} />
-
-        <KeyField
-          label="OpenAI API key"
-          configured={status.has_openai_key}
-          onSave={(k) => {
-            setApiKey("openai", k);
-            setTimeout(refresh, 400);
-          }}
-        />
-        <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 6 }}>
-              Base URL (blank = OpenAI; e.g. https://openrouter.ai/api/v1 for OpenRouter)
-            </div>
-            <input
-              type="text"
-              value={settings.openai_base_url}
-              placeholder="https://openrouter.ai/api/v1"
-              onChange={(e) => onChange({ ...settings, openai_base_url: e.target.value })}
-              style={{
-                width: "100%",
-                background: theme.cardBgSubtle,
-                border: `1px solid ${theme.border}`,
-                borderRadius: 10,
-                padding: "9px 12px",
-                color: theme.textBody,
-                fontFamily: font.mono,
-                fontSize: 13,
-                outline: "none",
-                boxSizing: "border-box",
-              }}
-            />
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 6 }}>
-              Model (e.g. an OpenRouter model slug)
-            </div>
-            <input
-              type="text"
-              value={settings.openai_model}
-              placeholder="meta-llama/llama-3.3-70b-instruct:free"
-              onChange={(e) => onChange({ ...settings, openai_model: e.target.value })}
-              style={{
-                width: "100%",
-                background: theme.cardBgSubtle,
-                border: `1px solid ${theme.border}`,
-                borderRadius: 10,
-                padding: "9px 12px",
-                color: theme.textBody,
-                fontFamily: font.mono,
-                fontSize: 13,
-                outline: "none",
-                boxSizing: "border-box",
-              }}
-            />
-          </div>
-        </div>
-        <KeyField
-          label="Anthropic API key"
-          configured={status.has_anthropic_key}
-          onSave={(k) => {
-            setApiKey("anthropic", k);
-            setTimeout(refresh, 400);
-          }}
-        />
-      </Card>
+      <EngineCard settings={settings} onChange={onChange} status={status} refresh={refresh} />
 
       <Card style={{ marginBottom: 16 }}>
         <SectionTitle>Auto Cleanup</SectionTitle>

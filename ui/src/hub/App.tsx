@@ -6,7 +6,7 @@ import { Sidebar, type Page } from "./Sidebar";
 import { Home } from "./Home";
 import { Insights } from "./Insights";
 import { DictionaryPane } from "./DictionaryPane";
-import { SettingsPane } from "./SettingsPane";
+import { SettingsPane, modeLabel } from "./SettingsPane";
 import { Help } from "./Help";
 import {
   getSettings,
@@ -51,7 +51,7 @@ export function App() {
         background: theme.pageBg,
       }}
     >
-      <Sidebar page={page} setPage={setPage} />
+      <Sidebar page={page} setPage={setPage} engine={modeLabel(settings.cleanup_mode)} />
       <main style={{ flex: 1, minWidth: 0, overflowY: "auto" }}>
         <div style={{ padding: "36px 44px", margin: "0 auto", maxWidth: 1120 }}>
           {page === "home" && <Home triggerMode={settings.trigger_mode} />}

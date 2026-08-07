@@ -180,6 +180,138 @@ pub fn post_process(text: &str) -> String {
     cap_and_trim_lines(&de_cued)
 }
 
+/// Strip the em and en dashes out of cleanup output, unconditionally.
+///
+/// The prompt already forbids them, but a prompt is a preference and this is a
+/// rule: a dash used as punctuation is the single loudest tell that a line was
+/// machine-written, and this text goes out as the speaker's own. A spaced dash
+/// becomes the comma it was standing in for; an unspaced one ("9–5", "well–known")
+/// is a range or a compound and becomes a plain hyphen. A dash opening a line is a
+/// bullet, so it stays a hyphen too.
+///
+/// Never applied to a raw paste — `Raw` mode and level `None` mean *verbatim*, and
+/// a dash the speaker's transcript already had is not ours to edit.
+pub fn de_dash(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c != '\u{2014}' && c != '\u{2013}' {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        // Spaces are part of the dash's punctuation, so consume them with it.
+        let mut j = i + 1;
+        while j < chars.len() && chars[j] == ' ' {
+            j += 1;
+        }
+        let spaced = out.ends_with(' ') || j > i + 1;
+        let before = out.trim_end_matches(' ').chars().last();
+        // Line-opening dash: a bullet, not punctuation.
+        let opens_line = matches!(before, None | Some('\n'));
+        // Whatever spacing ran into the dash is part of it, so redo it from scratch.
+        out.truncate(out.trim_end_matches(' ').len());
+        if !spaced || opens_line {
+            out.push('-');
+            if spaced {
+                out.push(' ');
+            }
+        } else if matches!(before, Some(',' | ';' | ':' | '.' | '!' | '?')) {
+            // Already punctuated; the dash was decoration. Drop it.
+            out.push(' ');
+        } else {
+            out.push_str(", ");
+        }
+        i = j;
+    }
+    out
+}
+
+/// Shape cleanup output into the register [`CleanupLevel::Messaging`] promises:
+/// all lowercase, and no full stop at the end of a line.
+///
+/// The prompt asks for both, and measurably gets about half of the second one —
+/// against the real model, "thanks manvi" came back bare and "we should renew
+/// chargebee this month before it lapses." kept its period. Half is not a rule, so
+/// this enacts them afterwards.
+///
+/// It runs last, after the dictionary has enacted its listed mishears: that step
+/// writes the *authoritative* spelling, which is capitalized, so lowercasing any
+/// earlier would let a corrected name arrive as the one capital in the message.
+pub fn messaging_style(text: &str) -> String {
+    drop_trailing_periods(&force_lowercase(text))
+}
+
+/// Drop the full stop that ends a line. Chat messages don't carry one, and a
+/// dictation model trained on prose adds it every time.
+///
+/// Only a lone `.` goes: `?` and `!` carry tone, `...` is a deliberate trail-off,
+/// and a final word with an interior dot is an abbreviation or an address
+/// ("a.m.", "i.e.", "example.com") whose last period is part of the token.
+fn drop_trailing_periods(text: &str) -> String {
+    let lines: Vec<String> = text
+        .split('\n')
+        .map(|line| {
+            let trimmed = line.trim_end();
+            let stripped = match trimmed.strip_suffix('.') {
+                Some(s) => s,
+                None => return line.to_string(),
+            };
+            let last_word = stripped.rsplit(char::is_whitespace).next().unwrap_or("");
+            if last_word.is_empty() || last_word.contains('.') {
+                line.to_string() // "..." , "a.m." , "example.com."
+            } else {
+                stripped.to_string()
+            }
+        })
+        .collect();
+    lines.join("\n")
+}
+
+/// Force every letter to lowercase, names and acronyms included. This is a typing
+/// habit, not a cleanup judgement: the user writes chat messages entirely in
+/// lowercase and capitalizes by hand on the rare occasion they want to.
+///
+/// URL-ish tokens are left alone. A path is case-sensitive where the rest of a
+/// message is not, and pasting a link that 404s is a worse failure than a stray
+/// capital.
+fn force_lowercase(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for token in split_keeping_whitespace(text) {
+        if is_url_like(token) {
+            out.push_str(token);
+        } else {
+            out.extend(token.chars().flat_map(char::to_lowercase));
+        }
+    }
+    out
+}
+
+/// Split into alternating runs of whitespace and non-whitespace, losing nothing —
+/// so a transform can skip whole tokens and still reassemble the original layout.
+fn split_keeping_whitespace(text: &str) -> impl Iterator<Item = &str> {
+    let mut rest = text;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let ws = rest.starts_with(char::is_whitespace);
+        let end = rest
+            .find(|c: char| c.is_whitespace() != ws)
+            .unwrap_or(rest.len());
+        let (head, tail) = rest.split_at(end);
+        rest = tail;
+        Some(head)
+    })
+}
+
+/// A token whose casing carries meaning: a URL or a bare `host.tld/path`.
+fn is_url_like(token: &str) -> bool {
+    token.contains("://") || (token.contains('/') && token.contains('.'))
+}
+
 /// Placeholder tokens for user-requested line breaks. We convert explicit spoken
 /// cues to these BEFORE the model, because a small model reliably passes an opaque
 /// marker through unchanged but often "helpfully" rewrites a real newline into a
@@ -358,6 +490,91 @@ mod tests {
         assert!(msg.contains("<CUSTOM_VOCABULARY>"));
         assert!(msg.contains("Manvi"));
         assert!(msg.contains("<USER_MESSAGE>\nsend it to monvi\n</USER_MESSAGE>"));
+    }
+
+    #[test]
+    fn de_dash_turns_a_spaced_dash_into_a_comma() {
+        assert_eq!(
+            de_dash("the launch is friday \u{2014} let me know if you have questions"),
+            "the launch is friday, let me know if you have questions"
+        );
+        // En dash, and the odd spacing a model sometimes emits, land the same way.
+        assert_eq!(de_dash("i went there \u{2013}twice"), "i went there, twice");
+        assert_eq!(de_dash("i went there\u{2014} twice"), "i went there, twice");
+    }
+
+    #[test]
+    fn de_dash_keeps_an_unspaced_dash_as_a_hyphen() {
+        // A range or a compound, not punctuation.
+        assert_eq!(de_dash("open 9\u{2013}5 on weekdays"), "open 9-5 on weekdays");
+        assert_eq!(de_dash("a well\u{2014}known issue"), "a well-known issue");
+    }
+
+    #[test]
+    fn de_dash_keeps_a_bullet_a_bullet() {
+        assert_eq!(
+            de_dash("groceries:\n\u{2014} milk\n\u{2014} eggs"),
+            "groceries:\n- milk\n- eggs"
+        );
+        assert_eq!(de_dash("\u{2014} first item"), "- first item");
+    }
+
+    #[test]
+    fn de_dash_does_not_double_up_punctuation() {
+        assert_eq!(de_dash("wait, \u{2014} actually no"), "wait, actually no");
+    }
+
+    #[test]
+    fn de_dash_leaves_plain_text_and_hyphens_alone() {
+        let s = "a well-known issue with the 9-5 schedule.";
+        assert_eq!(de_dash(s), s);
+    }
+
+    #[test]
+    fn messaging_style_lowercases_names_too() {
+        assert_eq!(
+            messaging_style("Hey Manvi, the demo is on Friday. ASAP!"),
+            "hey manvi, the demo is on friday. asap!"
+        );
+    }
+
+    #[test]
+    fn messaging_style_preserves_layout_and_urls() {
+        // Line structure survives, and a case-sensitive path is not ours to break.
+        assert_eq!(
+            messaging_style("Send it here:\nhttps://GitHub.com/Foo/Bar\nThanks"),
+            "send it here:\nhttps://GitHub.com/Foo/Bar\nthanks"
+        );
+        assert_eq!(messaging_style("See GitHub.com/Foo/Bar"), "see GitHub.com/Foo/Bar");
+    }
+
+    #[test]
+    fn messaging_style_drops_the_full_stop_ending_a_line() {
+        assert_eq!(
+            messaging_style("We should renew ChargeBee this month before it lapses."),
+            "we should renew chargebee this month before it lapses"
+        );
+        // Every line of a list, not just the last one.
+        assert_eq!(
+            messaging_style("grab milk.\ngrab eggs."),
+            "grab milk\ngrab eggs"
+        );
+    }
+
+    #[test]
+    fn messaging_style_keeps_the_punctuation_that_carries_tone() {
+        assert_eq!(messaging_style("Are you free tonight?"), "are you free tonight?");
+        assert_eq!(messaging_style("No way!"), "no way!");
+        assert_eq!(messaging_style("I mean..."), "i mean...");
+    }
+
+    #[test]
+    fn messaging_style_keeps_a_period_that_belongs_to_the_word() {
+        // The final dot is part of the token, not the end of the sentence.
+        assert_eq!(messaging_style("see you at 9 a.m."), "see you at 9 a.m.");
+        // A bare domain has no case-sensitive path, so it lowercases like any word;
+        // what matters is that its final dot survives.
+        assert_eq!(messaging_style("read it on Example.com."), "read it on example.com.");
     }
 
     #[test]

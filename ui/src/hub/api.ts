@@ -3,7 +3,8 @@
 // Hub still renders for iteration.
 
 export type CleanupMode = "raw" | "local" | "open_ai" | "anthropic";
-export type CleanupLevel = "none" | "light" | "medium" | "high";
+/** Rust aliases the retired "medium" and "high" onto "light" when loading. */
+export type CleanupLevel = "none" | "messaging" | "light";
 /** How the dictation key starts/stops a recording. */
 export type TriggerMode = "hold" | "toggle";
 
@@ -117,7 +118,9 @@ export const EMPTY_STATS: StatsSummary = {
 };
 
 export const DEFAULT_SETTINGS: Settings = {
-  cleanup_mode: "open_ai",
+  // Matches Rust's `Settings::default`, so the pre-load render and the browser
+  // preview don't advertise an engine the app isn't actually using.
+  cleanup_mode: "local",
   cleanup_level: "light",
   trigger_mode: "hold",
   openai_model: "gpt-4o-mini",

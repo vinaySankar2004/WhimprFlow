@@ -117,7 +117,9 @@ mod tests {
 
     /// A settings.json written before `trigger_mode` existed must still load with
     /// every other setting intact — without `#[serde(default)]` the whole parse
-    /// fails and `Settings::load` silently falls back to defaults.
+    /// fails and `Settings::load` silently falls back to defaults. Same hazard for
+    /// the retired `"high"` cleanup level, which is aliased forward to Light rather
+    /// than left to blow up the parse and take every other setting with it.
     #[test]
     fn older_settings_file_without_trigger_mode_still_loads() {
         let json = r#"{
@@ -130,7 +132,7 @@ mod tests {
         }"#;
         let s: Settings = serde_json::from_str(json).expect("old file still parses");
         assert_eq!(s.cleanup_mode, CleanupMode::Anthropic);
-        assert_eq!(s.cleanup_level, CleanupLevel::High);
+        assert_eq!(s.cleanup_level, CleanupLevel::Light);
         assert!(!s.sound_on_start);
         assert_eq!(s.trigger_mode, TriggerMode::Hold);
     }

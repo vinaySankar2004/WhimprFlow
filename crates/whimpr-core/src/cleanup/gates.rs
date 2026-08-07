@@ -225,15 +225,14 @@ mod tests {
     }
 
     #[test]
-    fn heavy_rewrite_exceeds_light_ceiling_but_ok_at_high() {
+    fn heavy_rewrite_exceeds_the_novelty_ceiling() {
         let raw = "i went to the store and then i bought some milk and eggs and bread";
         let clean = "Purchased dairy and bakery goods."; // huge rewrite
         assert!(matches!(
             evaluate(raw, clean, CleanupLevel::Light, NO_VOCAB),
             GateVerdict::Fail(_)
         ));
-        // Still fails High too here because it also over-deletes; ensure ratio logic is sane
-        // on a milder rewrite:
+        // Ensure the ratio logic is sane on a milder rewrite, which must pass:
         let clean_mild = "I went to the store and bought milk, eggs, and bread.";
         assert!(evaluate(raw, clean_mild, CleanupLevel::Light, NO_VOCAB).passed());
     }
@@ -243,7 +242,7 @@ mod tests {
         let raw = "the quarterly report is due on friday please review the budget section";
         let clean = "Report due Friday."; // dropped >40%
         assert!(matches!(
-            evaluate(raw, clean, CleanupLevel::Medium, NO_VOCAB),
+            evaluate(raw, clean, CleanupLevel::Light, NO_VOCAB),
             GateVerdict::Fail(GateReason::OverDeletion { .. })
         ));
     }

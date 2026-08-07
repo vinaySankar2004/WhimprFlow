@@ -512,31 +512,45 @@ mod imp {
     }
 
     /// Produce the text to paste: cleanup, then the dictionary's listed mishears
-    /// enforced on whatever came out of it.
+    /// enforced on whatever came out of it, then the Messaging level's lowercasing.
     ///
-    /// The order matters and the second step is not redundant. Cleanup already gets the
+    /// The order matters and none of the steps are redundant. Cleanup already gets the
     /// vocabulary in its prompt and usually applies it, but "usually" is the problem:
     /// the model declines exactly when the mis-heard form is itself a plausible name,
-    /// which is the case users add an entry for. Running last also means a listed
-    /// mishear is fixed on every path a prompt cannot reach — cleanup off, gates
-    /// rejected the edit, provider down.
+    /// which is the case users add an entry for. Running the dictionary last also means
+    /// a listed mishear is fixed on every path a prompt cannot reach — cleanup off,
+    /// gates rejected the edit, provider down.
+    ///
+    /// Lowercasing comes after the dictionary for the same reason it exists at all:
+    /// the dictionary writes the *authoritative* spelling, which is capitalized, so
+    /// doing this earlier would let a corrected name arrive at the cursor as the one
+    /// capitalized word in an all-lowercase message. It is skipped in `Raw` mode,
+    /// where "paste exactly what you said" outranks a typing habit.
     fn clean_transcript(raw: &str) -> String {
-        let text = run_cleanup(raw);
-        let Some(dict) = DICTIONARY.get() else {
-            return text;
+        let settings = current_settings();
+        let text = run_cleanup(raw, &settings);
+        let text = match DICTIONARY.get() {
+            Some(dict) => {
+                let fixed = dict.lock().unwrap().apply_listed_mishears(&text);
+                if fixed != text {
+                    eprintln!("[whimpr] DICTIONARY: \"{fixed}\"");
+                }
+                fixed
+            }
+            None => text,
         };
-        let fixed = dict.lock().unwrap().apply_listed_mishears(&text);
-        if fixed != text {
-            eprintln!("[whimpr] DICTIONARY: \"{fixed}\"");
+        if settings.cleanup_level.forces_lowercase()
+            && !matches!(settings.cleanup_mode, CleanupMode::Raw)
+        {
+            return whimpr_core::cleanup::messaging_style(&text);
         }
-        fixed
+        text
     }
 
     /// Clean a raw transcript per the current settings (mode + level), feeding in the
     /// dictionary vocabulary relevant to this utterance. Falls back to raw whenever
     /// cleanup is off, the provider is unavailable, it errors, or the gates reject it.
-    fn run_cleanup(raw: &str) -> String {
-        let settings = current_settings();
+    fn run_cleanup(raw: &str, settings: &whimpr_core::Settings) -> String {
         let level = settings.cleanup_level;
         if matches!(settings.cleanup_mode, CleanupMode::Raw) || level.bypasses_llm() {
             return raw.to_string();
@@ -600,6 +614,9 @@ mod imp {
                 // model missed into real line breaks, strip stray code fences, cap blank
                 // lines. Guarantees no "new line"/"new paragraph" word reaches the cursor.
                 let cleaned = whimpr_core::cleanup::post_process(&cleaned);
+                // The prompt forbids em and en dashes; this is what makes it true. It
+                // runs before the gate so what the gate judges is what gets pasted.
+                let cleaned = whimpr_core::cleanup::de_dash(&cleaned);
                 // The gate sees the same vocab the prompt did, so the spellings the
                 // dictionary authorized don't read as the model inventing words.
                 if whimpr_core::cleanup::evaluate_gates(&raw_out, &cleaned, level, &ctx.vocab)

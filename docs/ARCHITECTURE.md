@@ -115,7 +115,39 @@ All non-raw modes send the *same* prompt — system message, few-shot turns, the
 the transcript — assembled once in `cleanup::build_messages`, so providers can't
 drift apart.
 
-Four aggressiveness levels: None, Light (default), Medium, High.
+The mode is committed by an explicit **Use this engine** button, not by touching a
+tab. Applying on click read as broken rather than fast — a tab highlights whether or
+not anything saved, and the sidebar badge hardcoded "Local", so choosing OpenAI left
+the app still announcing LOCAL. Badge and card now both name the live engine.
+
+Three levels: None, Messaging, Light (default).
+
+- **None** bypasses the model; the raw transcript is pasted.
+- **Messaging** edits no harder than Light, in a different register: all lowercase
+  including names, punctuation only where the meaning needs it. For chat apps, where
+  the user's own typing has no capitals.
+- **Light** removes fillers and fixes grammar, preserving the speaker's words.
+
+A Medium and a High once sat above Light. A dial past "fix the grammar" only ever
+produced text the speaker did not say, so they are gone — but `CleanupLevel` still
+aliases `"medium"` and `"high"` onto Light, because an unrecognized value fails the
+whole `Settings` parse and silently resets every other setting with it.
+
+**The register rules are enforced, not requested.** The prompt bans em and en dashes
+at every level (the loudest tell that a line was machine-written, and this text goes
+out as the speaker's own) and asks Messaging for lowercase with no trailing full
+stops. Asking gets about half: measured against the real model, Messaging returned
+"thanks manvi" bare and "we should renew chargebee this month before it lapses." with
+its period. `cleanup::de_dash` and `cleanup::messaging_style` enact both afterwards.
+
+Order is load-bearing. `de_dash` runs before the gate, so the gate judges what will
+actually be pasted. `messaging_style` runs *after* the dictionary, which writes the
+authoritative — capitalized — spelling, and would otherwise leave a corrected name as
+the one capital in the message. It spares `?`, `!` and `...` (they carry tone), a
+final dot belonging to its word ("a.m."), and URL-ish tokens, whose paths are
+case-sensitive where a message is not. Neither pass touches a raw paste: `Raw` mode
+and level `None` mean verbatim. `dictionary_check --messaging` drives the chain
+against the real model.
 
 **Gates are the safety net.** An LLM asked to tidy a transcript will sometimes
 rewrite it. `cleanup::gates::evaluate` rejects the output and pastes the raw

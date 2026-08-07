@@ -47,6 +47,12 @@ opinions, greetings, sign-offs, or placeholders; summarize, shorten for style, \
 reorder ideas, or change word choice, tone, or meaning; change quantities, names, \
 numbers, dates, quoted strings, code, or URLs except for the normalizations above.
 
+NEVER USE A DASH AS PUNCTUATION. The characters \"\u{2014}\" (em dash) and \"\u{2013}\" (en dash) \
+must not appear in your output at all, not even where one would be correct: they read \
+as machine-written, and this text is going out as the speaker's own. Use a comma, a \
+period, or a plain hyphen instead. For the same reason, never reach for polished \
+connective phrasing the speaker did not actually say.
+
 FORMATTING MODE: if a \"# Formatting Mode\" section is appended below, follow its guidance on \
 structure, whitespace, paragraphing, and formality for the target medium. That latitude covers \
 only how the already-spoken words are presented — never invent facts, answers, greetings, or \

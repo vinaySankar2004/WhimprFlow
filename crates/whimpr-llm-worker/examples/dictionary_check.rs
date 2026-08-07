@@ -7,8 +7,9 @@
 //! the exact production chain end to end:
 //!
 //!   DictionaryStore::prefilter -> CleanupContext.vocab -> build_messages
-//!     -> the real whimpr-llm-worker process -> post_process -> gates::evaluate
-//!     -> apply_listed_mishears -> the text that would actually be pasted
+//!     -> the real whimpr-llm-worker process -> post_process -> de_dash
+//!     -> gates::evaluate -> apply_listed_mishears -> force_lowercase (Messaging)
+//!     -> the text that would actually be pasted
 //!
 //! Three things this harness insists on, each because leaving it out lets a green
 //! run mean nothing:
@@ -31,16 +32,22 @@
 //! Usage (model path optional; defaults to the installed one):
 //!   cargo run -p whimpr-llm-worker --example dictionary_check --release [-- <model.gguf>]
 //!   cargo run -p whimpr-llm-worker --example dictionary_check --release -- --audit
+//!   cargo run -p whimpr-llm-worker --example dictionary_check --release -- --messaging
 //!
 //! `--audit` skips the model entirely and reports on *your* real dictionary.json:
 //! which entries can never be selected, and which are risky enough to over-fire.
+//!
+//! `--messaging` runs every case at `CleanupLevel::Messaging` instead of Light. The
+//! dictionary must keep working there: the level lowercases its authoritative
+//! spelling, so the expectation is matched case-insensitively, but a dropped
+//! correction is still a failure.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
 use whimpr_core::cleanup::{
-    build_messages, evaluate_gates, post_process, CleanupContext, CleanupLevel, GateVerdict,
-    VocabEntry,
+    build_messages, de_dash, evaluate_gates, messaging_style, post_process, CleanupContext,
+    CleanupLevel, GateVerdict, VocabEntry,
 };
 use whimpr_core::dictionary::{DictSource, DictionaryStore, MAX_NORMALIZED_DISTANCE};
 
@@ -165,12 +172,22 @@ fn main() -> anyhow::Result<()> {
         return audit_real_dictionary();
     }
 
-    let model = args.into_iter().next().unwrap_or_else(default_model);
+    // Messaging is the level where the chain has the most to get wrong: the
+    // dictionary writes a capital and the level takes it away again.
+    let level = if args.iter().any(|a| a == "--messaging") {
+        CleanupLevel::Messaging
+    } else {
+        CleanupLevel::Light
+    };
+    let model = args
+        .into_iter()
+        .find(|a| !a.starts_with("--"))
+        .unwrap_or_else(default_model);
     if !std::path::Path::new(&model).exists() {
         anyhow::bail!("model not found: {model}");
     }
     let worker = worker_binary();
-    println!("worker: {worker}\nmodel:  {model}\n");
+    println!("worker: {worker}\nmodel:  {model}\nlevel:  {level:?}\n");
 
     let mut child = Command::new(&worker)
         .arg(&model)
@@ -219,13 +236,14 @@ fn main() -> anyhow::Result<()> {
 
         // "without" gets no dictionary at all — no prompt entries and no deterministic
         // pass — so a pass only counts when the same transcript fails bare.
-        let with = run(&mut stdin, &mut stdout, case.transcript, vocab.clone(), &store)?;
+        let with = run(&mut stdin, &mut stdout, case.transcript, vocab.clone(), &store, level)?;
         let without = run(
             &mut stdin,
             &mut stdout,
             case.transcript,
             Vec::new(),
             &DictionaryStore::default(),
+            level,
         )?;
 
         println!("   with:      {}{}", with.pasted, gate_note(&with));
@@ -233,8 +251,8 @@ fn main() -> anyhow::Result<()> {
 
         match case.kind {
             Kind::Corrects => {
-                let hit = with.pasted.contains(case.expect);
-                let baseline = without.pasted.contains(case.expect);
+                let hit = shows(&with.pasted, case.expect, level);
+                let baseline = shows(&without.pasted, case.expect, level);
                 let kept = keeps_the_sentence(case.transcript, &with.pasted, case);
                 if !hit {
                     println!("   FAIL — expected {:?} in the pasted text\n", case.expect);
@@ -254,7 +272,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             Kind::LeavesAlone => {
-                if with.pasted.contains(case.expect) {
+                if shows(&with.pasted, case.expect, level) {
                     println!(
                         "   FAIL — dictionary over-fired: {:?} appeared in ordinary speech\n",
                         case.expect
@@ -307,8 +325,8 @@ fn run(
     raw: &str,
     vocab: Vec<VocabEntry>,
     dict: &DictionaryStore,
+    level: CleanupLevel,
 ) -> anyhow::Result<Outcome> {
-    let level = CleanupLevel::Light;
     let ctx = CleanupContext { level, vocab: vocab.clone(), ..Default::default() };
     let messages: Vec<serde_json::Value> = build_messages(raw, &ctx)
         .into_iter()
@@ -325,18 +343,22 @@ fn run(
     if let Some(err) = resp.get("error").and_then(|e| e.as_str()) {
         anyhow::bail!("worker error: {err}");
     }
-    let cleaned = post_process(resp.get("text").and_then(|t| t.as_str()).unwrap_or_default().trim());
+    let cleaned = de_dash(&post_process(
+        resp.get("text").and_then(|t| t.as_str()).unwrap_or_default().trim(),
+    ));
     let raw_out = post_process(raw);
 
     let (gated, rejected) = match evaluate_gates(&raw_out, &cleaned, level, &vocab) {
         GateVerdict::Pass => (cleaned, None),
         GateVerdict::Fail(reason) => (raw_out, Some(format!("{reason:?}"))),
     };
-    // Same last step as the app: whatever survived the gates, the mishears the user
-    // listed are enforced on it.
-    let pasted = dict.apply_listed_mishears(&gated);
+    // Same last two steps as the app: whatever survived the gates, the mishears the
+    // user listed are enforced on it, and only then does Messaging lowercase it —
+    // the dictionary writes a capitalized spelling, so the order is load-bearing.
+    let fixed = dict.apply_listed_mishears(&gated);
+    let pasted = if level.forces_lowercase() { messaging_style(&fixed) } else { fixed.clone() };
     Ok(Outcome {
-        deterministic: pasted != gated,
+        deterministic: fixed != gated,
         pasted,
         rejected,
     })
@@ -349,6 +371,16 @@ fn run(
 /// Words the dictionary was *meant* to change are excluded from both sides of the
 /// ratio — the mishears, and the words of the correct spelling itself. Counting a
 /// mishear as a word that must survive asks the fix not to happen.
+/// Did the authoritative spelling reach the cursor? Messaging lowercases the whole
+/// paste, names included, so at that level "manvi" is the fix landing, not missing.
+fn shows(pasted: &str, expect: &str, level: CleanupLevel) -> bool {
+    if level.forces_lowercase() {
+        pasted.to_lowercase().contains(&expect.to_lowercase())
+    } else {
+        pasted.contains(expect)
+    }
+}
+
 fn keeps_the_sentence(raw: &str, out: &str, case: &Case) -> bool {
     const FILLERS: &[&str] = &["um", "uh", "er", "like", "you", "know", "i", "mean", "so"];
 

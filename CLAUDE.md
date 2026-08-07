@@ -13,10 +13,11 @@ odd parts are odd. Everything below is the working agreement on top of it.
 ```bash
 ./dev.sh                                  # Vite + app, hot reload
 ./scripts/install-macos.sh                # build + install to /Applications + verify permissions
-cargo test -p whimpr-core -p whimpr-ipc   # 84 tests, fast, no models needed
+cargo test -p whimpr-core -p whimpr-ipc   # 97 tests, fast, no models needed
 cd ui && node_modules/.bin/tsc --noEmit   # typecheck the UI
 cargo run -p whimpr-llm-worker --example dictionary_check --release            # dictionary, end to end
 cargo run -p whimpr-llm-worker --example dictionary_check --release -- --audit # your own dictionary, no model
+cargo run -p whimpr-llm-worker --example dictionary_check --release -- --messaging # same, at the Messaging level
 ```
 
 ## Documentation is a source of truth, not a snapshot
@@ -102,6 +103,13 @@ These are not hypotheticals; each one bit during development.
   as: Geeta)` in the prompt. Rewording the vocabulary block does not move it; that was
   measured. `apply_listed_mishears` enacts them after cleanup instead — do not fold it
   back into the prompt.
+- **The Messaging register is enforced after the model, not by it.** Asked for
+  lowercase and no trailing full stops, the real model delivers about half — "thanks
+  manvi" came back bare, "…before it lapses." kept its period. `messaging_style` is
+  what makes it true, and it must run *after* `apply_listed_mishears`: the dictionary
+  writes the capitalized authoritative spelling, so lowercasing earlier leaves a
+  corrected name as the one capital in the message. Same shape as the em-dash ban,
+  which `de_dash` enacts before the gate so the gate judges what actually gets pasted.
 - **The gates must see the utterance's vocab.** `gates::evaluate` takes the
   prefiltered entries, because a dictionary fix is a word that is *not* in the raw
   transcript and otherwise reads as a hallucination. Pass `&[]` only when there
