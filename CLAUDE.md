@@ -58,6 +58,9 @@ These are not hypotheticals; each one bit during development.
   dictated into, which paste depends on.
 - **Re-signing can invalidate TCC grants.** The install script compares the
   designated requirement across updates and says so when it changes.
+- **Do not "fix" the in-process Fn tap on principle.** The callback is cheap, heavy
+  work already runs on spawned threads, and tap-disabled-by-timeout is caught and
+  re-enabled. Move it to the sidecar when a real symptom appears, not before.
 
 ## Conventions
 

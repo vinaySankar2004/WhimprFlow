@@ -16,6 +16,9 @@ path = "src/main.rs"
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+# Stateful UTF-8 decoder for token_to_piece: multi-byte characters can straddle
+# two tokens, so one decoder has to span the whole generation.
+encoding_rs = "0.8"
 
 # examples/dictionary_check.rs drives the real prompt-assembly path against this
 # worker, so it needs core's dictionary + cleanup. Dev-only: the worker binary

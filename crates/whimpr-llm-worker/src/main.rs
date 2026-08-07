@@ -14,7 +14,7 @@ use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaModel, Special};
+use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 use serde::{Deserialize, Serialize};
 
@@ -123,13 +123,26 @@ fn generate(backend: &LlamaBackend, model: &LlamaModel, req: &Request) -> anyhow
     let mut out = String::new();
     let limit = n_prompt + req.max_tokens;
 
+    // ONE decoder for the whole generation, not one per token. A multi-byte UTF-8
+    // character can straddle two tokens, and only a decoder that carries the partial
+    // bytes across the boundary can reassemble it; the deprecated `token_to_str`
+    // news up a fresh decoder per call, which is why upstream deprecated it.
+    //
+    // Measured, so nobody re-litigates this: with Qwen3-4B, emoji, ZWJ flags, CJK
+    // and combining accents all round-trip cleanly through the OLD path too — the
+    // detokenizer evidently hands back whole characters for these. So this is the
+    // correct API rather than a fix for an observed bug. Keep it anyway: correctness
+    // here costs nothing and does not depend on a tokenizer's incidental behavior.
+    let mut decoder = encoding_rs::UTF_8.new_decoder();
+
     while n_cur <= limit {
         let token = sampler.sample(&ctx, batch.n_tokens() - 1);
         sampler.accept(token);
         if model.is_eog_token(token) {
             break;
         }
-        out.push_str(&model.token_to_str(token, Special::Tokenize)?);
+        // `true` = render special tokens, matching the old Special::Tokenize.
+        out.push_str(&model.token_to_piece(token, &mut decoder, true, None)?);
         batch.clear();
         batch.add(token, n_cur, &[0], true)?;
         n_cur += 1;

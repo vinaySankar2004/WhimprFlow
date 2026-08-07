@@ -178,8 +178,14 @@ means adding the branches back, not maintaining dead ones now.
 
 ## Known rough edges
 
-- The Fn tap runs in-process. Heavy inference on a starved machine can stall it;
-  `whimpr-ipc` and `whimpr-sidecar` exist to move it out but are not wired up.
+- The Fn tap runs in-process rather than in a sidecar. Less alarming than it
+  sounds, and measured rather than assumed: the tap callback only steps the state
+  machine, every heavy stage (ASR, cleanup, paste) is dispatched to a spawned
+  thread, and `kCGEventTapDisabledByTimeout` is caught and re-enabled on the spot.
+  `whimpr-ipc` (protocol, tested) and `whimpr-sidecar` (still a standalone demo,
+  does not speak that protocol) exist to move it out. Worth doing if stuck or
+  missed Fn presses ever show up in practice; until then it is speculative work
+  that would add a second binary needing its own TCC grant, bundling and signing.
 - No notarization or installer pipeline. Local install only.
 - The Hub's Insights pane and stats are lightly exercised compared to the
   dictation path.
