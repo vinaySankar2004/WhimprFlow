@@ -511,10 +511,31 @@ mod imp {
         }
     }
 
+    /// Produce the text to paste: cleanup, then the dictionary's listed mishears
+    /// enforced on whatever came out of it.
+    ///
+    /// The order matters and the second step is not redundant. Cleanup already gets the
+    /// vocabulary in its prompt and usually applies it, but "usually" is the problem:
+    /// the model declines exactly when the mis-heard form is itself a plausible name,
+    /// which is the case users add an entry for. Running last also means a listed
+    /// mishear is fixed on every path a prompt cannot reach — cleanup off, gates
+    /// rejected the edit, provider down.
+    fn clean_transcript(raw: &str) -> String {
+        let text = run_cleanup(raw);
+        let Some(dict) = DICTIONARY.get() else {
+            return text;
+        };
+        let fixed = dict.lock().unwrap().apply_listed_mishears(&text);
+        if fixed != text {
+            eprintln!("[whimpr] DICTIONARY: \"{fixed}\"");
+        }
+        fixed
+    }
+
     /// Clean a raw transcript per the current settings (mode + level), feeding in the
     /// dictionary vocabulary relevant to this utterance. Falls back to raw whenever
     /// cleanup is off, the provider is unavailable, it errors, or the gates reject it.
-    fn clean_transcript(raw: &str) -> String {
+    fn run_cleanup(raw: &str) -> String {
         let settings = current_settings();
         let level = settings.cleanup_level;
         if matches!(settings.cleanup_mode, CleanupMode::Raw) || level.bypasses_llm() {

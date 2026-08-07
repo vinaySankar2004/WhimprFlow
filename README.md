@@ -31,7 +31,9 @@ choose a cloud cleanup engine — and even then, only the transcript, never the 
   anything is pasted. Esc is watched only while a dictation is live, never otherwise.
 - **Hold or toggle** — hold Fn while you speak, or switch to press-to-start /
   press-to-stop under Settings → Dictation Key.
-- **Personal dictionary + auto-learn** — teach it names and jargon; a post-paste
+- **Personal dictionary + auto-learn** — teach it names and jargon. A mis-hearing you
+  list is applied verbatim rather than left to the cleanup model's judgement, so it
+  lands even when the mis-heard spelling looks like a perfectly good name. A post-paste
   Accessibility observer notices one-word corrections and learns them.
 - **Usage stats and history** — words, WPM, day streak, time saved, 7-day activity, plus
   a searchable, paged log of past dictations. All on this machine, and one button

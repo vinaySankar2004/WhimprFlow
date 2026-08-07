@@ -8,7 +8,7 @@
 //!
 //!   DictionaryStore::prefilter -> CleanupContext.vocab -> build_messages
 //!     -> the real whimpr-llm-worker process -> post_process -> gates::evaluate
-//!     -> the text that would actually be pasted
+//!     -> apply_listed_mishears -> the text that would actually be pasted
 //!
 //! Three things this harness insists on, each because leaving it out lets a green
 //! run mean nothing:
@@ -69,6 +69,8 @@ struct Case {
 
 const MANVI: (&str, &[&str]) = ("Manvi", &["Monvi", "Manvee"]);
 const CHARGEBEE: (&str, &[&str]) = ("ChargeBee", &["charge bee"]);
+const GEETHA: (&str, &[&str]) = ("Geetha", &["Gita", "Geeta"]);
+const ABISHEK: (&str, &[&str]) = ("Abishek", &["Abhishek"]);
 
 const CASES: &[Case] = &[
     Case {
@@ -107,6 +109,25 @@ const CASES: &[Case] = &[
         entries: &[MANVI, CHARGEBEE],
         transcript: "ask monvi about charge bee",
         expect: "ChargeBee",
+        kind: Kind::Corrects,
+    },
+    // The model's blind spot, and why `apply_listed_mishears` exists. It substitutes a
+    // mishear that looks like a mistake and refuses one that looks like a real name —
+    // "Geeta" is a perfectly good spelling, so the precision guard in the vocabulary
+    // block tells it to leave the word alone. Strengthening that block does not move
+    // it. Only the deterministic pass makes this case land.
+    Case {
+        name: "listed mishear that is itself a plausible spelling",
+        entries: &[GEETHA],
+        transcript: "hey geeta how's it going",
+        expect: "Geetha",
+        kind: Kind::Corrects,
+    },
+    Case {
+        name: "two plausible-looking mishears in one sentence",
+        entries: &[GEETHA, ABISHEK],
+        transcript: "my brother's name is Abhishek and my mom's name is Geeta",
+        expect: "Geetha",
         kind: Kind::Corrects,
     },
     // ── Precision: the dictionary must not invent corrections ──────────────────
@@ -196,8 +217,16 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
 
-        let with = run(&mut stdin, &mut stdout, case.transcript, vocab.clone())?;
-        let without = run(&mut stdin, &mut stdout, case.transcript, Vec::new())?;
+        // "without" gets no dictionary at all — no prompt entries and no deterministic
+        // pass — so a pass only counts when the same transcript fails bare.
+        let with = run(&mut stdin, &mut stdout, case.transcript, vocab.clone(), &store)?;
+        let without = run(
+            &mut stdin,
+            &mut stdout,
+            case.transcript,
+            Vec::new(),
+            &DictionaryStore::default(),
+        )?;
 
         println!("   with:      {}{}", with.pasted, gate_note(&with));
         println!("   without:   {}{}", without.pasted, gate_note(&without));
@@ -254,13 +283,20 @@ struct Outcome {
     pasted: String,
     /// Set when the gates rejected the cleanup, so the raw transcript was pasted.
     rejected: Option<String>,
+    /// True when the deterministic listed-mishear pass, not the model, made the fix.
+    /// Worth surfacing: it means the prompt alone would not have produced this.
+    deterministic: bool,
 }
 
 fn gate_note(o: &Outcome) -> String {
-    match &o.rejected {
+    let mut s = match &o.rejected {
         Some(why) => format!("   ⟵ GATE REJECTED ({why}), raw pasted"),
         None => String::new(),
+    };
+    if o.deterministic {
+        s.push_str("   ⟵ fixed by the listed-mishear pass, not the model");
     }
+    s
 }
 
 /// One cleanup round-trip through the worker, followed by the same post-processing
@@ -270,6 +306,7 @@ fn run(
     stdout: &mut BufReader<std::process::ChildStdout>,
     raw: &str,
     vocab: Vec<VocabEntry>,
+    dict: &DictionaryStore,
 ) -> anyhow::Result<Outcome> {
     let level = CleanupLevel::Light;
     let ctx = CleanupContext { level, vocab: vocab.clone(), ..Default::default() };
@@ -291,12 +328,17 @@ fn run(
     let cleaned = post_process(resp.get("text").and_then(|t| t.as_str()).unwrap_or_default().trim());
     let raw_out = post_process(raw);
 
-    Ok(match evaluate_gates(&raw_out, &cleaned, level, &vocab) {
-        GateVerdict::Pass => Outcome { pasted: cleaned, rejected: None },
-        GateVerdict::Fail(reason) => Outcome {
-            pasted: raw_out,
-            rejected: Some(format!("{reason:?}")),
-        },
+    let (gated, rejected) = match evaluate_gates(&raw_out, &cleaned, level, &vocab) {
+        GateVerdict::Pass => (cleaned, None),
+        GateVerdict::Fail(reason) => (raw_out, Some(format!("{reason:?}"))),
+    };
+    // Same last step as the app: whatever survived the gates, the mishears the user
+    // listed are enforced on it.
+    let pasted = dict.apply_listed_mishears(&gated);
+    Ok(Outcome {
+        deterministic: pasted != gated,
+        pasted,
+        rejected,
     })
 }
 
@@ -373,7 +415,8 @@ fn audit_real_dictionary() -> anyhow::Result<()> {
     println!("\n{} entries, {at_risk} worth adding a mishear to.", store.entries.len());
     println!(
         "Tip: the surest fix is to add what Whisper actually wrote. Dictate the word, look at\n\
-         what landed, and paste that in as a mishear — guessing the spelling is the hard way."
+         what landed, and paste that in as a mishear — guessing the spelling is the hard way.\n\
+         A listed mishear is then applied verbatim; only unlisted guesses depend on the model."
     );
     Ok(())
 }

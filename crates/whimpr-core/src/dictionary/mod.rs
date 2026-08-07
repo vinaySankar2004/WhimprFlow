@@ -84,6 +84,73 @@ impl DictionaryStore {
         self.entries.len() != before
     }
 
+    /// Rewrite every **listed** mishear in `text` to its entry's spelling, verbatim.
+    ///
+    /// The cleanup model is asked to do this too, and cannot be relied on to. It
+    /// applies the substitution readily when the mis-heard form looks like a mistake
+    /// ("monvi" -> "Manvi") and refuses when it looks like a perfectly good word —
+    /// which is exactly the case a user adds an entry for. Observed against the
+    /// shipped 4B model: "Gita" alone became "Geetha", while "Hey Geeta, how's it
+    /// going?" came back untouched, and no amount of instruction in the vocabulary
+    /// block changed it. To the model, "Geeta" is a correct spelling of a name and the
+    /// precision guard ("if the sentence still makes sense with the word the speaker
+    /// used, leave it alone") tells it to stop. It is right in general and wrong here,
+    /// because the user already answered the question by typing the mishear.
+    ///
+    /// So a listed mishear is not a judgment call: the user stated "when you hear this
+    /// exact string, write that one", and this enacts it. Unlisted near-misses stay the
+    /// model's job — that is where the judgment actually lives, and where
+    /// [`Self::prefilter`]'s precision work matters. Same division as
+    /// [`crate::cleanup::post_process`]: the model does the smart part, this guarantees
+    /// the mechanical one.
+    ///
+    /// Runs on the text about to be pasted, whatever produced it — so it also works
+    /// when cleanup is off, when the gates rejected the edit, and when the provider
+    /// failed, none of which a prompt can reach.
+    pub fn apply_listed_mishears(&self, text: &str) -> String {
+        let mut rules: Vec<(Vec<char>, &str)> = Vec::new();
+        for e in &self.entries {
+            for m in &e.mishears {
+                // Users add a mishear by pasting what landed in the field, so it arrives
+                // with the sentence's punctuation still attached ("Vinayk."). Left in, the
+                // phrase can never match anything.
+                let m = m.trim_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace());
+                // A mishear that IS the spelling is a no-op that would still cost a scan.
+                if m.is_empty() || m.eq_ignore_ascii_case(&e.correct) {
+                    continue;
+                }
+                rules.push((m.chars().collect(), e.correct.as_str()));
+            }
+        }
+        if rules.is_empty() {
+            return text.to_string();
+        }
+        // Longest first, so a multi-word mishear wins over one of its own words.
+        rules.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+        let chars: Vec<char> = text.chars().collect();
+        let n = chars.len();
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        'scan: while i < n {
+            // Only at a word boundary — "Geeta" must not fire inside "Geetanjali".
+            if i == 0 || !chars[i - 1].is_alphanumeric() {
+                for (phrase, correct) in &rules {
+                    if let Some(end) = match_phrase(&chars, i, phrase) {
+                        if end == n || !chars[end].is_alphanumeric() {
+                            out.push_str(correct);
+                            i = end;
+                            continue 'scan;
+                        }
+                    }
+                }
+            }
+            out.push(chars[i]);
+            i += 1;
+        }
+        out
+    }
+
     /// Select the entries relevant to `utterance` — those whose spelling or a known
     /// mishear is edit-close to a spoken token (or adjacent token pair, to catch
     /// split words like "charge bee" → "ChargeBee") — capped to `max`.
@@ -200,6 +267,40 @@ pub fn ground_truth_mishear(raw_transcript: &str, observed: &str) -> Option<Stri
 /// simply to keep the observed form.
 const MAX_GROUND_TRUTH_DISTANCE: f32 = 0.55;
 
+/// Does `phrase` occur in `chars` starting at `start`, ignoring case? Returns the
+/// index just past the match.
+///
+/// A space in the phrase matches any run of whitespace, so a two-word mishear still
+/// matches across the line break or double space a transcript may have put there.
+fn match_phrase(chars: &[char], start: usize, phrase: &[char]) -> Option<usize> {
+    let mut i = start;
+    let mut p = 0;
+    while p < phrase.len() {
+        if phrase[p] == ' ' {
+            let before = i;
+            while i < chars.len() && chars[i].is_whitespace() {
+                i += 1;
+            }
+            if i == before {
+                return None;
+            }
+            p += 1;
+            continue;
+        }
+        if i >= chars.len() || !same_char(chars[i], phrase[p]) {
+            return None;
+        }
+        i += 1;
+        p += 1;
+    }
+    Some(i)
+}
+
+/// Case-insensitive char comparison that also folds non-ASCII letters.
+fn same_char(a: char, b: char) -> bool {
+    a == b || a.to_lowercase().eq(b.to_lowercase())
+}
+
 /// Normalized edit distance, 0 = identical.
 fn score(a: &str, b: &str) -> f32 {
     let maxlen = a.chars().count().max(b.chars().count());
@@ -309,6 +410,82 @@ mod tests {
     #[test]
     fn ground_truth_skips_an_exact_match() {
         assert_eq!(ground_truth_mishear("tell monvi about it", "monvi"), None);
+    }
+
+    /// The regression this pass exists for, verbatim from the user's dictionary and
+    /// the transcript that failed: the model leaves a mis-heard name alone when the
+    /// mishear is itself a plausible spelling, so the substitution cannot be left to it.
+    #[test]
+    fn listed_mishears_are_applied_even_when_the_model_would_not() {
+        let mut s = DictionaryStore::default();
+        s.add("Abishek", vec!["Abhishek".into()], DictSource::Manual);
+        s.add("Geetha", vec!["Gita".into(), "Geeta".into()], DictSource::Manual);
+        assert_eq!(
+            s.apply_listed_mishears("My brother's name is Abhishek and my mom's name is Geeta."),
+            "My brother's name is Abishek and my mom's name is Geetha."
+        );
+    }
+
+    /// Whole words only. A mishear that is a prefix of a longer name must not fire
+    /// inside it, or "Geeta" quietly mangles "Geetanjali".
+    #[test]
+    fn listed_mishears_only_match_whole_words() {
+        let mut s = DictionaryStore::default();
+        s.add("Geetha", vec!["Geeta".into()], DictSource::Manual);
+        assert_eq!(s.apply_listed_mishears("Geetanjali"), "Geetanjali");
+        assert_eq!(s.apply_listed_mishears("ageeta"), "ageeta");
+        // A possessive is a boundary, so the name inside it is still fixed.
+        assert_eq!(s.apply_listed_mishears("Geeta's car"), "Geetha's car");
+    }
+
+    /// Case is recognition's to get wrong; the entry's spelling is what gets written.
+    #[test]
+    fn listed_mishears_match_regardless_of_case() {
+        let mut s = DictionaryStore::default();
+        s.add("Manvi", vec!["Monvi".into()], DictSource::Manual);
+        assert_eq!(s.apply_listed_mishears("monvi and MONVI"), "Manvi and Manvi");
+    }
+
+    /// Users add a mishear by pasting what landed in the field, punctuation and all.
+    /// Stored as "Vinayk." it would otherwise never match the token "Vinayk".
+    #[test]
+    fn a_mishear_stored_with_punctuation_still_matches() {
+        let mut s = DictionaryStore::default();
+        s.add("Vinayak", vec!["Vinayk.".into()], DictSource::Manual);
+        assert_eq!(s.apply_listed_mishears("hey Vinayk, hi"), "hey Vinayak, hi");
+    }
+
+    /// A multi-word mishear is one phrase, and beats a shorter rule that overlaps it.
+    #[test]
+    fn multi_word_mishears_are_matched_as_a_phrase() {
+        let mut s = DictionaryStore::default();
+        s.add("ChargeBee", vec!["charge bee".into()], DictSource::Manual);
+        s.add("Sankaranarayanan", vec!["Shankar Narayanan.".into()], DictSource::Manual);
+        assert_eq!(s.apply_listed_mishears("renew charge bee soon"), "renew ChargeBee soon");
+        assert_eq!(
+            s.apply_listed_mishears("Vinayak Shankar Narayanan speaking"),
+            "Vinayak Sankaranarayanan speaking"
+        );
+    }
+
+    /// This pass enacts what the user listed and nothing else. An unlisted near-miss
+    /// stays the model's judgment call, and text with no listed mishear is untouched.
+    #[test]
+    fn unlisted_near_misses_are_left_to_the_model() {
+        let s = store();
+        assert_eq!(s.apply_listed_mishears("tell manvie about it"), "tell manvie about it");
+        assert_eq!(s.apply_listed_mishears("the weather is nice"), "the weather is nice");
+    }
+
+    /// An entry with no mishears listed asks for nothing, and a mishear equal to the
+    /// spelling is a no-op — neither may disturb the text.
+    #[test]
+    fn entries_with_nothing_to_apply_are_inert() {
+        let mut s = DictionaryStore::default();
+        s.add("Wei", Vec::new(), DictSource::Manual);
+        s.add("Manvi", vec!["manvi".into()], DictSource::Manual);
+        let text = "Wei asked Manvi about it";
+        assert_eq!(s.apply_listed_mishears(text), text);
     }
 
     #[test]

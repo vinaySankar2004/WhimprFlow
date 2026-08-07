@@ -22,6 +22,7 @@ Fn up / 2nd press / ■ → StopCaptureAndFinalize     ✕ → DiscardCapture (n
                             ├─ accept_prompted: else keep pass 1        ┘ vocab hit
                             ├─ cleanup provider (local | OpenAI | Anthropic | raw)
                             ├─ gates: reject over-editing ────→ fall back to raw
+                            ├─ apply_listed_mishears: enforce what the user listed
                             └─ clipboard save → ⌘V → restore → paste
                                                   └─→ autolearn watches for a fix
 ```
@@ -172,6 +173,30 @@ close mistakes", a small model will happily put a product name where an ordinary
 verb was; `assemble_user_message` spells out that entries are proper nouns and that
 a word making sense as spoken should be left alone.
 
+### A listed mishear is not the model's decision
+
+That precision guard is right in general and has one blind spot, which is the case
+users hit most: **the model substitutes a mishear that looks like a mistake and
+refuses one that looks like a real name.** With `Geetha (mis-heard as: Gita, Geeta)`
+in the prompt, the shipped 4B model turned a bare "Gita" into "Geetha" and left "Hey
+Geeta, how's it going?" exactly as it was — "Geeta" is a perfectly good spelling, the
+sentence makes sense as spoken, so the guard says stop. Rewriting the block to insist
+that listed mishears are mandatory changed nothing on either sentence.
+
+`DictionaryStore::apply_listed_mishears` runs afterwards and enacts them: every
+**listed** mishear, matched whole-word and case-insensitively (multi-word ones as a
+phrase, longest rule first), becomes its entry's spelling. Not a second guess at the
+model's job — the user already answered the question by typing the mishear, so there
+is no judgment left to exercise. Unlisted near-misses stay entirely the model's, which
+is where `prefilter`'s precision work matters.
+
+It runs on the text about to be pasted, whichever path produced it, so a listed
+mishear is also fixed where no prompt can reach: cleanup off, gates rejected the edit,
+provider down. Mishears are punctuation-trimmed first, because users add one by
+pasting what landed in the field ("Vinayk.") and the stray period would stop it ever
+matching. Same division of labour as `post_process`: the model does the smart part,
+this guarantees the mechanical one.
+
 ### Every utterance gets a second of silence appended
 
 whisper.cpp will not begin a new segment within a second of the end of the audio
@@ -252,9 +277,11 @@ cargo run -p whimpr-llm-worker --example dictionary_check --release -- --audit
 Three things the harness insists on, each because leaving it out lets a green run
 mean nothing:
 
-- **It asserts on the pasted text, not the model's reply** — running `post_process`
-  and the gates, because a cleanup the gates reject never reaches the cursor. The
-  version that stopped at the model's reply could not see the gate bug above.
+- **It asserts on the pasted text, not the model's reply** — running `post_process`,
+  the gates and `apply_listed_mishears`, because a cleanup the gates reject never
+  reaches the cursor. The version that stopped at the model's reply could not see the
+  gate bug above. A case the deterministic pass rescued says so in its output, since
+  that means the prompt alone would not have produced it.
 - **Every case runs twice, with and without the entry.** A model that already knew
   the spelling would otherwise look like a working dictionary; that outcome is
   reported as `PASS (weak)` rather than banked.
