@@ -3,7 +3,7 @@
 # Builds WhimprFlow for macOS the way it has to be built to be *installable* by
 # someone who is not the person who built it.
 #
-# v0.1.0 shipped signed with "Apple Development: mannbellani@icloud.com" — a
+# v0.1.0 shipped signed with an "Apple Development: ..." certificate — a
 # development certificate. It passed every local check and then refused to open
 # on the first user's Mac ("cannot be opened because it is from an unidentified
 # developer"), because a development certificate is not a distribution one.
@@ -35,7 +35,6 @@ cd "$(dirname "$0")/.."
 REPO_ROOT="$PWD"
 TARGET=""
 SKIP_NOTARIZE=0
-DEFAULT_IDENTITY="Developer ID Application: Mann Bellani (R5R3ZS54LV)"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -45,7 +44,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-IDENTITY="${APPLE_SIGNING_IDENTITY:-$DEFAULT_IDENTITY}"
+# No baked-in default. The proof-of-concept this began as hardcoded its own author's
+# Developer ID here, which is not this project's identity and is not something to
+# publish as a build default — so the identity is stated explicitly or not at all.
+IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
+if [ -z "$IDENTITY" ]; then
+  echo "Set APPLE_SIGNING_IDENTITY to a 'Developer ID Application: ...' identity." >&2
+  echo "Codesigning identities in this keychain:" >&2
+  security find-identity -v -p codesigning >&2
+  exit 1
+fi
 
 # A development certificate signs cleanly and is still refused by Gatekeeper.
 # Catching that here costs a second; catching it in a bug report costs a user.

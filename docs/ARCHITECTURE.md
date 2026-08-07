@@ -575,7 +575,16 @@ means adding the branches back, not maintaining dead ones now.
   does not speak that protocol) exist to move it out. Worth doing if stuck or
   missed Fn presses ever show up in practice; until then it is speculative work
   that would add a second binary needing its own TCC grant, bundling and signing.
-- No notarization or installer pipeline. Local install only.
+- **Not notarized.** There is a release pipeline —
+  `install-macos.sh --package` produces a signed, checksummed zip and
+  `scripts/setup-macos.sh` installs it on a machine that never built it (see
+  [INSTALL.md](INSTALL.md)) — but it signs with an Apple *Development* certificate,
+  so the recipient's script has to clear the download's quarantine flag before first
+  launch. Gatekeeper only assesses quarantined files, which is why that works at all.
+  `scripts/build-macos.sh` is the notarized path and needs a Developer ID this
+  project does not have; enrolling would replace the quarantine step with a
+  double-clickable dmg, at the cost of invalidating every existing install's TCC
+  grants once, since the designated requirement changes with the identity.
 - The Hub's Insights pane and stats are lightly exercised compared to the
   dictation path. Its **Your Voice** tab is still a placeholder: the raw transcript
   it needs is now being stored (see *Where the data lives*), but nothing computes

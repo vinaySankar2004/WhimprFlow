@@ -13,8 +13,17 @@ GPU, then tidied up (fillers removed, spoken self-corrections resolved, punctuat
 lists and newlines) by a local LLM. Nothing leaves the machine unless you explicitly
 choose a cloud cleanup engine — and even then, only the transcript, never the audio.
 
-**macOS 14+ (Apple Silicon)**, build from source. There's no signed installer yet, so
-`git clone` plus the steps below is how you run it.
+**macOS 14+ (Apple Silicon).** One command installs it — no Rust, Node or Xcode
+needed, and no clone:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vinaySankar2004/WhimprFlow/main/scripts/setup-macos.sh | bash
+```
+
+That fetches the latest release, verifies it, downloads the two models, and tells you
+the one thing it can't do for you — granting Accessibility, which macOS lets no
+program grant itself. Full walkthrough and troubleshooting in
+[docs/INSTALL.md](docs/INSTALL.md). To build it yourself instead, see **Build** below.
 
 ## What's in it
 
@@ -69,10 +78,16 @@ Use `install-macos.sh` rather than `tauri build` directly — it bundles the LLM
 which the Tauri bundler does not. An app missing the worker starts fine, transcribes
 fine, and silently pastes raw uncleaned text.
 
+To publish a build for someone else, `./scripts/install-macos.sh --package <dir>`
+produces the signed, checksummed zip that `setup-macos.sh` expects. It is a mode of
+the same script so the worker-bundling and signing order can't drift from the path
+every local install exercises.
+
 ## Models
 
-Not committed — they're multi-GB. Put them in
-`~/Library/Application Support/WhimprFlow/models/`:
+Not committed — they're multi-GB. The one-line installer above downloads them for you,
+picking the cleanup model to match the machine's RAM. Doing it by hand instead, put
+them in `~/Library/Application Support/WhimprFlow/models/`:
 
 - **Whisper** — `ggml-large-v3-turbo-q5_0.bin` (547 MB) from
   [huggingface.co/ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp).
@@ -102,8 +117,10 @@ Settings → Keyboard → "Press 🌐 key to" → Do Nothing**; the emoji picker
 
 - **Not affiliated with, endorsed by, or connected to Wispr Flow or any other product.**
   An independent, from-scratch implementation with its own name, branding, and code.
-- **Still rough in places.** No notarization or release pipeline; error handling is thin.
-  Known rough edges are listed at the end of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- **Still rough in places.** Not notarized — the installer clears the download's
+  quarantine flag, which is safe because Gatekeeper only assesses quarantined files,
+  and the code signature is verified either way. Error handling is thin. Known rough
+  edges are listed at the end of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **Privacy.** ASR and default cleanup run on-device. Cloud cleanup is opt-in and sends
   only the transcript. API keys never touch disk in plaintext.
 

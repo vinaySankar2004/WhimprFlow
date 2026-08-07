@@ -20,7 +20,21 @@
 # see the designated-requirement check below, which is what keeps the Accessibility
 # and Microphone grants from silently going stale on every update.
 #
+# Packaging for someone else (--package <dir>): the same build and the same worker
+# copy, signed with a real Apple timestamp and zipped with ditto, ready for
+# `gh release upload`. Deliberately a mode of this script rather than a third one —
+# the sequence below (worker in, nested code signed before the bundle) is the part
+# that is easy to get wrong, and a second copy of it would drift.
+#
+# It is not scripts/build-macos.sh, which demands a Developer ID and notarizes. There
+# is no Developer ID here, so the recipient clears the download's quarantine flag
+# instead and scripts/setup-macos.sh does that for them. Gatekeeper only ever
+# assesses *quarantined* files, so a cleared bundle launches happily on an Apple
+# Development certificate — the v0.1.0 failure was a quarantined one, which is a
+# different situation, not this one.
+#
 # Usage: scripts/install-macos.sh [--no-launch] [--reset-permissions]
+#        scripts/install-macos.sh --package <output-dir>
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -29,21 +43,29 @@ APP_DEST="/Applications/WhimprFlow.app"
 BUNDLE_ID="com.whimpr.whimprflow"
 LAUNCH=1
 RESET_PERMS=0
+PACKAGE_DIR=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-launch) LAUNCH=0; shift ;;
     --reset-permissions) RESET_PERMS=1; shift ;;
+    --package) PACKAGE_DIR="${2:?--package needs an output directory}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+# A signature with no secure timestamp stops verifying once the signing certificate
+# expires, which for an Apple Development cert is a year out. Irrelevant for a local
+# install that gets rebuilt constantly; not irrelevant for a zip someone else keeps.
+TIMESTAMP_ARG="--timestamp=none"
+[ -n "$PACKAGE_DIR" ] && TIMESTAMP_ARG="--timestamp"
 
 # TCC keys a permission grant to the app's designated requirement. Capture the
 # outgoing app's DR so the new build can be compared against it: if they match, the
 # existing grants keep working; if they drift, they silently stop and the fix is to
 # clear the stale entry rather than let the user wonder why Fn died.
 OLD_DR=""
-if [ -d "$APP_DEST" ]; then
+if [ -z "$PACKAGE_DIR" ] && [ -d "$APP_DEST" ]; then
   OLD_DR="$(codesign -d -r- "$APP_DEST" 2>/dev/null | sed -n 's/^designated => //p')"
 fi
 
@@ -91,16 +113,51 @@ WORKER="$REPO_ROOT/target/release/whimpr-llm-worker"
 echo "==> Adding the LLM worker to the bundle"
 cp "$WORKER" "$APP/Contents/MacOS/whimpr-llm-worker"
 
+# Sign a bundle with no stray extended attributes on it. ditto preserves xattrs into
+# the zip, so anything clinging to the build travels to the recipient.
+xattr -cr "$APP" 2>/dev/null || true
+
 # Nested code first, then the bundle — signing the outer bundle seals what is inside
 # it, so doing this in the other order invalidates the signature immediately.
 codesign --force --sign "$IDENTITY" --options runtime \
-  --entitlements "$REPO_ROOT/src-tauri/Entitlements.plist" --timestamp=none \
+  --entitlements "$REPO_ROOT/src-tauri/Entitlements.plist" "$TIMESTAMP_ARG" \
   "$APP/Contents/MacOS/whimpr-llm-worker"
 codesign --force --sign "$IDENTITY" --options runtime \
-  --entitlements "$REPO_ROOT/src-tauri/Entitlements.plist" --timestamp=none "$APP"
+  --entitlements "$REPO_ROOT/src-tauri/Entitlements.plist" "$TIMESTAMP_ARG" "$APP"
 
 echo "==> Verifying the signature"
 codesign --verify --deep --strict "$APP"
+
+# Packaging stops here: nothing is installed, nothing on this machine is touched.
+if [ -n "$PACKAGE_DIR" ]; then
+  mkdir -p "$PACKAGE_DIR"
+  ZIP="$PACKAGE_DIR/WhimprFlow.app.zip"
+  echo "==> Zipping for release"
+  # ditto, not `zip`: it is the only archiver that round-trips a bundle's symlinks
+  # and extended attributes, and a zip that loses them unpacks into a broken
+  # signature on the far side.
+  rm -f "$ZIP"
+  /usr/bin/ditto -c -k --keepParent "$APP" "$ZIP"
+
+  # setup-macos.sh checks the download against this, so a truncated transfer is
+  # caught before it becomes "the app is damaged".
+  shasum -a 256 "$ZIP" | awk '{print $1}' > "$ZIP.sha256"
+
+  VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "$REPO_ROOT/src-tauri/tauri.conf.json" | head -1)"
+
+  echo
+  echo "Zip:     $ZIP"
+  echo "SHA256:  $(cat "$ZIP.sha256")"
+  echo "Signed:  $IDENTITY"
+  echo "Version: $VERSION"
+  echo
+  echo "Publish it:"
+  echo "  gh release create \"v$VERSION\" \"$ZIP\" \"$ZIP.sha256\" --generate-notes"
+  echo "Or replace the assets on an existing release:"
+  echo "  gh release upload \"v$VERSION\" \"$ZIP\" \"$ZIP.sha256\" --clobber"
+  exit 0
+fi
 
 # A running copy cannot be replaced in place, and macOS keeps the old binary alive.
 if pgrep -f "$APP_DEST/Contents/MacOS/whimpr-tauri" >/dev/null 2>&1; then
