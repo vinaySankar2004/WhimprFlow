@@ -17,6 +17,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 
+# examples/dictionary_check.rs drives the real prompt-assembly path against this
+# worker, so it needs core's dictionary + cleanup. Dev-only: the worker binary
+# itself stays dependency-light.
+[dev-dependencies]
+whimpr-core = { path = "../whimpr-core" }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 llama-cpp-2 = { version = "0.1", features = ["metal"] }
 

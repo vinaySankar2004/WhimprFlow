@@ -632,8 +632,8 @@ mod imp {
             use objc2_app_kit::NSSound;
             use objc2_foundation::ns_string;
             // A system sound, so nothing has to ship in the bundle.
-            if let Some(sound) = unsafe { NSSound::soundNamed(ns_string!("Pop")) } {
-                unsafe { sound.play() };
+            if let Some(sound) = NSSound::soundNamed(ns_string!("Pop")) {
+                sound.play();
             }
         });
     }

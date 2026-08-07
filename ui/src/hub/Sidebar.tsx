@@ -2,16 +2,7 @@ import { font } from "../tokens/values";
 import { theme } from "./theme";
 import { Icon, type IconName } from "./icons";
 
-export type Page =
-  | "home"
-  | "insights"
-  | "dictionary"
-  | "snippets"
-  | "style"
-  | "transforms"
-  | "scratchpad"
-  | "settings"
-  | "help";
+export type Page = "home" | "insights" | "dictionary" | "settings" | "help";
 
 type NavDef = { key: Page; label: string; icon: IconName };
 
@@ -19,10 +10,6 @@ const MAIN: NavDef[] = [
   { key: "home", label: "Home", icon: "home" },
   { key: "insights", label: "Insights", icon: "insights" },
   { key: "dictionary", label: "Dictionary", icon: "dictionary" },
-  { key: "snippets", label: "Snippets", icon: "snippets" },
-  { key: "style", label: "Style", icon: "style" },
-  { key: "transforms", label: "Transforms", icon: "transforms" },
-  { key: "scratchpad", label: "Scratchpad", icon: "scratchpad" },
 ];
 
 const BOTTOM: NavDef[] = [

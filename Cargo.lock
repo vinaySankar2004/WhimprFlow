@@ -4923,6 +4923,7 @@ dependencies = [
  "llama-cpp-2",
  "serde",
  "serde_json",
+ "whimpr-core",
 ]
 
 [[package]]

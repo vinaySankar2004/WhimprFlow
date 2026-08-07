@@ -42,7 +42,7 @@
 - Session cap: max 20 min; warning at 19 min ("your session is almost up"/"less than a minute left"); auto-stops at 20 min → transcribe + paste once.
 
 ### D. HOVER BEHAVIOR
-- Hover ENLARGES pill. Surfaces: language picker (one-click switch), Transforms/Polish "wand" icon (click to apply to highlighted text), chevron-up (▲) opens transforms dropdown, tooltips (reflow vertically when side-docked). Polish bubble gated rollout in Wispr; we ship it visible.
+- Hover ENLARGES pill. Surfaces: language picker (one-click switch), tooltips (reflow vertically when side-docked).
 
 ### E. MENU-BAR (system tray) — use NSStatusItem directly (NOT MenuBarExtra — macOS 15 lacks 1st-party open-state/NSWindow access; SettingsLink unreliable). App `activationPolicy=.accessory` (no Dock icon).
 - Dropdown items (mirror Wispr): Open WhimprFlow · Paste last transcript · Shortcuts · Microphone · Languages · Help Center · Talk to support · Share feedback.
@@ -51,8 +51,8 @@
 - When Hub focused, full macOS app menu bar: WhimprFlow · File · Edit · Dictation · Customization · View · Help · Window.
 
 ### F. HUB (main window) + SETTINGS
-- Left sidebar: Home (history + stats: Total Words, WPM radial gauge w/ percentile vs global typing, Corrections by Flow, Usage Streak heatmap, App Usage breakdown), Dictionary (✨ sparkle = auto-learned), Snippets, Style, Scratchpad, Settings, Help, Refer a Friend, Invite your team.
-- Settings → General (Shortcuts, Microphone, Languages) · System (Launch at login, Show Flow Bar, Show in dock, sound toggles, "Mute music while dictating" [Mac default OFF], notification categories, Scratchpad opening behavior, Extras → Auto-add to dictionary, Reset & restart) · Vibe Coding (Variable Recognition, File Tagging) · Experimental (Command Mode, Press Enter Command, Bulk Import) · Account (edit name+pic ≤5MB, Sign Out, Delete Account), Plans & Billing, Data & Privacy (Privacy Mode, Context Awareness ON by default). NEW pane for us: "Cleanup Engine" (Local ⇄ Claude toggle + API key + model picker + Auto Cleanup level None/Light/Medium/High).
+- Left sidebar: Home (history + stats: Total Words, WPM radial gauge w/ percentile vs global typing, Corrections by Flow, Usage Streak heatmap, App Usage breakdown), Dictionary (✨ sparkle = auto-learned), Settings, Help, Refer a Friend, Invite your team.
+- Settings → General (Shortcuts, Microphone, Languages) · System (Launch at login, Show Flow Bar, Show in dock, sound toggles, "Mute music while dictating" [Mac default OFF], notification categories, Extras → Auto-add to dictionary, Reset & restart) · Vibe Coding (Variable Recognition, File Tagging) · Experimental (Command Mode, Press Enter Command, Bulk Import) · Account (edit name+pic ≤5MB, Sign Out, Delete Account), Plans & Billing, Data & Privacy (Privacy Mode, Context Awareness ON by default). NEW pane for us: "Cleanup Engine" (Local ⇄ Claude toggle + API key + model picker + Auto Cleanup level None/Light/Medium/High).
 - Typography: Figtree (UI base), EB Garamond (serif headings), GoogleSansCode/Manrope (mono). Editor: font-size 15px, weight 550, padding 12px. Weights regular 400 / emphasis 550 / strong 600. Type scale (size/lh): body-xxs 10/18, body-xs 12/20, body-sm 15/20, body-md 16/24, body-lg 18/28; heading-sm 18/24, heading-md 20/28, heading-lg 24/32, heading-xl 28/34, heading-2xl 32/40; serif 28/36/48/72. Border radius scale: Inputs/Buttons 12px, Cards 32px, Sections 40–80px, Badges/Pills 9999px. Border: 2px solid. Motion: primary easing cubic-bezier(0.05,0.6,0.4,0.95); durations 280ms dominant / 150/200/250/300/420 / micro 80-150ms; spring-duration 0.2s.
 
 ### G. ONBOARDING (Mac, step order)
@@ -90,7 +90,6 @@
 | Prompt Engineer Transform | **Opt+2** | — |
 | View Diff | **Opt+O** | — |
 | Repolish styles 2–5 | Opt+2/3/4/5 | — |
-| Open Scratchpad | Opt+S (user-set) | — |
 | Hub history back/fwd | Cmd+[ / Cmd+] | — |
 Default depends on hardware: Apple Fn present → Fn; else Ctrl+Opt. Apple Fn is a hardware signal only on Apple-built keyboards → Fn only fires from the built-in MacBook keyboard; 3rd-party keyboards must rebind to Ctrl+Opt or Opt+Cmd.
 
@@ -148,11 +147,8 @@ CLONE-NOW = MVP; CLONE-LATER = post-MVP; SKIP = out of scope for local-first clo
 | Menu-bar item + Flow Menu (right-click) | Tray dropdown + on-bar menu | CLONE-NOW | Primary control affordance. |
 | Launch at login (SMAppService) | Off by default, user toggle | CLONE-NOW | Table-stakes utility; small. |
 | Drag-to-dock (bottom/left/right + vertical reflow + Esc-cancel) | Reposition + persist | CLONE-LATER | Nice-to-have; bottom-center default suffices for MVP. |
-| Snippets / text expansion | Voice-triggered static blocks (JSON bulk import) | CLONE-LATER | Useful, self-contained; not core loop. |
 | Styles / tone per app category | Formal/Casual/Very Casual/Excited; caps+punct only | CLONE-LATER | Depends on context-awareness; adds polish. |
 | Context awareness (AX read before/selected/after) | Read ~200 chars around caret, frontmost app | CLONE-LATER | Improves cleanup; needs care (AX stalls). |
-| Command Mode / Transforms / Polish | Select→speak→rewrite in place; wand; diff viewer | CLONE-LATER | Heavy-rewrite path; separate prompt; higher effort. |
-| Scratchpad (multi-tab rich editor, images, versions) | Lexical-class notepad | CLONE-LATER | Standalone product surface; large. |
 | Dictation history + audio retention (14 days) | Home list, delete, undo-AI-edit, retry | CLONE-LATER | Requires encrypted store; medium. |
 | Stats/streaks/WPM/insights | Radial gauge, percentile, heatmap, leaderboard | CLONE-LATER | Engagement fluff; build after core. |
 | Live-preview streaming ASR (Parakeet-EOU) | Partial text during hold | CLONE-LATER | Wispr deliberately does NOT do this; optional divergence. |
@@ -409,11 +405,11 @@ Three TCC grants, requested in sequence at onboarding, polled on a timer to auto
 - Exit criteria: correcting "Monvi"→"Manvi" once makes it stick next time.
 
 ### M8 — Hub, history, settings, stats (L)
-- Hub sidebar (Home/Dictionary/Snippets/Style/Scratchpad/Settings/Help), encrypted SQLite history + retention controls + Undo-AI-edit, Settings panes incl. Cleanup Engine + Auto Cleanup, stats gauges. Launch-at-login (SMAppService). Sparkle auto-update.
+- Hub sidebar (Home/Insights/Dictionary/Settings/Help), encrypted SQLite history + retention controls + Undo-AI-edit, Settings panes incl. Cleanup Engine + Auto Cleanup, stats gauges. Launch-at-login (SMAppService). Sparkle auto-update.
 - Exit criteria: history persists; undo recovers raw; settings drive behavior.
 
 ### M9 — CLONE-LATER features (parallelizable, L each)
-- Drag-to-dock + vertical reflow + Esc-cancel; Command Mode + Transforms/Polish + diff viewer; Snippets; Styles/tone per app + context-awareness (AX read, off main thread); optional live-preview streaming (Parakeet-EOU); WhisperKit fallback engine; "Mute music while dictating"; hands-free rolling-chunk long-session path.
+- Drag-to-dock + vertical reflow + Esc-cancel; context-awareness (AX read, off main thread); optional live-preview streaming (Parakeet-EOU); WhisperKit fallback engine; "Mute music while dictating"; hands-free rolling-chunk long-session path.
 
 ### Cross-cutting
 - Build the paired eval harness (raw_asr, gold_cleaned) early (Switchboard/MultiTurnCleanup + own dictations) to regression-test cleanup aggressiveness; measure "coverage" (info preserved) as the anti-over-editing metric; human eval, not BLEU.

@@ -8,8 +8,6 @@ import { Insights } from "./Insights";
 import { DictionaryPane } from "./DictionaryPane";
 import { SettingsPane } from "./SettingsPane";
 import { Help } from "./Help";
-import { ComingSoon } from "./ComingSoon";
-import type { IconName } from "./icons";
 import {
   getSettings,
   setSettings,
@@ -19,30 +17,6 @@ import {
   DEFAULT_SETTINGS,
   EMPTY_STATUS,
 } from "./api";
-
-// Placeholder screens that are routed but not yet built.
-const SOON: Partial<Record<Page, { icon: IconName; title: string; desc: string }>> = {
-  snippets: {
-    icon: "snippets",
-    title: "Snippets",
-    desc: "Save reusable phrases and expand them by voice — signatures, addresses, boilerplate.",
-  },
-  style: {
-    icon: "style",
-    title: "Style",
-    desc: "Tune WhimprFlow's tone and formatting so cleaned-up text always sounds like you.",
-  },
-  transforms: {
-    icon: "transforms",
-    title: "Transforms",
-    desc: "Turn a quick spoken thought into an email, a summary, or a to-do with one command.",
-  },
-  scratchpad: {
-    icon: "scratchpad",
-    title: "Scratchpad",
-    desc: "A quiet place to dictate long-form and shape it before it lands anywhere else.",
-  },
-};
 
 export function App() {
   const [page, setPage] = useState<Page>("home");
@@ -67,8 +41,6 @@ export function App() {
     return <Onboarding status={status} refresh={refresh} onEnter={() => setEntered(true)} />;
   }
 
-  const soon = SOON[page];
-
   return (
     <div
       style={{
@@ -89,7 +61,6 @@ export function App() {
             <SettingsPane settings={settings} onChange={update} status={status} refresh={refresh} />
           )}
           {page === "help" && <Help />}
-          {soon && <ComingSoon icon={soon.icon} title={soon.title} desc={soon.desc} />}
         </div>
       </main>
     </div>

@@ -1,10 +1,9 @@
 //! WhimprFlow Tauri shell.
 //!
-//! Runs as a macOS accessory (menu-bar) app: a tray item, a transparent
-//! always-on-top Flow Bar overlay, and a hidden Hub window. This is the M0
-//! skeleton — the sidecar supervisor, real state-machine bridge, and native
-//! panel promotion arrive in later milestones. The overlay already listens for
-//! `whimpr://flowbar/state`, so the tray demo items prove the event pipeline.
+//! A tray item, the Hub window, and the floating Flow Bar overlay — a transparent
+//! non-activating NSPanel that renders the pill and follows the user across Spaces,
+//! including other apps' full-screen ones. State reaches it as `whimpr://flowbar/state`
+//! events emitted by the hotkey layer, which owns the real state machine.
 
 mod appctx;
 mod autolearn;
@@ -18,16 +17,11 @@ use serde::Serialize;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 const OVERLAY_LABEL: &str = "whimpr_bar";
 const HUB_LABEL: &str = "main";
-
-#[derive(Clone, Serialize)]
-struct BarStatePayload {
-    state: &'static str,
-}
 
 /// Anchor the overlay window bottom-center of the monitor the user is on.
 ///
@@ -187,10 +181,6 @@ fn build_hub(app: &tauri::App) -> tauri::Result<WebviewWindow> {
         .min_inner_size(720.0, 480.0)
         .visible(true)
         .build()
-}
-
-fn emit_bar_state(app: &tauri::AppHandle, state: &'static str) {
-    let _ = app.emit_to(OVERLAY_LABEL, "whimpr://flowbar/state", BarStatePayload { state });
 }
 
 /// Keep the overlay window in step with what the pill is showing.
@@ -392,12 +382,9 @@ pub fn run() {
             hotkey::install(app.handle().clone());
 
             let open = MenuItem::with_id(app, "open", "Open WhimprFlow", true, None::<&str>)?;
-            let demo_rec =
-                MenuItem::with_id(app, "demo_rec", "Demo: recording", true, None::<&str>)?;
-            let demo_idle = MenuItem::with_id(app, "demo_idle", "Demo: idle", true, None::<&str>)?;
             let sep = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit WhimprFlow", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &demo_rec, &demo_idle, &sep, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &sep, &quit])?;
 
             let mut tray = TrayIconBuilder::new()
                 .menu(&menu)
@@ -409,8 +396,6 @@ pub fn run() {
                             let _ = w.set_focus();
                         }
                     }
-                    "demo_rec" => emit_bar_state(app, "recording"),
-                    "demo_idle" => emit_bar_state(app, "idle"),
                     "quit" => app.exit(0),
                     _ => {}
                 });
