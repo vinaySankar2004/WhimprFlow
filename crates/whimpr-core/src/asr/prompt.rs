@@ -79,6 +79,9 @@ pub fn accept_prompted(unprompted: &str, prompted: &str, vocab: &[VocabEntry]) -
     // Multiset difference in both directions: a word repeated four times where it was
     // said once is three additions, not zero.
     let mut added = 0usize;
+    // Of those, the ones the unprompted pass did not have AT ALL. Only these can be a
+    // name Whisper missed outright, which is the case the slack below exists for.
+    let mut added_absent = 0usize;
     for (tok, n_after) in &after {
         let n_before = before.get(tok).copied().unwrap_or(0);
         if n_after > &n_before {
@@ -88,6 +91,9 @@ pub fn accept_prompted(unprompted: &str, prompted: &str, vocab: &[VocabEntry]) -
                 return false;
             }
             added += n_after - n_before;
+            if n_before == 0 {
+                added_absent += n_after - n_before;
+            }
         }
     }
     let mut removed = 0usize;
@@ -99,9 +105,18 @@ pub fn accept_prompted(unprompted: &str, prompted: &str, vocab: &[VocabEntry]) -
     }
 
     // A correction swaps words: one out, one in ("monvi" -> "Manvi"), or two out and
-    // one in when recognition split a name ("charge bee" -> "ChargeBee"). Slack of one
-    // covers a name Whisper simply missed; beyond that it is inserting, not correcting.
-    added <= removed + 1
+    // one in when recognition split a name ("charge bee" -> "ChargeBee").
+    //
+    // The slack of one covers a name Whisper simply missed — but ONLY for a word the
+    // unprompted pass did not have at all. An extra copy of a word that was already
+    // there is not a missed name, it is the glossary echoing, and with a one-word
+    // dictionary that echo costs exactly one addition and used to slip through: "Hey,
+    // how's it going? My name is Vinayak." came back as "Vinayak. Hey, how's it going?
+    // My name is Vinayak." Both transcripts contain the name, the echo is authorized,
+    // and the count was within slack. Whisper emits prompt echoes at the START, so the
+    // symptom is the last word of the utterance appearing as the first.
+    let slack = if added_absent > 0 { 1 } else { 0 };
+    added <= removed + slack
 }
 
 /// Lowercased alphanumeric word counts, splitting on every non-alphanumeric character
@@ -222,6 +237,43 @@ mod tests {
         assert!(!accept_prompted(
             "call monvi",
             "call Manvi Manvi Manvi",
+            &vocab(&["Manvi"])
+        ));
+    }
+
+    /// Observed against real audio, and the narrowest form of the echo: a one-word
+    /// glossary echoed once, into an utterance that legitimately contains the name.
+    /// Every earlier check waves this through — the extra word is authorized, and one
+    /// addition against no removal used to sit inside the slack. Whisper puts prompt
+    /// echoes at the front, so the user sees the last word of what they said turn up
+    /// as the first word of what they get.
+    #[test]
+    fn rejects_a_single_echo_of_a_name_the_utterance_already_contained() {
+        assert!(!accept_prompted(
+            "Hey, how's it going? My name is Vinayak.",
+            "Vinayak. Hey, how's it going? My name is Vinayak.",
+            &vocab(&["Vinayak"])
+        ));
+    }
+
+    /// The other side of that line: a name genuinely absent from the unprompted pass
+    /// is what the slack of one is FOR, and must still be accepted.
+    #[test]
+    fn accepts_a_name_the_unprompted_pass_missed_entirely() {
+        assert!(accept_prompted(
+            "hey how's it going my name is",
+            "hey how's it going my name is Vinayak",
+            &vocab(&["Vinayak"])
+        ));
+    }
+
+    /// And a repeat that IS matched by a removal stays a substitution: the speaker said
+    /// the name twice, one of the two came back mis-heard, the prompted pass fixed it.
+    #[test]
+    fn accepts_a_duplicate_that_a_removal_pays_for() {
+        assert!(accept_prompted(
+            "monvi said Manvi would call",
+            "Manvi said Manvi would call",
             &vocab(&["Manvi"])
         ));
     }

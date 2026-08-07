@@ -13,7 +13,7 @@ odd parts are odd. Everything below is the working agreement on top of it.
 ```bash
 ./dev.sh                                  # Vite + app, hot reload
 ./scripts/install-macos.sh                # build + install to /Applications + verify permissions
-cargo test -p whimpr-core -p whimpr-ipc   # 74 tests, fast, no models needed
+cargo test -p whimpr-core -p whimpr-ipc   # 77 tests, fast, no models needed
 cd ui && node_modules/.bin/tsc --noEmit   # typecheck the UI
 cargo run -p whimpr-llm-worker --example dictionary_check --release            # dictionary, end to end
 cargo run -p whimpr-llm-worker --example dictionary_check --release -- --audit # your own dictionary, no model

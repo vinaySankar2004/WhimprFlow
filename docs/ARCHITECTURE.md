@@ -204,6 +204,16 @@ silence, Whisper echoes the glossary back, and every echoed word is "authorized"
 check that only asked whether the new words were in the dictionary would wave it
 straight through.
 
+"No more than it displaced" carries a slack of one, for a name Whisper missed
+outright — and that slack applies **only to a word the unprompted pass did not have
+at all**. An extra copy of a word already in the transcript is never a missed name;
+it is the glossary echoing. That distinction is not academic: with a one-word
+dictionary the echo costs exactly one addition, so it fits inside a flat slack.
+Observed, and now a test — *"Hey, how's it going? My name is Vinayak."* came back as
+*"Vinayak. Hey, how's it going? My name is Vinayak."* Whisper emits prompt echoes at
+the **start**, so the symptom a user reports is the last word of the utterance turning
+up as the first.
+
 The second pass runs only when the pre-filter matched something, so the overwhelming
 majority of dictations take the single-pass path unchanged. `set_no_context(true)` does
 not cancel the prompt; whisper.cpp clears `prompt_past` first and then rotates the
