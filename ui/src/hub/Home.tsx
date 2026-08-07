@@ -3,13 +3,18 @@ import { font, palette } from "../tokens/values";
 import { theme } from "./theme";
 import { Card, useStats } from "./ui";
 import { Icon } from "./icons";
-import { getHistory, type HistoryItem, type StatsSummary } from "./api";
+import { getHistory, type HistoryItem, type StatsSummary, type TriggerMode } from "./api";
 import { dayKey, dayLabel, fmtCompact, fmtDuration, fmtNum, fmtTimeOfDay, wordsReference } from "./format";
 
 const UNLOCK_WORDS = 500;
 
+/** "Hold your key" is wrong advice in toggle mode, so the copy follows the setting. */
+function startPhrase(mode: TriggerMode): string {
+  return mode === "hold" ? "Hold your key" : "Tap your key";
+}
+
 // ── Banner ───────────────────────────────────────────────────────────────────
-function Banner() {
+function Banner({ triggerMode }: { triggerMode: TriggerMode }) {
   return (
     <div
       style={{
@@ -49,7 +54,7 @@ function Banner() {
           Cleanup works anywhere you write.
         </div>
         <p style={{ color: palette.slate300, fontSize: 14, lineHeight: 1.55, margin: "10px 0 0" }}>
-          Hold your key, speak, and WhimprFlow types clean text wherever your cursor is.
+          {startPhrase(triggerMode)}, speak, and WhimprFlow types clean text wherever your cursor is.
         </p>
       </div>
     </div>
@@ -102,7 +107,13 @@ function HistoryRow({ item }: { item: HistoryItem }) {
   );
 }
 
-function HistorySection({ history }: { history: HistoryItem[] }) {
+function HistorySection({
+  history,
+  triggerMode,
+}: {
+  history: HistoryItem[];
+  triggerMode: TriggerMode;
+}) {
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
   const filtered = q ? history.filter((h) => h.text.toLowerCase().includes(q)) : history;
@@ -164,7 +175,7 @@ function HistorySection({ history }: { history: HistoryItem[] }) {
       <div style={{ padding: "6px 18px 14px" }}>
         {history.length === 0 ? (
           <div style={{ padding: "36px 8px", textAlign: "center", color: theme.textFaint, fontSize: 13.5 }}>
-            Your dictations will show up here. Hold your key and start speaking.
+            Your dictations will show up here. {startPhrase(triggerMode)} and start speaking.
           </div>
         ) : filtered.length === 0 ? (
           <div style={{ padding: "36px 8px", textAlign: "center", color: theme.textFaint, fontSize: 13.5 }}>
@@ -274,7 +285,7 @@ function StatsCard({ stats }: { stats: StatsSummary }) {
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────────
-export function Home() {
+export function Home({ triggerMode }: { triggerMode: TriggerMode }) {
   const stats = useStats();
   const [history, setHistory] = useState<HistoryItem[]>([]);
 
@@ -307,14 +318,16 @@ export function Home() {
           Welcome back
         </h1>
         <p style={{ color: theme.textMuted, fontSize: 14, margin: "8px 0 0" }}>
-          {today > 0 ? `${fmtNum(today)} words dictated today.` : "Ready when you are — hold your key and speak."}
+          {today > 0
+            ? `${fmtNum(today)} words dictated today.`
+            : `Ready when you are — ${startPhrase(triggerMode).toLowerCase()} and speak.`}
         </p>
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 22, alignItems: "flex-start" }}>
         <div style={{ flex: "1 1 440px", minWidth: 0, display: "flex", flexDirection: "column", gap: 22 }}>
-          <Banner />
-          <HistorySection history={history} />
+          <Banner triggerMode={triggerMode} />
+          <HistorySection history={history} triggerMode={triggerMode} />
         </div>
         <div style={{ flex: "0 0 300px", width: 300, maxWidth: "100%" }}>
           <StatsCard stats={stats} />

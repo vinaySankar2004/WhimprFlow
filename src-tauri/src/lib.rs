@@ -7,6 +7,7 @@
 
 mod appctx;
 mod autolearn;
+mod fnkey;
 mod hotkey;
 mod local_llm;
 mod paste;
@@ -251,6 +252,10 @@ struct StatusReport {
     local_model: Option<String>,
     /// Whisper model filename actually on disk, if any.
     asr_model: Option<String>,
+    /// What macOS does with a lone Fn press: "do_nothing" | "input_source" |
+    /// "emoji" | "dictation" | "unknown". Anything but "do_nothing" fires on top
+    /// of dictation — most visibly as the emoji picker.
+    fn_key_action: &'static str,
 }
 
 #[tauri::command]
@@ -265,7 +270,29 @@ fn get_status() -> StatusReport {
         local_state: local.state,
         local_model: local.model,
         asr_model: hotkey::asr_model_name(),
+        fn_key_action: fnkey::fn_key_action(),
     }
+}
+
+/// Stop the current recording and paste what was said — the pill's ■ button.
+#[tauri::command]
+fn stop_dictation() {
+    hotkey::stop_now();
+}
+
+/// Discard the current dictation, including one already being transcribed — the
+/// pill's ✕ button. Nothing is pasted and nothing is logged to stats.
+#[tauri::command]
+fn cancel_dictation() {
+    hotkey::cancel_now();
+}
+
+/// Open Keyboard settings, where "Press 🌐 key to" lives. WhimprFlow cannot change
+/// it: the Fn action belongs to macOS, and our tap only listens.
+#[tauri::command]
+fn open_keyboard_settings() {
+    #[cfg(target_os = "macos")]
+    open_url("x-apple.systempreferences:com.apple.Keyboard-Settings.extension");
 }
 
 fn has_key(account: &str) -> bool {
@@ -355,6 +382,9 @@ pub fn run() {
             request_microphone,
             request_accessibility,
             request_input_monitoring,
+            open_keyboard_settings,
+            stop_dictation,
+            cancel_dictation,
             set_api_key
         ])
         .setup(|app| {

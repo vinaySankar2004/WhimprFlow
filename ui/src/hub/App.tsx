@@ -54,13 +54,13 @@ export function App() {
       <Sidebar page={page} setPage={setPage} />
       <main style={{ flex: 1, minWidth: 0, overflowY: "auto" }}>
         <div style={{ padding: "36px 44px", margin: "0 auto", maxWidth: 1120 }}>
-          {page === "home" && <Home />}
+          {page === "home" && <Home triggerMode={settings.trigger_mode} />}
           {page === "insights" && <Insights />}
           {page === "dictionary" && <DictionaryPane />}
           {page === "settings" && (
             <SettingsPane settings={settings} onChange={update} status={status} refresh={refresh} />
           )}
-          {page === "help" && <Help />}
+          {page === "help" && <Help triggerMode={settings.trigger_mode} />}
         </div>
       </main>
     </div>

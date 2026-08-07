@@ -1,12 +1,34 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { font, palette } from "../tokens/values";
 import { theme } from "./theme";
 import {
+  openKeyboardSettings,
   requestAccessibility,
   requestMicrophone,
   requestInputMonitoring,
+  type FnKeyAction,
   type Status,
 } from "./api";
+
+/**
+ * What macOS will do on top of dictation, in words, or null when the key is free.
+ * Only "do_nothing" is actually clear — an untouched setting is macOS's default,
+ * which on Apple keyboards opens the emoji picker, so it is worth flagging too.
+ */
+function fnKeyClash(action: FnKeyAction): string | null {
+  switch (action) {
+    case "do_nothing":
+      return null;
+    case "emoji":
+      return "Right now it also opens the emoji picker every time you dictate.";
+    case "input_source":
+      return "Right now it also switches your keyboard input source every time you dictate.";
+    case "dictation":
+      return "Right now it also starts Apple's own dictation every time you dictate.";
+    default:
+      return "It's set to macOS's default, which usually opens the emoji picker when you dictate.";
+  }
+}
 
 // A blocking permission gate: the app can't be used until Accessibility and
 // Microphone are granted. The three permissions are presented in order (each
@@ -21,6 +43,8 @@ function Step({
   locked,
   required,
   onGrant,
+  actionLabel = "Grant",
+  doneLabel = "Granted",
 }: {
   n: number;
   title: string;
@@ -30,6 +54,9 @@ function Step({
   locked: boolean;
   required: boolean;
   onGrant: () => void;
+  /** Button text — not every step is a permission grant. */
+  actionLabel?: string;
+  doneLabel?: string;
 }) {
   return (
     <div
@@ -73,7 +100,7 @@ function Step({
         <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 2 }}>{detail}</div>
       </div>
       {done ? (
-        <span style={{ color: theme.accentDeep, fontSize: 13, fontWeight: 600 }}>Granted</span>
+        <span style={{ color: theme.accentDeep, fontSize: 13, fontWeight: 600 }}>{doneLabel}</span>
       ) : (
         <button
           onClick={onGrant}
@@ -91,7 +118,7 @@ function Step({
             whiteSpace: "nowrap",
           }}
         >
-          Grant
+          {actionLabel}
         </button>
       )}
     </div>
@@ -117,6 +144,16 @@ export function Onboarding({
   const mic = status.microphone;
   const inp = status.input_monitoring;
   const canEnter = acc && mic;
+
+  // The Fn key step is a nag, so it only appears for people who actually have the
+  // clash — but once shown it stays for the session, so fixing it ticks green here
+  // instead of making the step silently vanish.
+  const clash = fnKeyClash(status.fn_key_action);
+  const [everClashed, setEverClashed] = useState(false);
+  useEffect(() => {
+    if (clash) setEverClashed(true);
+  }, [clash]);
+  const emojiish = status.fn_key_action === "emoji" || status.fn_key_action === "unknown";
 
   return (
     <div
@@ -187,6 +224,26 @@ export function Onboarding({
           required={false}
           onGrant={() => requestInputMonitoring()}
         />
+        {(clash || everClashed) && (
+          <Step
+            n={4}
+            title="Free up the Fn key"
+            detail={
+              clash
+                ? `${clash} Set “Press 🌐 key to” to Do Nothing.${
+                    emojiish ? " Emoji stay available on ⌃⌘Space." : ""
+                  }`
+                : "Set to Do Nothing — pressing Fn now only talks to WhimprFlow."
+            }
+            done={!clash}
+            active={!!clash}
+            locked={false}
+            required={false}
+            actionLabel="Open Settings"
+            doneLabel="Off"
+            onGrant={() => openKeyboardSettings()}
+          />
+        )}
 
         <button
           onClick={onEnter}

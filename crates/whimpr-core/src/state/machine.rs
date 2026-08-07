@@ -136,7 +136,15 @@ impl StateMachine {
                 TriggerToken::Down { binding: BindingId::HandsFree, .. },
             ) => self.finalize(session),
 
-            // --- Esc cancels from any active state --------------------------
+            // --- Explicit stop ends whatever is recording -------------------
+            // Mode-agnostic on purpose: the ✕/■ on the pill are reachable in both
+            // hold and toggle sessions, and an explicit stop is never a "tap".
+            (DictationState::Recording { session, .. }, TriggerToken::Stop { .. }) => {
+                self.finalize(session)
+            }
+            (_, TriggerToken::Stop { .. }) => vec![],
+
+            // --- Cancel discards from any active state ----------------------
             (state, TriggerToken::Cancel { at_ms }) => match state {
                 DictationState::Recording { session, .. } => self.cancel(Some(session), at_ms),
                 DictationState::Finalizing { session } => self.cancel(Some(session), at_ms),
@@ -293,6 +301,31 @@ mod tests {
         assert!(a.iter().any(|x| matches!(x, Action::StopCaptureAndFinalize { .. })));
     }
 
+    /// What `TriggerMode::Toggle` relies on: the shell reports a press of the
+    /// dictation key as the hands-free binding, so one press starts a locked
+    /// session, the next ends it, and the key RELEASE in between changes nothing.
+    #[test]
+    fn hands_free_binding_toggles_on_press_and_ignores_release() {
+        let mut m = StateMachine::new();
+        let a = m.step(down(BindingId::HandsFree, 0));
+        assert!(a.iter().any(|x| matches!(x, Action::StartCapture { .. })));
+        assert!(a.iter().any(|x| matches!(x, Action::ShowBar(BarState::Locked))));
+
+        // Releasing the key (the shell always reports a push-to-talk up) must not
+        // stop a locked session — that is the whole point of toggle mode.
+        let a = m.step(up(BindingId::PushToTalk, 40));
+        assert!(a.is_empty());
+        assert!(matches!(m.state(), DictationState::Recording { mode: RecordMode::Locked, .. }));
+
+        // Even a press shorter than HOLD_MIN_MS records: no minimum hold applies.
+        let a = m.step(down(BindingId::HandsFree, 60));
+        assert!(a.iter().any(|x| matches!(x, Action::StopCaptureAndFinalize { .. })));
+        assert!(matches!(m.state(), DictationState::Finalizing { .. }));
+
+        // Presses while the pipeline is still running are ignored, not queued.
+        assert!(m.step(down(BindingId::HandsFree, 100)).is_empty());
+    }
+
     #[test]
     fn lone_tap_times_out_to_idle_and_pastes_nothing() {
         let mut m = StateMachine::new();
@@ -314,6 +347,41 @@ mod tests {
         assert!(a.iter().any(|x| matches!(x, Action::DiscardCapture { .. })));
         assert!(a.iter().any(|x| matches!(x, Action::ShowBar(BarState::Cancelled))));
         assert!(matches!(m.state(), DictationState::Idle));
+    }
+
+    /// Cancelling mid-pipeline still has to name the session, or the shell has no
+    /// way to know WHICH in-flight transcription to abandon before it pastes.
+    #[test]
+    fn cancel_during_finalizing_discards_the_running_session() {
+        let mut m = StateMachine::new();
+        m.step(down(BindingId::PushToTalk, 0));
+        m.step(up(BindingId::PushToTalk, 1_000)); // -> Finalizing
+        let a = m.step(Input::Trigger(TriggerToken::Cancel { at_ms: 1_100 }));
+        assert!(a
+            .iter()
+            .any(|x| matches!(x, Action::DiscardCapture { session } if *session == SessionId(1))));
+        assert!(matches!(m.state(), DictationState::Idle));
+        // The pipeline reporting back afterwards must not resurrect the pill.
+        let a = m.step(Input::Pipeline(PipelineEvent::Committed { session: SessionId(1) }));
+        assert!(a.is_empty());
+    }
+
+    /// The pill's ■ stops a session started either way, with no minimum hold.
+    #[test]
+    fn stop_finalizes_any_recording_mode() {
+        for binding in [BindingId::PushToTalk, BindingId::HandsFree] {
+            let mut m = StateMachine::new();
+            m.step(down(binding, 0));
+            let a = m.step(Input::Trigger(TriggerToken::Stop { at_ms: 10 }));
+            assert!(
+                a.iter().any(|x| matches!(x, Action::StopCaptureAndFinalize { .. })),
+                "{binding:?} session should finalize on stop"
+            );
+            assert!(matches!(m.state(), DictationState::Finalizing { .. }));
+        }
+        // Stop with nothing recording is a no-op, not an empty paste.
+        let mut m = StateMachine::new();
+        assert!(m.step(Input::Trigger(TriggerToken::Stop { at_ms: 0 })).is_empty());
     }
 
     #[test]

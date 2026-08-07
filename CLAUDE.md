@@ -13,7 +13,7 @@ odd parts are odd. Everything below is the working agreement on top of it.
 ```bash
 ./dev.sh                                  # Vite + app, hot reload
 ./scripts/install-macos.sh                # build + install to /Applications + verify permissions
-cargo test -p whimpr-core -p whimpr-ipc   # 38 tests, fast, no models needed
+cargo test -p whimpr-core -p whimpr-ipc   # 43 tests, fast, no models needed
 cd ui && node_modules/.bin/tsc --noEmit   # typecheck the UI
 cargo run -p whimpr-llm-worker --example dictionary_check --release   # dictionary, end to end
 ```
@@ -56,6 +56,12 @@ These are not hypotheticals; each one bit during development.
   onto another app's full-screen Space. Remove any one and it silently disappears
   in a specific situation. Non-activating also keeps focus in the app being
   dictated into, which paste depends on.
+- **macOS runs its own action on the Fn key**, usually the emoji picker, on top of
+  dictation. The setting is `AppleFnUsageType` in the **`com.apple.HIToolbox`**
+  domain — reading it from NSGlobalDomain (`defaults read -g`) says "does not
+  exist" on a machine that has it set, and an absent key means the macOS default
+  (emoji), not "Do Nothing". `fnkey.rs` handles both; do not simplify it to an
+  integer read that defaults to 0, which reports the exact opposite of the truth.
 - **Re-signing can invalidate TCC grants.** The install script compares the
   designated requirement across updates and says so when it changes.
 - **Do not "fix" the in-process Fn tap on principle.** The callback is cheap, heavy
@@ -66,7 +72,8 @@ These are not hypotheticals; each one bit during development.
 
 - **`whimpr-core` is pure.** State machine, prompts, gates, dictionary, settings,
   stats — no I/O, no platform code. This is where tests belong. Native code lives
-  in `src-tauri`: `hotkey.rs` (CGEventTap), `paste.rs`, `autolearn.rs`, `appctx.rs`.
+  in `src-tauri`: `hotkey.rs` (CGEventTap), `paste.rs`, `autolearn.rs`, `appctx.rs`,
+  `fnkey.rs`.
 - **The state machine is a reducer**: `step(input) -> Vec<Action>`. The shell
   enacts actions; it does not re-derive state. Add behavior by emitting an
   `Action`, not by special-casing in the shell.

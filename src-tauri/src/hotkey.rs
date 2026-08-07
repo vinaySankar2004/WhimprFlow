@@ -5,6 +5,11 @@
 //! returns — start the mic, play the ping, drive the pill, transcribe on release,
 //! run cleanup through the configured provider, and paste.
 //!
+//! `Settings::trigger_mode` decides how a press is reported: `Hold` sends the
+//! push-to-talk binding (release finalizes), `Toggle` sends the hands-free one, so
+//! the first press starts a locked session and the next press ends it. The state
+//! machine is unchanged either way — both paths already existed.
+//!
 //! The tap is global only when Accessibility is granted; without it macOS silently
 //! limits it to whenever this app is frontmost, which reads as "dictation does
 //! nothing in other apps". The tap thread therefore waits for the grant and starts
@@ -42,7 +47,7 @@ mod imp {
     use std::path::PathBuf;
     use super::DictEntryDto;
     use std::ptr::{null, null_mut};
-    use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
@@ -111,7 +116,23 @@ mod imp {
     static MACHINE: OnceLock<Mutex<StateMachine>> = OnceLock::new();
     static CLOCK: OnceLock<Instant> = OnceLock::new();
     static FN_IS_DOWN: AtomicBool = AtomicBool::new(false);
+    /// Mirror of `Settings::trigger_mode` for the tap callback. An atomic rather than
+    /// a read of SETTINGS because the callback must stay allocation-free and never
+    /// block: exceeding the hook's timeout gets the tap removed by macOS.
+    static TOGGLE_TRIGGER: AtomicBool = AtomicBool::new(false);
     static TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
+    /// High-water mark of cancelled session ids (0 = none cancelled yet). Stopping
+    /// the mic is not enough to cancel: once the pipeline thread is running it
+    /// already holds the audio, so cancelling mid-transcription would otherwise
+    /// still paste. The thread checks this before each expensive step.
+    ///
+    /// A high-water mark rather than "the cancelled id", and never reset: session
+    /// ids only increase, so `mark >= id` stays true for the abandoned session for
+    /// as long as its thread lives, and is false for every session started after.
+    /// Clearing it at the next record-start looked equivalent and was not — a
+    /// cancelled session whose cleanup runs for several seconds would have had its
+    /// mark wiped by the next dictation and pasted after all.
+    static CANCELLED_SESSION: AtomicU64 = AtomicU64::new(0);
     /// Bundle id of the app that was frontmost at record-start = the paste target.
     /// Cleanup uses it to format for the medium (email vs. text vs. chat).
     static TARGET_APP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -344,8 +365,15 @@ mod imp {
         if let Some(m) = SETTINGS.get() {
             *m.lock().unwrap() = new.clone();
         }
+        cache_trigger_mode(&new);
         let _ = new.save(&settings_path());
         rebuild_providers();
+    }
+
+    /// Publish the trigger mode where the tap callback can read it cheaply.
+    fn cache_trigger_mode(s: &whimpr_core::Settings) {
+        let toggle = matches!(s.trigger_mode, whimpr_core::TriggerMode::Toggle);
+        TOGGLE_TRIGGER.store(toggle, Ordering::SeqCst);
     }
 
     /// (Re)build the cloud cleanup providers from the current keys + settings. Called
@@ -484,9 +512,27 @@ mod imp {
     fn emit_bar(app: &AppHandle, state: &'static str) {
         eprintln!("[whimpr] pill -> {state}");
         let _ = app.emit_to(OVERLAY_LABEL, "whimpr://flowbar/state", BarPayload { state });
-        // Only the recording states draw clickable controls; everything else either
-        // renders nothing (idle) or is a passive label, so let clicks fall through.
-        crate::sync_overlay_window(app, matches!(state, "recording" | "locked"));
+        // States that draw clickable controls must accept clicks; the rest either
+        // render nothing (idle) or are passive labels, so let clicks fall through.
+        // Transcribing counts: its ✕ can still abandon the run before it pastes.
+        crate::sync_overlay_window(app, matches!(state, "recording" | "locked" | "transcribing"));
+    }
+
+    /// Whether this session was cancelled while its pipeline was running.
+    fn is_cancelled(session: whimpr_core::SessionId) -> bool {
+        CANCELLED_SESSION.load(Ordering::SeqCst) >= session.0
+    }
+
+    /// Stop the current recording now and paste what was said — the pill's ■.
+    /// Ignored when nothing is recording.
+    pub fn stop_now() {
+        handle_input(Input::Trigger(TriggerToken::Stop { at_ms: now_ms() }));
+    }
+
+    /// Discard the current dictation entirely — the pill's ✕. Works while recording
+    /// and while transcribing; after the paste has landed there is nothing to undo.
+    pub fn cancel_now() {
+        handle_input(Input::Trigger(TriggerToken::Cancel { at_ms: now_ms() }));
     }
 
     /// Feed one input into the shared state machine and enact its actions.
@@ -577,15 +623,32 @@ mod imp {
                         finish();
                         return;
                     };
+                    // Cancelled while the mic was stopping — don't burn seconds of GPU
+                    // on audio nobody wants. Checked again after ASR and before the
+                    // paste, because each step is long enough to be cancelled during.
+                    if is_cancelled(session) {
+                        eprintln!("[whimpr] cancelled before transcribing — discarded");
+                        return;
+                    }
                     let pcm = whimpr_audio::resample_to_16k(&res.samples, res.sample_rate);
                     match asr.transcribe(&pcm) {
                         Ok(t) => {
                             let raw = t.text;
                             eprintln!("[whimpr] TRANSCRIPT: \"{}\"", raw);
+                            if is_cancelled(session) {
+                                eprintln!("[whimpr] cancelled after transcribing — not pasted");
+                                return;
+                            }
                             // Clean the transcript (cloud LLM if configured), then paste.
                             let text = clean_transcript(&raw);
                             if text != raw {
                                 eprintln!("[whimpr] CLEANED:   \"{}\"", text);
+                            }
+                            // Last gate before the text becomes visible: cleanup can take
+                            // seconds, which is most of the window a user cancels in.
+                            if is_cancelled(session) {
+                                eprintln!("[whimpr] cancelled during cleanup — not pasted");
+                                return;
                             }
                             if !text.is_empty() {
                                 if let Err(e) = crate::paste::paste_text(&text) {
@@ -607,7 +670,12 @@ mod imp {
                     finish();
                 });
             }
-            Action::DiscardCapture { .. } => {
+            // "Throw this session away" — both the audio still being captured and,
+            // if the pipeline already took it, whatever that thread is about to
+            // produce. Without the second half, cancelling mid-transcription still
+            // pastes a few seconds later.
+            Action::DiscardCapture { session } => {
+                CANCELLED_SESSION.fetch_max(session.0, Ordering::SeqCst);
                 if let Some(slot) = CAPTURE.get() {
                     if let Some(handle) = slot.lock().unwrap().take() {
                         let _ = handle.stop();
@@ -662,16 +730,27 @@ mod imp {
                 let was_down = FN_IS_DOWN.swap(down, Ordering::SeqCst);
                 let at_ms = now_ms();
                 if down && !was_down {
-                    eprintln!("[whimpr] Fn DOWN");
+                    // In toggle mode the same key press is reported as the hands-free
+                    // binding, which the machine already treats as "start a locked
+                    // session, and end it on the next press". Nothing in the reducer
+                    // needs to know a setting exists.
+                    let toggle = TOGGLE_TRIGGER.load(Ordering::SeqCst);
+                    let binding = if toggle {
+                        BindingId::HandsFree
+                    } else {
+                        BindingId::PushToTalk
+                    };
+                    eprintln!("[whimpr] Fn DOWN ({})", if toggle { "toggle" } else { "hold" });
                     // Snapshot the paste target now, while the user's app is focused.
                     let target = crate::appctx::frontmost_bundle_id();
                     *TARGET_APP.get_or_init(|| Mutex::new(None)).lock().unwrap() = target;
-                    handle_input(Input::Trigger(TriggerToken::Down {
-                        binding: BindingId::PushToTalk,
-                        at_ms,
-                    }));
+                    handle_input(Input::Trigger(TriggerToken::Down { binding, at_ms }));
                 } else if !down && was_down {
                     eprintln!("[whimpr] Fn UP");
+                    // Sent unconditionally: in toggle mode the session is Locked, and a
+                    // push-to-talk release is a no-op in every state that can reach. That
+                    // also rescues a hold-mode session if the setting is flipped mid-press,
+                    // which suppressing the release would leave recording until the cap.
                     handle_input(Input::Trigger(TriggerToken::Up {
                         binding: BindingId::PushToTalk,
                         at_ms,
@@ -707,9 +786,10 @@ mod imp {
         let settings = whimpr_core::Settings::load(&settings_path());
         let dict = whimpr_core::DictionaryStore::load(&dict_path());
         eprintln!(
-            "[whimpr] cleanup mode: {:?}, level: {:?}",
-            settings.cleanup_mode, settings.cleanup_level
+            "[whimpr] cleanup mode: {:?}, level: {:?}, trigger: {:?}",
+            settings.cleanup_mode, settings.cleanup_level, settings.trigger_mode
         );
+        cache_trigger_mode(&settings);
         let _ = SETTINGS.set(Mutex::new(settings));
         let _ = DICTIONARY.set(Mutex::new(dict));
         let _ = STATS.set(Mutex::new(whimpr_core::StatsStore::load(&stats_path())));
@@ -803,7 +883,7 @@ mod imp {
 }
 
 pub use imp::{
-    asr_model_name, current_settings, dictionary_add, dictionary_entries, dictionary_learn,
-    dictionary_remove, history, install, local_model_status, rebuild_providers, stats_summary,
-    update_settings,
+    asr_model_name, cancel_now, current_settings, dictionary_add, dictionary_entries,
+    dictionary_learn, dictionary_remove, history, install, local_model_status, rebuild_providers,
+    stats_summary, stop_now, update_settings,
 };

@@ -7,7 +7,8 @@
 > requires.
 
 A **local-first voice dictation app for macOS** — hold **Fn**, speak, release, and clean
-text lands wherever your cursor is. Speech is transcribed on-device with Whisper on the
+text lands wherever your cursor is (or press **Fn** once to start and again to stop, if
+you'd rather not hold a key). Speech is transcribed on-device with Whisper on the
 GPU, then tidied up (fillers removed, spoken self-corrections resolved, punctuation,
 lists and newlines) by a local LLM. Nothing leaves the machine unless you explicitly
 choose a cloud cleanup engine — and even then, only the transcript, never the audio.
@@ -25,7 +26,10 @@ choose a cloud cleanup engine — and even then, only the transcript, never the 
 - **Optional cloud cleanup** — OpenAI or Anthropic behind one trait, sharing the exact
   same prompt as the local path. Keys live in the macOS Keychain, **never in a file**.
 - **Floating pill** — a non-activating panel showing idle / recording / processing that
-  follows you across Spaces, including other apps' full-screen ones.
+  follows you across Spaces, including other apps' full-screen ones. ■ stops and pastes,
+  ✕ discards — and ✕ still works while it's transcribing, before anything is pasted.
+- **Hold or toggle** — hold Fn while you speak, or switch to press-to-start /
+  press-to-stop under Settings → Dictation Key.
 - **Personal dictionary + auto-learn** — teach it names and jargon; a post-paste
   Accessibility observer notices one-word corrections and learns them.
 - **Usage stats** — words, WPM, day streak, time saved, 7-day activity, stored locally.
@@ -80,6 +84,11 @@ Exact filenames and the full search order are in [docs/ARCHITECTURE.md](docs/ARC
 Grant **Accessibility** to WhimprFlow. Without it the Fn tap is limited to whenever
 WhimprFlow itself is frontmost, so dictation silently does nothing in every other app.
 The microphone is prompted on first use.
+
+One non-permission setting matters just as much: macOS gives the 🌐/Fn key an action of
+its own — usually the emoji picker — and it fires on top of dictation. Set **System
+Settings → Keyboard → "Press 🌐 key to" → Do Nothing**; the emoji picker stays on
+⌃⌘Space. The app checks this and says so in setup and in Settings → Permissions.
 
 ## Notes
 

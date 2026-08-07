@@ -14,8 +14,14 @@ pub enum TriggerToken {
     Down { binding: BindingId, at_ms: u64 },
     /// A bound chord was released.
     Up { binding: BindingId, at_ms: u64 },
-    /// The cancel key (Esc) was pressed — valid in any state, ignoring modifiers.
+    /// Cancel was invoked (the pill's ✕) — valid in any state, ignoring modifiers.
+    /// Throws the audio away and, if the pipeline is already running, abandons its
+    /// result rather than pasting it.
     Cancel { at_ms: u64 },
+    /// Stop was invoked (the pill's ■): end the recording NOW and paste what was
+    /// said so far, whatever mode it was started in. Unlike [`Self::Up`] this has
+    /// no minimum-hold rule — an explicit stop always means stop.
+    Stop { at_ms: u64 },
     /// A non-trigger key interrupted a partially-held chord; abort it.
     NormalKeyDuringArm,
 }

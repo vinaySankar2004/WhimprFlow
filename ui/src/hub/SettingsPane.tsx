@@ -4,14 +4,17 @@ import { theme } from "./theme";
 import { Button, Card, Dot, PageTitle, Segmented } from "./ui";
 import {
   modelLabel,
+  openKeyboardSettings,
   requestAccessibility,
   requestInputMonitoring,
   requestMicrophone,
   setApiKey,
   type CleanupLevel,
   type CleanupMode,
+  type FnKeyAction,
   type Settings,
   type Status,
+  type TriggerMode,
 } from "./api";
 
 const MODES: { value: CleanupMode; label: string; hint: string }[] = [
@@ -29,6 +32,70 @@ const LEVELS: { value: CleanupLevel; label: string; hint: string }[] = [
   { value: "medium", label: "Medium", hint: "Edit for clarity and conciseness." },
   { value: "high", label: "High", hint: "Rewrite for brevity and polish." },
 ];
+
+const TRIGGERS: { value: TriggerMode; label: string; hint: string }[] = [
+  {
+    value: "hold",
+    label: "Hold to talk",
+    hint: "Hold Fn while you speak, release to finish. (Recommended)",
+  },
+  {
+    value: "toggle",
+    label: "Press to start, press to stop",
+    hint: "Tap Fn once to start listening, tap it again to finish. Nothing to hold down.",
+  },
+];
+
+/**
+ * What macOS itself does with a lone Fn press. WhimprFlow can't change this — the
+ * key tap only listens — so the row explains and opens the pane. "unknown" means
+ * untouched, i.e. macOS's default, which on Apple keyboards is the emoji picker.
+ */
+const FN_KEY_DETAIL: Record<FnKeyAction, string> = {
+  do_nothing: "set to Do Nothing — Fn is WhimprFlow's alone",
+  emoji: "also opens the emoji picker — set it to Do Nothing (emoji stay on ⌃⌘Space)",
+  input_source: "also switches keyboard input source — set it to Do Nothing",
+  dictation: "also starts Apple dictation — set it to Do Nothing",
+  unknown: "macOS default, usually the emoji picker — set it to Do Nothing",
+};
+
+/** A stack of radio-style option cards — one selected, each with a hint under it. */
+function ChoiceList<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: T; label: string; hint: string }[];
+  value: T;
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {options.map((o) => {
+        const selected = value === o.value;
+        return (
+          <button
+            key={o.value}
+            onClick={() => onChange(o.value)}
+            style={{
+              textAlign: "left",
+              cursor: "pointer",
+              borderRadius: 12,
+              padding: "12px 14px",
+              fontFamily: font.ui,
+              background: selected ? theme.accentSoft : theme.cardBgSubtle,
+              border: `1px solid ${selected ? theme.accentSoftBorder : theme.border}`,
+              color: theme.textBody,
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 600, color: theme.textStrong }}>{o.label}</div>
+            <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 2 }}>{o.hint}</div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 /**
  * The line under the Cleanup Engine tabs. Every mode but Local has a fixed
@@ -142,11 +209,16 @@ function PermRow({
   label,
   detail,
   onClick,
+  actionLabel = "Grant",
+  okLabel = "Granted",
 }: {
   ok: boolean;
   label: string;
   detail: string;
   onClick: () => void;
+  /** Not every row is a permission grant — the Fn key row opens a settings pane. */
+  actionLabel?: string;
+  okLabel?: string;
 }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
@@ -157,10 +229,10 @@ function PermRow({
         </span>
       </div>
       {ok ? (
-        <span style={{ color: theme.accentDeep, fontSize: 13, fontWeight: 600 }}>Granted</span>
+        <span style={{ color: theme.accentDeep, fontSize: 13, fontWeight: 600 }}>{okLabel}</span>
       ) : (
         <Button variant="ghost" size="sm" onClick={onClick}>
-          Grant
+          {actionLabel}
         </Button>
       )}
     </div>
@@ -259,30 +331,11 @@ export function SettingsPane({
 
       <Card style={{ marginBottom: 16 }}>
         <SectionTitle>Auto Cleanup</SectionTitle>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {LEVELS.map((l) => {
-            const selected = settings.cleanup_level === l.value;
-            return (
-              <button
-                key={l.value}
-                onClick={() => onChange({ ...settings, cleanup_level: l.value })}
-                style={{
-                  textAlign: "left",
-                  cursor: "pointer",
-                  borderRadius: 12,
-                  padding: "12px 14px",
-                  fontFamily: font.ui,
-                  background: selected ? theme.accentSoft : theme.cardBgSubtle,
-                  border: `1px solid ${selected ? theme.accentSoftBorder : theme.border}`,
-                  color: theme.textBody,
-                }}
-              >
-                <div style={{ fontSize: 14, fontWeight: 600, color: theme.textStrong }}>{l.label}</div>
-                <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 2 }}>{l.hint}</div>
-              </button>
-            );
-          })}
-        </div>
+        <ChoiceList
+          options={LEVELS}
+          value={settings.cleanup_level}
+          onChange={(v) => onChange({ ...settings, cleanup_level: v })}
+        />
       </Card>
 
       <Card style={{ marginBottom: 16 }}>
@@ -298,6 +351,20 @@ export function SettingsPane({
             value={settings.sound_on_start ? "on" : "off"}
             onChange={(v) => onChange({ ...settings, sound_on_start: v === "on" })}
           />
+        </div>
+      </Card>
+
+      <Card style={{ marginBottom: 16 }}>
+        <SectionTitle sub="How the Fn key starts and stops a dictation.">Dictation Key</SectionTitle>
+        <ChoiceList
+          options={TRIGGERS}
+          value={settings.trigger_mode}
+          onChange={(v) => onChange({ ...settings, trigger_mode: v })}
+        />
+        <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 10 }}>
+          {settings.trigger_mode === "hold"
+            ? "Tip: a quick double-tap of Fn also starts a hands-free session that keeps recording until you press Fn again."
+            : "Recording continues after you let go of Fn — press it again to stop. It also stops on its own at the 20-minute session cap."}
         </div>
       </Card>
 
@@ -335,6 +402,19 @@ export function SettingsPane({
             onClick={() => {
               requestInputMonitoring();
               setTimeout(refresh, 1000);
+            }}
+          />
+          {/* Not a permission, but it belongs here: it's the other macOS setting
+              that decides whether pressing Fn does what you expect. */}
+          <PermRow
+            ok={status.fn_key_action === "do_nothing"}
+            label="Fn key action"
+            detail={FN_KEY_DETAIL[status.fn_key_action]}
+            actionLabel="Open"
+            okLabel="Off"
+            onClick={() => {
+              openKeyboardSettings();
+              setTimeout(refresh, 1500);
             }}
           />
         </div>

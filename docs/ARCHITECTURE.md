@@ -8,12 +8,13 @@ leaves it if you explicitly pick a cloud cleanup engine.
 
 ## The loop
 
-Hold **Fn**, speak, release. Text lands at the cursor.
+Hold **Fn**, speak, release. Text lands at the cursor. (Or press once to start and
+again to stop — see *The dictation key* below.)
 
 ```
 Fn down ─ CGEventTap ─→ state machine ─→ StartCapture ─→ cpal mic (16 kHz mono)
                                       └─→ PlayPing      └─→ RMS ──→ pill waveform
-Fn up   ─────────────→ StopCaptureAndFinalize
+Fn up / 2nd press / ■ → StopCaptureAndFinalize     ✕ → DiscardCapture (nothing pastes)
                             │
                             ├─ whisper.cpp (Metal) ──────────→ raw transcript
                             ├─ dictionary.prefilter(raw, 15) ─→ vocab entries
@@ -24,11 +25,54 @@ Fn up   ─────────────→ StopCaptureAndFinalize
 ```
 
 The state machine (`crates/whimpr-core/src/state/`) is a pure reducer:
-`step(input) -> Vec<Action>`. It owns hold-to-talk, double-tap-to-lock, Esc
-cancel, and the session cap. The shell enacts the actions; it never re-derives
-the state. Timing lives in `state/timing.rs`: 200 ms minimum hold, 350 ms
+`step(input) -> Vec<Action>`. It owns hold-to-talk, double-tap-to-lock, explicit
+stop/cancel, and the session cap. The shell enacts the actions; it never
+re-derives the state. Timing lives in `state/timing.rs`: 200 ms minimum hold, 350 ms
 double-tap window, 500 ms cooldown between sessions, 20 min session cap with a
 warning at 19.
+
+## The dictation key
+
+`Settings::trigger_mode` picks how Fn starts and stops a session:
+
+| Mode | Fn down | Fn up |
+|---|---|---|
+| `Hold` (default) | starts a push-to-talk session | finalizes (or, under the 200 ms minimum, arms double-tap-to-lock) |
+| `Toggle` | starts a locked session, or ends the one running | ignored |
+
+This lives entirely in the shell. `hotkey.rs` reports a press as the
+`PushToTalk` binding in hold mode and the `HandsFree` binding in toggle mode; the
+state machine already knew both, so `Toggle` reuses the exact locked-session path
+that double-tap-to-lock drives, and the reducer has no idea a setting exists. The
+mode is mirrored into an atomic (`TOGGLE_TRIGGER`) rather than read from
+`SETTINGS`, because the tap callback must not allocate or block.
+
+The key release is always reported, in both modes. It is a no-op in every state
+toggle mode can produce, and sending it unconditionally means flipping the
+setting mid-press still ends a hold-mode session instead of leaving it recording
+until the cap.
+
+Hold mode keeps its own hands-free path: tap Fn (under 200 ms), then press again
+within 350 ms, and the session locks until the next press. Toggle mode has no
+minimum hold — a press of any length starts recording.
+
+### macOS has its own idea about Fn
+
+The 🌐/Fn key carries a system action — on Apple keyboards, usually the emoji
+picker — and it fires *in addition* to dictation, because our tap is listen-only.
+It is not a bug to be fixed in code: a consuming tap would have to swallow the Fn
+flag change, taking Fn+F1–F12, Fn+arrows and Fn+Delete with it. The fix is
+System Settings → Keyboard → "Press 🌐 key to" → **Do Nothing** (the emoji picker
+stays on ⌃⌘Space).
+
+The app reads that setting so it can point at it, and only nags when there is
+something to nag about: `src-tauri/src/fnkey.rs`, surfaced as
+`StatusReport::fn_key_action`, shown as a step in the setup wizard and a row in
+Settings → Permissions. It lives in the **`com.apple.HIToolbox`** domain under
+`AppleFnUsageType` — *not* NSGlobalDomain, where the name suggests and where a
+check returns "does not exist" on a machine that has it set. An absent key is
+also not the same as `0`/Do Nothing; it means the macOS default, which is the
+emoji picker.
 
 ## Crates
 
@@ -41,7 +85,7 @@ warning at 19.
 | `whimpr-llm-worker` | Separate binary running llama.cpp. Separate because llama.cpp's ggml and whisper.cpp's ggml cannot coexist in one process. Speaks one JSON request per line over stdio. |
 | `whimpr-ipc` | Length-prefixed JSON wire protocol for a hotkey sidecar. **Built and tested, but not wired in** — the Fn tap currently runs in-process. |
 | `whimpr-sidecar` | The sidecar binary for that protocol. Also **not currently used**. |
-| `src-tauri` | The app: tray, Hub window, overlay pill, hotkey tap, paste, auto-learn. The macOS-native parts live in `hotkey.rs` (CGEventTap), `paste.rs`, `autolearn.rs`, `appctx.rs`. |
+| `src-tauri` | The app: tray, Hub window, overlay pill, hotkey tap, paste, auto-learn. The macOS-native parts live in `hotkey.rs` (CGEventTap), `paste.rs`, `autolearn.rs`, `appctx.rs`, `fnkey.rs`. |
 | `ui/` | React + TypeScript. Two Vite entry points: `index.html` (Hub) and `overlay.html` (pill). |
 
 ## Cleanup
@@ -107,6 +151,23 @@ Idle renders nothing and sets `ignore_cursor_events`, so it is neither visible
 nor in the way. State arrives as `whimpr://flowbar/state` events; mic level
 arrives as `whimpr://audio/waveform`.
 
+**The two controls are live.** ■ (`stop_dictation`) ends the recording and pastes
+what was said; ✕ (`cancel_dictation`) throws the dictation away. Both feed
+`TriggerToken::Stop` / `Cancel` into the machine like any other input — the pill
+is a view, not a second source of truth.
+
+`ignore_cursor_events` is therefore off for `recording`, `locked` **and**
+`transcribing`: the ✕ stays on the pill while the pipeline runs, because that is
+most of the time a person spends wanting to cancel. Cancelling then is more than
+stopping the mic — the pipeline thread already holds the audio. Enacting
+`DiscardCapture` raises a high-water mark of cancelled session ids
+(`CANCELLED_SESSION`), and the thread checks it before transcribing, before
+cleanup, and before the paste. A high-water mark rather than the single cancelled
+id, because a cancelled session's cleanup can still be running when the next
+dictation starts, and anything that cleared the flag would let the abandoned one
+paste after all. Best effort by construction: once the paste has been posted
+there is nothing left to call off.
+
 ## Permissions (macOS)
 
 **Accessibility is the one that matters.** Without it the CGEventTap is
@@ -116,6 +177,10 @@ relaunch needed.
 
 Microphone is prompted on first record. Input Monitoring is *not* required for a
 CGEventTap — it is logged as diagnostics only.
+
+The Hub's Permissions card carries one row that is not a permission at all: the
+Fn key action (see *The dictation key*). It sits there because it is the other
+macOS setting that decides whether pressing Fn does what the user expects.
 
 On each launch the app writes `permissions.json` into its support directory. This
 exists because `AXIsProcessTrusted()` answers for the *calling* process: run the
@@ -186,6 +251,10 @@ means adding the branches back, not maintaining dead ones now.
   does not speak that protocol) exist to move it out. Worth doing if stuck or
   missed Fn presses ever show up in practice; until then it is speculative work
   that would add a second binary needing its own TCC grant, bundling and signing.
+- **Esc does not cancel.** `TriggerToken::Cancel` exists and is wired to the
+  pill's ✕, but nothing sends it from the keyboard: the tap subscribes to
+  `flagsChanged` only, so it never sees Esc. Wiring it would mean watching key
+  events too, which is a bigger surface than the feature is worth so far.
 - No notarization or installer pipeline. Local install only.
 - The Hub's Insights pane and stats are lightly exercised compared to the
   dictation path.

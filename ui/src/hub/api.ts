@@ -4,10 +4,15 @@
 
 export type CleanupMode = "raw" | "local" | "open_ai" | "anthropic";
 export type CleanupLevel = "none" | "light" | "medium" | "high";
+/** How the dictation key starts/stops a recording. */
+export type TriggerMode = "hold" | "toggle";
 
 export interface Settings {
   cleanup_mode: CleanupMode;
   cleanup_level: CleanupLevel;
+  // "hold": hold the key while speaking, release to finish.
+  // "toggle": press once to start, press again to stop.
+  trigger_mode: TriggerMode;
   openai_model: string;
   // API root for "OpenAI" mode — leave blank for OpenAI itself, or point at
   // an OpenAI-compatible endpoint like OpenRouter (https://openrouter.ai/api/v1).
@@ -17,6 +22,14 @@ export interface Settings {
 }
 
 export type LocalModelState = "loading" | "ready" | "missing";
+
+/**
+ * What macOS does when Fn is pressed on its own, independently of WhimprFlow.
+ * Anything but "do_nothing" fires on top of dictation — most people meet this as
+ * "the emoji picker opens every time I dictate". "unknown" means the setting has
+ * never been touched, which is macOS's default, which is usually the emoji picker.
+ */
+export type FnKeyAction = "do_nothing" | "input_source" | "emoji" | "dictation" | "unknown";
 
 /** Nothing granted, nothing loaded — the pre-load and browser-preview fallback. */
 export const EMPTY_STATUS: Status = {
@@ -28,6 +41,9 @@ export const EMPTY_STATUS: Status = {
   local_state: "loading",
   local_model: null,
   asr_model: null,
+  // Assume the key is fine until the backend says otherwise, so the setup wizard
+  // never flashes a warning at someone whose Fn key was never a problem.
+  fn_key_action: "do_nothing",
 };
 
 export interface Status {
@@ -42,6 +58,8 @@ export interface Status {
   local_model: string | null;
   /** Whisper model filename on disk, if any. */
   asr_model: string | null;
+  /** macOS's own action for a lone Fn press — see {@link FnKeyAction}. */
+  fn_key_action: FnKeyAction;
 }
 
 /**
@@ -97,6 +115,7 @@ export const EMPTY_STATS: StatsSummary = {
 export const DEFAULT_SETTINGS: Settings = {
   cleanup_mode: "open_ai",
   cleanup_level: "light",
+  trigger_mode: "hold",
   openai_model: "gpt-4o-mini",
   openai_base_url: "",
   anthropic_model: "claude-haiku-4-5",
@@ -161,6 +180,18 @@ export async function requestAccessibility(): Promise<void> {
 export async function requestInputMonitoring(): Promise<void> {
   try {
     await invoke<void>("request_input_monitoring");
+  } catch {
+    /* browser preview */
+  }
+}
+
+/**
+ * Open macOS Keyboard settings, where "Press 🌐 key to" lives. WhimprFlow can't
+ * change it for you — the Fn action belongs to macOS, and our key tap only listens.
+ */
+export async function openKeyboardSettings(): Promise<void> {
+  try {
+    await invoke<void>("open_keyboard_settings");
   } catch {
     /* browser preview */
   }

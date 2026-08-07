@@ -23,6 +23,16 @@ async function tauriListen<T>(event: string, cb: (payload: T) => void): Promise<
   }
 }
 
+/** Fire a Tauri command; a no-op in a plain browser preview. */
+async function tauriInvoke(cmd: string): Promise<void> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke(cmd);
+  } catch {
+    /* browser preview — no shell to talk to */
+  }
+}
+
 // A row of dot-like rounded bars driven by mic RMS — Wispr's dotted-waveform look:
 // small dots when quiet, rising into a waveform when speaking.
 function DottedWaveform({ bars }: { bars: number[] }) {
@@ -72,46 +82,54 @@ function DottedWaveform({ bars }: { bars: number[] }) {
   return <canvas ref={canvasRef} style={{ width: "100%", height: 28 }} />;
 }
 
+// Both pill controls are real buttons on a NON-ACTIVATING panel: the click is
+// delivered without the overlay taking focus, so the app being dictated into stays
+// frontmost and the paste still lands in the right place. `onMouseDown` +
+// preventDefault keeps the webview from trying to move focus at all.
+const CONTROL_BASE = {
+  flex: "0 0 auto",
+  width: 26,
+  height: 26,
+  borderRadius: 9999,
+  border: "none",
+  padding: 0,
+  cursor: "pointer",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+} as const;
+
 function CancelButton() {
   return (
-    <div
-      title="Cancel (Esc)"
+    <button
+      title="Discard this dictation"
+      aria-label="Discard this dictation"
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={() => void tauriInvoke("cancel_dictation")}
       style={{
-        flex: "0 0 auto",
-        width: 26,
-        height: 26,
-        borderRadius: 9999,
+        ...CONTROL_BASE,
         background: "rgba(255,255,255,0.16)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
         color: "#fff",
         fontSize: 15,
         lineHeight: 1,
       }}
     >
       ✕
-    </div>
+    </button>
   );
 }
 
 function StopButton() {
   return (
-    <div
-      title="Stop"
-      style={{
-        flex: "0 0 auto",
-        width: 26,
-        height: 26,
-        borderRadius: 9999,
-        background: "#FF5A52",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
+    <button
+      title="Stop and paste"
+      aria-label="Stop and paste"
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={() => void tauriInvoke("stop_dictation")}
+      style={{ ...CONTROL_BASE, background: "#FF5A52" }}
     >
       <div style={{ width: 9, height: 9, borderRadius: 2, background: "#fff" }} />
-    </div>
+    </button>
   );
 }
 
@@ -201,7 +219,9 @@ export function FlowBar() {
   // dark desktop — invisible in practice, but still a permanent object on screen.
   if (isIdle) return null;
 
-  const dims = recording ? { w: 260, h: 46 } : { w: 190, h: 38 };
+  // Transcribing keeps a ✕ (the pipeline can still be abandoned before it pastes),
+  // so it needs room for a control the terminal states don't have.
+  const dims = recording ? { w: 260, h: 46 } : processing ? { w: 226, h: 38 } : { w: 190, h: 38 };
 
   return (
     <div
@@ -254,6 +274,7 @@ export function FlowBar() {
           </>
         ) : processing ? (
           <>
+            <CancelButton />
             <Spinner />
             <span style={{ color: palette.pillTextMuted }}>{statusText}</span>
           </>
