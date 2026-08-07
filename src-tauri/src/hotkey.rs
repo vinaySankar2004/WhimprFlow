@@ -5,6 +5,12 @@
 //! returns — start the mic, play the ping, drive the pill, transcribe on release,
 //! run cleanup through the configured provider, and paste.
 //!
+//! A second tap handles Esc-to-cancel. It is deliberately NOT folded into the Fn
+//! tap: seeing Esc means subscribing to key-down, i.e. seeing every keystroke in
+//! every app, so it stays disabled until a dictation is actually live and goes off
+//! again the moment one ends. Being off by default is also what makes it safe for
+//! it to be the app's one consuming tap.
+//!
 //! `Settings::trigger_mode` decides how a press is reported: `Hold` sends the
 //! push-to-talk binding (release finalizes), `Toggle` sends the hands-free one, so
 //! the first press starts a locked session and the next press ends it. The state
@@ -62,7 +68,7 @@ mod imp {
 
     const OVERLAY_LABEL: &str = "whimpr_bar";
 
-    // --- CoreGraphics / CoreFoundation FFI (listen-only Fn tap) -----------
+    // --- CoreGraphics / CoreFoundation FFI (listen-only Fn tap + Esc tap) ---
     type CFMachPortRef = *mut c_void;
     type CFRunLoopSourceRef = *mut c_void;
     type CFRunLoopRef = *mut c_void;
@@ -104,11 +110,17 @@ mod imp {
     const K_CG_SESSION_EVENT_TAP: u32 = 1;
     const K_CG_HEAD_INSERT: u32 = 0;
     const K_CG_TAP_OPTION_LISTEN_ONLY: u32 = 1;
+    /// A tap that may modify or drop the events it sees. Used ONLY by the Esc tap,
+    /// and only while it is enabled — see [`set_esc_tap_enabled`].
+    const K_CG_TAP_OPTION_DEFAULT: u32 = 0;
     const K_CG_EVENT_FLAGS_CHANGED: u32 = 12;
+    const K_CG_EVENT_KEY_DOWN: u32 = 10;
     const EVENTS_OF_INTEREST: u64 = 1 << K_CG_EVENT_FLAGS_CHANGED;
+    const ESC_EVENTS_OF_INTEREST: u64 = 1 << K_CG_EVENT_KEY_DOWN;
     const FLAG_SECONDARY_FN: u64 = 0x0080_0000;
     const K_CG_KEYBOARD_EVENT_KEYCODE: u32 = 9;
     const KEYCODE_FN: i64 = 63;
+    const KEYCODE_ESC: i64 = 53;
     const K_CG_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
     const K_CG_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
 
@@ -121,6 +133,21 @@ mod imp {
     /// block: exceeding the hook's timeout gets the tap removed by macOS.
     static TOGGLE_TRIGGER: AtomicBool = AtomicBool::new(false);
     static TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
+    /// The Esc-to-cancel tap. Separate from the Fn tap, and deliberately so.
+    ///
+    /// Seeing Esc means subscribing to key-down, which means seeing EVERY keystroke
+    /// in every app — a privacy surface this app should not carry while it is idle.
+    /// So this tap exists from launch but stays DISABLED, and is switched on only
+    /// while a dictation is live. WhimprFlow therefore has no live keystroke tap at
+    /// all except during the seconds you are actually dictating.
+    ///
+    /// Because it is only on then, it can also afford to be a consuming tap: the Esc
+    /// that cancels a dictation is swallowed rather than passed on, so cancelling
+    /// doesn't also dismiss a dialog or clear a draft in the app behind the pill.
+    static ESC_TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
+    /// Whether the Esc tap *should* be live, so the disabled-by-timeout recovery
+    /// re-enables it only when a session is still running.
+    static ESC_TAP_WANTED: AtomicBool = AtomicBool::new(false);
     /// High-water mark of cancelled session ids (0 = none cancelled yet). Stopping
     /// the mic is not enough to cancel: once the pipeline thread is running it
     /// already holds the audio, so cancelling mid-transcription would otherwise
@@ -512,10 +539,61 @@ mod imp {
     fn emit_bar(app: &AppHandle, state: &'static str) {
         eprintln!("[whimpr] pill -> {state}");
         let _ = app.emit_to(OVERLAY_LABEL, "whimpr://flowbar/state", BarPayload { state });
-        // States that draw clickable controls must accept clicks; the rest either
-        // render nothing (idle) or are passive labels, so let clicks fall through.
-        // Transcribing counts: its ✕ can still abandon the run before it pastes.
-        crate::sync_overlay_window(app, matches!(state, "recording" | "locked" | "transcribing"));
+        // One predicate, two consequences. These are the states where a dictation is
+        // live and can still be called off: the pill draws controls (so it must
+        // accept clicks) and Esc means cancel (so that tap runs). Everything else
+        // renders nothing or is a passive label — clicks fall through, and the
+        // keystroke tap goes away entirely. Transcribing counts: the run can still
+        // be abandoned before it pastes.
+        let live = matches!(state, "recording" | "locked" | "transcribing");
+        crate::sync_overlay_window(app, live);
+        set_esc_tap_enabled(live);
+    }
+
+    /// Switch the Esc tap on for the duration of a dictation, off the rest of the
+    /// time. Cheap (a mach-port message) and safe to call from any thread.
+    fn set_esc_tap_enabled(on: bool) {
+        // Already in the wanted state? Nothing to do — emit_bar fires on every
+        // transition, including several that don't change this.
+        if ESC_TAP_WANTED.swap(on, Ordering::SeqCst) == on {
+            return;
+        }
+        let port = ESC_TAP_PORT.load(Ordering::SeqCst);
+        if !port.is_null() {
+            unsafe { CGEventTapEnable(port, on) };
+        }
+    }
+
+    /// Esc while a dictation is live = discard it. Runs only while the tap is
+    /// enabled, so there is no state check here beyond the keycode: if this callback
+    /// is firing at all, a session is running.
+    extern "C" fn esc_tap_callback(
+        _proxy: CGEventTapProxy,
+        etype: u32,
+        event: CGEventRef,
+        _info: *mut c_void,
+    ) -> CGEventRef {
+        if etype == K_CG_TAP_DISABLED_BY_TIMEOUT || etype == K_CG_TAP_DISABLED_BY_USER_INPUT {
+            // Re-arm only if a session is still live; otherwise leave it off, which
+            // is this tap's whole point.
+            let port = ESC_TAP_PORT.load(Ordering::SeqCst);
+            if !port.is_null() && ESC_TAP_WANTED.load(Ordering::SeqCst) {
+                unsafe { CGEventTapEnable(port, true) };
+            }
+            return event;
+        }
+        if etype == K_CG_EVENT_KEY_DOWN {
+            let keycode =
+                unsafe { CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) };
+            if keycode == KEYCODE_ESC {
+                eprintln!("[whimpr] Esc — cancelling");
+                handle_input(Input::Trigger(TriggerToken::Cancel { at_ms: now_ms() }));
+                // Swallowed: this Esc meant "cancel the dictation", not "dismiss
+                // whatever is on screen behind the pill".
+                return null_mut();
+            }
+        }
+        event
     }
 
     /// Whether this session was cancelled while its pipeline was running.
@@ -876,8 +954,36 @@ mod imp {
                 let source = CFMachPortCreateRunLoopSource(null(), port, 0);
                 CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopDefaultMode);
                 CGEventTapEnable(port, true);
-                CFRunLoopRun();
             }
+
+            // The Esc tap shares this run loop but NOT its lifetime: created here,
+            // left disabled, and switched on only while a dictation is live. It is
+            // also the one consuming tap in the app, which is affordable precisely
+            // because it is off the rest of the time. A failure to create it costs
+            // Esc-to-cancel and nothing else, so it is not fatal.
+            let esc_port = unsafe {
+                CGEventTapCreate(
+                    K_CG_SESSION_EVENT_TAP,
+                    K_CG_HEAD_INSERT,
+                    K_CG_TAP_OPTION_DEFAULT,
+                    ESC_EVENTS_OF_INTEREST,
+                    esc_tap_callback,
+                    null_mut(),
+                )
+            };
+            if esc_port.is_null() {
+                eprintln!("[whimpr] Esc tap could not be created — Esc will not cancel");
+            } else {
+                ESC_TAP_PORT.store(esc_port, Ordering::SeqCst);
+                unsafe {
+                    let source = CFMachPortCreateRunLoopSource(null(), esc_port, 0);
+                    CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopDefaultMode);
+                    // Born disabled: no keystroke tap until a dictation starts.
+                    CGEventTapEnable(esc_port, false);
+                }
+            }
+
+            unsafe { CFRunLoopRun() };
         });
     }
 }

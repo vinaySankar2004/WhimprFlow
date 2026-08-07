@@ -102,7 +102,7 @@ const CONTROL_BASE = {
 function CancelButton() {
   return (
     <button
-      title="Discard this dictation"
+      title="Discard this dictation (Esc)"
       aria-label="Discard this dictation"
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => void tauriInvoke("cancel_dictation")}

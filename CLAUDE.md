@@ -64,6 +64,11 @@ These are not hypotheticals; each one bit during development.
   integer read that defaults to 0, which reports the exact opposite of the truth.
 - **Re-signing can invalidate TCC grants.** The install script compares the
   designated requirement across updates and says so when it changes.
+- **The Esc tap is a separate tap, and off by default on purpose.** Folding it into
+  the Fn tap would mean a permanent key-down subscription — every keystroke in every
+  app — for a feature that only matters while dictating. It is enabled by `emit_bar`
+  for the live states and disabled otherwise, which is also the only reason it can
+  safely be the app's one *consuming* tap. Do not merge the two taps.
 - **Do not "fix" the in-process Fn tap on principle.** The callback is cheap, heavy
   work already runs on spawned threads, and tap-disabled-by-timeout is caught and
   re-enabled. Move it to the sidecar when a real symptom appears, not before.

@@ -27,7 +27,7 @@ function tips(mode: TriggerMode): { emoji: string; title: string; body: string }
     {
       emoji: "⏹️",
       title: "Stop or throw one away",
-      body: "While the pill is up, ■ stops the recording and pastes what you said so far, and ✕ discards the whole thing. ✕ keeps working while it's still transcribing — nothing gets pasted and nothing is logged — right up until the text actually lands.",
+      body: "While the pill is up, ■ stops the recording and pastes what you said so far, and ✕ — or the Esc key — discards the whole thing. Cancelling keeps working while it's still transcribing: nothing gets pasted and nothing is logged, right up until the text actually lands. Esc only means “cancel” while a dictation is live; the rest of the time WhimprFlow isn't watching your keyboard at all.",
     },
     {
       emoji: "🌐",

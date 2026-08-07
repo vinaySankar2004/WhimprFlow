@@ -56,6 +56,23 @@ Hold mode keeps its own hands-free path: tap Fn (under 200 ms), then press again
 within 350 ms, and the session locks until the next press. Toggle mode has no
 minimum hold — a press of any length starts recording.
 
+### Esc cancels, and the tap that sees it
+
+Esc discards a live dictation. Seeing it needs a key-down subscription — i.e.
+every keystroke in every app — which is not a surface this app should carry while
+it is doing nothing. So Esc gets its **own** tap, created at launch and left
+disabled, switched on only while a dictation is live and off again the moment one
+ends (same predicate as the pill's controls, in `emit_bar`). WhimprFlow has no
+live keystroke tap at all except during the seconds you are dictating.
+
+That is also what makes it affordable for this to be the app's one **consuming**
+tap: it returns null for the Esc it acts on, so cancelling a dictation does not
+also dismiss a dialog or clear a draft in the app behind the pill. Every other
+key it sees is passed straight through, and the Fn tap stays listen-only.
+
+Failing to create it costs Esc-to-cancel and nothing else, so it is logged and
+skipped rather than treated as fatal.
+
 ### macOS has its own idea about Fn
 
 The 🌐/Fn key carries a system action — on Apple keyboards, usually the emoji
@@ -152,13 +169,15 @@ nor in the way. State arrives as `whimpr://flowbar/state` events; mic level
 arrives as `whimpr://audio/waveform`.
 
 **The two controls are live.** ■ (`stop_dictation`) ends the recording and pastes
-what was said; ✕ (`cancel_dictation`) throws the dictation away. Both feed
-`TriggerToken::Stop` / `Cancel` into the machine like any other input — the pill
-is a view, not a second source of truth.
+what was said; ✕ (`cancel_dictation`) throws the dictation away, as does **Esc**.
+All three feed `TriggerToken::Stop` / `Cancel` into the machine like any other
+input — the pill is a view, not a second source of truth.
 
-`ignore_cursor_events` is therefore off for `recording`, `locked` **and**
-`transcribing`: the ✕ stays on the pill while the pipeline runs, because that is
-most of the time a person spends wanting to cancel. Cancelling then is more than
+One predicate in `emit_bar` decides two things: `recording | locked |
+transcribing` are the states where a dictation is live, so those are the states
+where `ignore_cursor_events` is off (the pill's controls are clickable) *and*
+where the Esc tap runs. The ✕ stays on the pill while the pipeline runs, because
+that is most of the time a person spends wanting to cancel. Cancelling then is more than
 stopping the mic — the pipeline thread already holds the audio. Enacting
 `DiscardCapture` raises a high-water mark of cancelled session ids
 (`CANCELLED_SESSION`), and the thread checks it before transcribing, before
@@ -251,10 +270,6 @@ means adding the branches back, not maintaining dead ones now.
   does not speak that protocol) exist to move it out. Worth doing if stuck or
   missed Fn presses ever show up in practice; until then it is speculative work
   that would add a second binary needing its own TCC grant, bundling and signing.
-- **Esc does not cancel.** `TriggerToken::Cancel` exists and is wired to the
-  pill's ✕, but nothing sends it from the keyboard: the tap subscribes to
-  `flagsChanged` only, so it never sees Esc. Wiring it would mean watching key
-  events too, which is a bigger surface than the feature is worth so far.
 - No notarization or installer pipeline. Local install only.
 - The Hub's Insights pane and stats are lightly exercised compared to the
   dictation path.

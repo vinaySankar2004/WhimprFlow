@@ -27,7 +27,8 @@ choose a cloud cleanup engine — and even then, only the transcript, never the 
   same prompt as the local path. Keys live in the macOS Keychain, **never in a file**.
 - **Floating pill** — a non-activating panel showing idle / recording / processing that
   follows you across Spaces, including other apps' full-screen ones. ■ stops and pastes,
-  ✕ discards — and ✕ still works while it's transcribing, before anything is pasted.
+  ✕ or **Esc** discards — and cancelling still works while it's transcribing, before
+  anything is pasted. Esc is watched only while a dictation is live, never otherwise.
 - **Hold or toggle** — hold Fn while you speak, or switch to press-to-start /
   press-to-stop under Settings → Dictation Key.
 - **Personal dictionary + auto-learn** — teach it names and jargon; a post-paste

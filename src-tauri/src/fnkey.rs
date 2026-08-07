@@ -1,7 +1,7 @@
 //! What macOS itself does when the 🌐/Fn key is pressed and released on its own.
 //!
 //! Nothing to do with dictation, and everything to do with why a new user's first
-//! Fn press pops up the emoji picker. Our event tap is listen-only by design: a
+//! Fn press pops up the emoji picker. The Fn tap is listen-only by design: a
 //! consuming tap could swallow the Fn flag change, but it would take Fn+F1–F12,
 //! Fn+arrows and Fn+Delete with it. So macOS's own action always fires alongside
 //! ours, and the only real fix is the system setting — which means the app has to
