@@ -12,10 +12,11 @@ Hold **Fn**, speak, release. Text lands at the cursor. (Or press once to start a
 again to stop — see *The dictation key* below.)
 
 ```
-Fn down ─ CGEventTap ─→ state machine ─→ StartCapture ─→ cpal mic (16 kHz mono)
+Fn down ─ CGEventTap ─→ state machine ─→ StartCapture ─→ cpal mic (mono, device rate)
                                       └─→ PlayPing      └─→ RMS ──→ pill waveform
 Fn up / 2nd press / ■ → StopCaptureAndFinalize     ✕ → DiscardCapture (nothing pastes)
                             │
+                            ├─ resample to 16 kHz, pad the tail
                             ├─ whisper.cpp (Metal) ──────────→ raw transcript
                             ├─ dictionary.prefilter(raw, 15) ─→ vocab entries
                             ├─ whisper again, vocab as initial_prompt   ┐ only when
@@ -100,7 +101,7 @@ emoji picker.
 |---|---|
 | `whimpr-core` | State machine, cleanup prompts/levels/gates, dictionary, settings, stats. No I/O, no platform code — this is where the tests live. |
 | `whimpr-asr` | Whisper via `whisper-rs`, on Metal. Implements the `AsrEngine` trait. |
-| `whimpr-audio` | `cpal` mic capture, downmix, resample to 16 kHz, throttled RMS for the waveform. |
+| `whimpr-audio` | `cpal` mic capture (device/format search, see *Opening the mic*), downmix, resample to 16 kHz, throttled RMS for the waveform. |
 | `whimpr-cleanup` | OpenAI + Anthropic providers behind one trait. Keys come from the OS keychain, never a file. |
 | `whimpr-llm-worker` | Separate binary running llama.cpp. Separate because llama.cpp's ggml and whisper.cpp's ggml cannot coexist in one process. Speaks one JSON request per line over stdio. |
 | `whimpr-ipc` | Length-prefixed JSON wire protocol for a hotkey sidecar. **Built and tested, but not wired in** — the Fn tap currently runs in-process. |
@@ -222,6 +223,24 @@ for. It runs on the text about to be pasted whatever produced it, so a listed mi
 is fixed where no prompt reaches — cleanup off, gates rejected the edit, provider down.
 Mishears are punctuation-trimmed first: users add one by pasting what landed in the
 field ("Vinayk."), and the stray period would stop it ever matching.
+
+### Opening the mic is a search, not a single attempt
+
+`whimpr_audio::start` tries every config the default input device advertises, then
+every other input device the same way, and takes the first that plays. All sample
+formats are accepted, not just `f32`.
+
+The case that forces this is dictating while on a call. CoreAudio input is *shared* —
+another app holding the mic never locks us out — so the failure is not contention. It
+is the device: a Bluetooth headset on a call switches to its HFP profile, mono at a
+low rate with a different sample format, and the one config it advertised a moment ago
+is gone. A single attempt at the default config on the default device fails, and the
+built-in mic was sitting there usable the whole time. The symptom reads as "dictation
+is dead while I'm on a call", which sounds like an exclusivity problem and is not.
+
+The device that won is logged and returned on `CaptureResult`, because "which mic did
+it actually use" is otherwise unanswerable after the fact — and once there is a
+fallback, that is the first question worth asking.
 
 ### Every utterance gets a second of silence appended
 
@@ -592,3 +611,8 @@ means adding the branches back, not maintaining dead ones now.
 - The harness covers the dictionary against *text* transcripts, so its mishears are
   written by hand rather than produced by Whisper. Recorded audio fixtures driven
   through the real ASR would close that gap, at the cost of committing audio.
+- **There is no microphone picker.** `whimpr_audio::start` takes the first device
+  that opens, default first (see *Opening the mic*), which is right when the default
+  is unusable and wrong when it is merely not the one you wanted — a Continuity iPhone
+  mic that macOS made default will be used in preference to the built-in. The fallback
+  makes capture robust, not correct. A setting is the fix if that ever bites.

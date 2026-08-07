@@ -15,6 +15,7 @@ odd parts are odd. Everything below is the working agreement on top of it.
 ./scripts/install-macos.sh                # build + install to /Applications + verify permissions
 cargo test -p whimpr-core -p whimpr-ipc   # 97 tests, fast, no models needed
 cd ui && node_modules/.bin/tsc --noEmit   # typecheck the UI
+cargo run -p whimpr-audio --example mic_check --release   # devices, formats, does capture work now
 cargo run -p whimpr-llm-worker --example dictionary_check --release            # dictionary, end to end
 cargo run -p whimpr-llm-worker --example dictionary_check --release -- --audit # your own dictionary, no model
 cargo run -p whimpr-llm-worker --example dictionary_check --release -- --messaging # same, at the Messaging level
@@ -126,6 +127,12 @@ These are not hypotheticals; each one bit during development.
   levelling them re-introduces false corrections — a glued pair is a token the code
   invented, not a word anyone said. Both numbers are load-bearing; the harness has a
   negative case for each.
+- **Do not collapse the mic open back to "default device, default config".** It looks
+  like needless looping. It is what keeps dictation alive on a call: a Bluetooth
+  headset switches to its HFP profile mid-call — mono, low rate, another sample
+  format — and the config it just advertised stops working, while the built-in mic is
+  fine. CoreAudio input is *shared*, so this was never an exclusivity problem, which is
+  why "another app has the mic" is the wrong thing to go looking for.
 - **Do not remove the tail padding in `whimpr-asr`.** whisper.cpp refuses to start a
   segment within a second of the end of the audio, so an utterance that stops the
   instant the speaker does loses its last words — which is every push-to-talk

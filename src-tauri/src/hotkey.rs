@@ -806,10 +806,11 @@ mod imp {
                     };
                     let peak = res.samples.iter().fold(0f32, |m, &s| m.max(s.abs()));
                     eprintln!(
-                        "[whimpr] captured {} samples @ {} Hz (~{:.2}s), peak {:.4}",
+                        "[whimpr] captured {} samples @ {} Hz (~{:.2}s) from {}, peak {:.4}",
                         res.samples.len(),
                         res.sample_rate,
                         res.duration_secs(),
+                        res.device,
                         peak
                     );
                     if peak < 0.005 {

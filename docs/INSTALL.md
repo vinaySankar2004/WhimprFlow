@@ -104,6 +104,11 @@ Settings → Keyboard → "Press 🌐 key to". Note that the setting lives in th
 `com.apple.HIToolbox` domain, so `defaults read -g AppleFnUsageType` reports "does
 not exist" on a machine that has it set — that is a false negative, not the answer.
 
+**Nothing is heard while on a call, or on AirPods.** Fixed as of v0.1.2 — the app now
+tries every input device and format rather than only the system default, so a headset
+that has switched to its call profile falls back to the built-in mic. On an older
+build, update.
+
 **"WhimprFlow is damaged and can't be opened."** The download was truncated. Run the
 command again; the checksum check exists to catch this before install.
 
@@ -134,7 +139,7 @@ The recipient's side of this only works if there is a release to fetch.
 
 ```bash
 scripts/install-macos.sh --package /tmp/whimpr-release
-gh release create "v0.1.1" \
+gh release create "v0.1.2" \
   /tmp/whimpr-release/WhimprFlow.app.zip \
   /tmp/whimpr-release/WhimprFlow.app.zip.sha256 \
   --generate-notes
