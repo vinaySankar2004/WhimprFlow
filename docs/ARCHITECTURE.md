@@ -373,10 +373,27 @@ Both ladders take the best file present, so dropping a bigger model in is the
 whole upgrade procedure. Exact filenames matter — these are the literal strings
 the code searches for, in this order:
 
-- **Whisper** (`hotkey.rs`): `ggml-large-v3-turbo.bin` → `ggml-medium.en.bin` →
-  `ggml-small.en.bin` → `ggml-base.en.bin`
+- **Whisper** (`hotkey.rs`): `ggml-large-v3-turbo.bin` →
+  `ggml-large-v3-turbo-q5_0.bin` → `ggml-medium.en.bin` → `ggml-small.en.bin` →
+  `ggml-base.en.bin`
 - **Cleanup** (`local_llm.rs`): `qwen3-4b-instruct-2507-q4_k_m.gguf` →
   `qwen2.5-1.5b-instruct-q4_k_m.gguf`
+
+**Take the q5_0 build of turbo unless you have memory to burn.** It is second in the
+ladder on paper, and the one to actually install: measured against the f16 build on
+the same clips it was indistinguishable in accuracy — better, on the hardest surname —
+at the same speed, for **716 MB** resident instead of **1755 MB**.
+
+That gigabyte is paid around the clock. Whisper's weights live in a Metal buffer that
+stays fully resident for as long as the app runs, whereas the llama worker mmaps its
+GGUF and pages it in on demand — which is why the 2.5 GB cleanup model shows ~63 MB of
+footprint while the smaller Whisper model shows all of its own. Neither costs CPU when
+idle; the cost is memory, and it is continuous.
+
+Recognition latency on an M-series machine, 2.8 s of audio: ~185 ms to load at startup,
+~1.1 s per pass. A dictation the dictionary touches runs two passes. For comparison
+`ggml-base.en.bin` transcribes in ~120 ms and mis-hears ordinary names ("Manvy" for
+"Manvi"), which is the trade the ladder exists to let you make.
 
 With no local GGUF, set the cleanup engine to OpenAI in Settings and point the
 base URL at any OpenAI-compatible API.

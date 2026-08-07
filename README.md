@@ -72,8 +72,11 @@ fine, and silently pastes raw uncleaned text.
 Not committed — they're multi-GB. Put them in
 `~/Library/Application Support/WhimprFlow/models/`:
 
-- **Whisper** — e.g. `ggml-base.en.bin` from
-  [huggingface.co/ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp)
+- **Whisper** — `ggml-large-v3-turbo-q5_0.bin` (547 MB) from
+  [huggingface.co/ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp).
+  Smaller models work and are far lighter — `ggml-base.en.bin` is 141 MB — but they
+  mis-hear ordinary names, which is most of what a personal dictionary then has to
+  repair.
 - **Cleanup** — a Qwen GGUF, e.g. `qwen3-4b-instruct-2507-q4_k_m.gguf`
 
 No local cleanup model? Set Cleanup Engine to **OpenAI** in Settings and point the base

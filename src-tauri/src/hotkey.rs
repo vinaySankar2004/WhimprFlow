@@ -220,8 +220,18 @@ mod imp {
     /// less for cleanup and the dictionary to fix downstream).
     fn model_path() -> PathBuf {
         let dir = support_dir().join("models");
+        // Best file present wins, so upgrading is just dropping a bigger one in.
+        //
+        // The q5_0 build of turbo sits second on paper but is the one worth having on
+        // a 16 GB machine: measured against the f16 build on the same clips it was
+        // indistinguishable in accuracy (better, on the hardest surname) at the same
+        // speed, for 716 MB resident instead of 1755 MB. Whisper's weights stay fully
+        // resident in a Metal buffer the whole time the app runs — unlike the llama
+        // worker's, which are mmapped and paged in on demand — so that gigabyte is
+        // paid around the clock, not just while dictating.
         for name in [
             "ggml-large-v3-turbo.bin",
+            "ggml-large-v3-turbo-q5_0.bin",
             "ggml-medium.en.bin",
             "ggml-small.en.bin",
             "ggml-base.en.bin",
@@ -518,6 +528,11 @@ mod imp {
         let raw_norm = whimpr_core::cleanup::pre_normalize_layout(raw);
         let raw = raw_norm.as_str();
         let raw_out = whimpr_core::cleanup::post_process(&raw_norm);
+        // Selected again rather than handed down from `biased_retranscribe`: that pass
+        // filtered against the *unprompted* transcript, and by now the text may have
+        // been improved, layout markers inserted, or the prompted pass rejected. Each
+        // stage picking vocab for the text it is actually about to send is cheaper than
+        // reasoning about which earlier transcript the list came from.
         let vocab = DICTIONARY
             .get()
             .map(|d| d.lock().unwrap().prefilter(raw, 15))
