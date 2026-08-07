@@ -34,7 +34,11 @@ impl AsrEngine for WhisperEngine {
         }
     }
 
-    fn transcribe(&self, pcm16k: &[f32]) -> anyhow::Result<Transcript> {
+    fn transcribe(
+        &self,
+        pcm16k: &[f32],
+        initial_prompt: Option<&str>,
+    ) -> anyhow::Result<Transcript> {
         let mut state = self
             .ctx
             .create_state()
@@ -53,7 +57,20 @@ impl AsrEngine for WhisperEngine {
         // that repeat the same words — which then get concatenated below,
         // producing the sentence twice. Single-segment mode avoids that.
         params.set_single_segment(true);
+        // No carry-over between dictations: each is its own utterance, and letting the
+        // last one condition the next produces stray repeats.
+        //
+        // This does NOT cancel the initial_prompt below, which is the obvious worry.
+        // Checked against the vendored whisper.cpp rather than assumed: no_context
+        // clears `prompt_past` first, and the initial prompt is tokenized and rotated
+        // to the front of it afterwards. The two settings compose.
         params.set_no_context(true);
+        // Bias decoding toward the dictionary's spellings, when the caller asked for
+        // it. Whisper treats this as text preceding the utterance, so it is the one
+        // place a mis-hearing can be fixed rather than repaired afterwards.
+        if let Some(p) = initial_prompt {
+            params.set_initial_prompt(p);
+        }
 
         state
             .full(params, pcm16k)

@@ -18,6 +18,8 @@ Fn up / 2nd press / ■ → StopCaptureAndFinalize     ✕ → DiscardCapture (n
                             │
                             ├─ whisper.cpp (Metal) ──────────→ raw transcript
                             ├─ dictionary.prefilter(raw, 15) ─→ vocab entries
+                            ├─ whisper again, vocab as initial_prompt   ┐ only when
+                            ├─ accept_prompted: else keep pass 1        ┘ vocab hit
                             ├─ cleanup provider (local | OpenAI | Anthropic | raw)
                             ├─ gates: reject over-editing ────→ fall back to raw
                             └─ clipboard save → ⌘V → restore → paste
@@ -170,8 +172,51 @@ close mistakes", a small model will happily put a product name where an ordinary
 verb was; `assemble_user_message` spells out that entries are proper nouns and that
 a word making sense as spoken should be left alone.
 
-Auto-learn (deliberately conservative): after a paste, `autolearn::watch_correction`
-watches via the Accessibility API for a one-word fix and records it.
+### Recognition is asked twice
+
+A mis-heard name is best fixed where it was mis-heard, not repaired downstream — and
+downstream repair does nothing at all in `Raw` mode or at cleanup level `None`, where
+no model ever sees the transcript. Whisper takes an `initial_prompt` that conditions
+decoding, so the dictionary goes in there too.
+
+Prompting is not free: a word Whisper is primed for is a word it may emit from audio
+that never contained it (whisper.cpp guards against the same thing internally, and
+says so in a comment). So the shell transcribes **twice** — unprompted, then prompted
+with a glossary of the entries `prefilter` matched — and `asr::prompt::accept_prompted`
+picks between them. The prompted transcript is kept only when every word it introduced
+is an authorized spelling *and* it introduced no more of them than it displaced. That
+second clause is the load-bearing one: prompted with a glossary and handed near
+silence, Whisper echoes the glossary back, and every echoed word is "authorized" — a
+check that only asked whether the new words were in the dictionary would wave it
+straight through.
+
+The second pass runs only when the pre-filter matched something, so the overwhelming
+majority of dictations take the single-pass path unchanged. `set_no_context(true)` does
+not cancel the prompt; whisper.cpp clears `prompt_past` first and then rotates the
+initial prompt to the front of it (checked in the vendored source, not assumed).
+
+Only the *correct* spellings go into the prompt, never the mishears — those are what
+recognition is being steered away from.
+
+### Auto-learn
+
+After a paste, `autolearn::watch_correction` polls the focused element via the
+Accessibility API for 20 s, taking the first clean one-word substitution it sees.
+Polling rather than one snapshot at the end: a single late look is *worse* than an
+early one for anyone who fixes the word and keeps typing, because by then the field has
+moved on and the diff is no longer the clean swap auto-learn will accept.
+
+`detect_correction` is deliberately hard to satisfy — exactly one word out and one in,
+both ≥3 characters and alphabetic, neither on a ~70-word common list, the new one
+Titlecase, and normalized distance in (0, 0.6]. A false positive poisons the dictionary
+into mis-correcting you forever, so the bar is set where a miss is the cheaper mistake.
+
+What gets recorded as the mishear is **what recognition wrote**, not what auto-learn
+observed. The observed form comes from the *pasted* text, which is post-cleanup, so it
+may be a spelling Whisper never produces; `dictionary::ground_truth_mishear` finds the
+token in the raw transcript that the correction replaced and stores that alongside it.
+This is the one place the raw transcript earns its keep in the dictation path rather
+than in statistics.
 
 Prove the whole chain end to end against the real model:
 
@@ -197,6 +242,15 @@ Sampling in the worker is greedy, so re-running a case returns the same tokens �
 repeats buy nothing and the cases vary phrasing instead. `--audit` skips the model
 and reports on your real `dictionary.json`: which entries have no mishears listed
 and how far off recognition can be before they stop being selected.
+
+That harness starts from a *text* transcript, so it cannot see the recognition stage
+at all. For the two-pass path, `whimpr-asr`'s example runs it against real audio:
+
+```bash
+cargo run -p whimpr-asr --example transcribe --release -- <model.bin> <clip.wav> Manvi,ChargeBee
+```
+
+It prints the unprompted transcript, the prompted one, and which would be kept.
 
 ## The overlay pill
 

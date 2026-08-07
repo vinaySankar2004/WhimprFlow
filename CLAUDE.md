@@ -13,7 +13,7 @@ odd parts are odd. Everything below is the working agreement on top of it.
 ```bash
 ./dev.sh                                  # Vite + app, hot reload
 ./scripts/install-macos.sh                # build + install to /Applications + verify permissions
-cargo test -p whimpr-core -p whimpr-ipc   # 57 tests, fast, no models needed
+cargo test -p whimpr-core -p whimpr-ipc   # 72 tests, fast, no models needed
 cd ui && node_modules/.bin/tsc --noEmit   # typecheck the UI
 cargo run -p whimpr-llm-worker --example dictionary_check --release            # dictionary, end to end
 cargo run -p whimpr-llm-worker --example dictionary_check --release -- --audit # your own dictionary, no model
@@ -82,6 +82,12 @@ These are not hypotheticals; each one bit during development.
   levelling them re-introduces false corrections — a glued pair is a token the code
   invented, not a word anyone said. Both numbers are load-bearing; the harness has a
   negative case for each.
+- **Never prompt Whisper without keeping the unprompted transcript.** `initial_prompt`
+  makes it emit words it was primed for from audio that lacked them, and the only
+  defence is `accept_prompted` comparing the two. Collapsing the two passes into one
+  "to save a pass" removes the comparison and there is nothing left to catch it.
+  Note the count check, not just the membership check: an echoed glossary is *all*
+  authorized words.
 
 ## Conventions
 

@@ -1,7 +1,12 @@
 //! Auto-learn: after WhimprFlow pastes dictated text, watch the focused text field
-//! for a few seconds. If the user corrects a single distinctive word (typically a
-//! mis-heard name), diff it out and add it to the dictionary — so next time ASR/
-//! cleanup spell it right. This is the signal source Wispr's ✨ sparkle needs.
+//! for the next twenty seconds. If the user corrects a single distinctive word
+//! (typically a mis-heard name), diff it out and add it to the dictionary — so next
+//! time ASR and cleanup spell it right. This is where ✨ entries come from.
+//!
+//! What gets stored as the mishear is what *recognition* wrote, not what was on
+//! screen: the pasted text has been through cleanup, so the word the user corrected
+//! may be a spelling Whisper never actually produces. The raw transcript settles it —
+//! see `whimpr_core::dictionary::ground_truth_mishear`.
 //!
 //! It is deliberately conservative: it only learns on a clean one-word substitution
 //! into an otherwise-unchanged field, where the new word looks like a proper noun
@@ -19,8 +24,21 @@ mod imp {
     type AXUIElementRef = *const c_void;
 
     const KCF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
-    /// How long to wait after paste before checking for a correction.
-    const OBSERVE_DELAY: Duration = Duration::from_secs(7);
+    /// How long after a paste to keep watching the field for a correction.
+    ///
+    /// Noticing a mis-heard name, selecting it and retyping it takes longer than it
+    /// sounds — especially the first time, when you also have to decide whether it is
+    /// worth fixing.
+    const OBSERVE_WINDOW: Duration = Duration::from_secs(20);
+    /// How often to look during that window.
+    ///
+    /// Polling rather than one snapshot at the end, because a single late look is
+    /// *worse* than an early one for anyone who fixes the word and then keeps typing:
+    /// by then the field has moved on and the diff is no longer the clean one-word swap
+    /// that auto-learn will accept. Checking repeatedly and taking the first clean swap
+    /// catches the correction at the moment it is still legible. An accessibility read
+    /// every few seconds costs nothing.
+    const OBSERVE_EVERY: Duration = Duration::from_secs(2);
 
     #[link(name = "CoreFoundation", kind = "framework")]
     extern "C" {
@@ -118,14 +136,16 @@ mod imp {
     struct SendPtr(AXUIElementRef);
     unsafe impl Send for SendPtr {}
 
-    /// Right after paste, snapshot the focused field, then check it once after a
-    /// short delay for a one-word correction to learn.
-    pub fn watch_correction(inserted: &str) {
+    /// Right after paste, hold on to the focused field and watch it for a one-word
+    /// correction to learn. `raw` is the pre-cleanup transcript, used to record what
+    /// recognition actually wrote rather than what cleanup made of it.
+    pub fn watch_correction(inserted: &str, raw: &str) {
         // Reads require Accessibility; also skip trivial dictations.
         if !crate::paste::is_trusted() || crate::autolearn::word_tokens(inserted).len() < 2 {
             return;
         }
         let inserted = inserted.to_string();
+        let raw = raw.to_string();
         let focused = unsafe { copy_focused_element() };
         if focused.is_null() {
             return;
@@ -135,14 +155,33 @@ mod imp {
             // Force whole-struct capture (2021 disjoint captures would otherwise grab
             // the raw pointer field and lose the `Send` impl on `SendPtr`).
             let holder = holder;
-            std::thread::sleep(OBSERVE_DELAY);
-            let after = unsafe { element_value(holder.0) };
+            let deadline = std::time::Instant::now() + OBSERVE_WINDOW;
+            let found = loop {
+                std::thread::sleep(OBSERVE_EVERY);
+                if let Some(after) = unsafe { element_value(holder.0) } {
+                    // First clean one-word swap wins — later looks only get muddier as
+                    // the user keeps typing around it.
+                    if let Some(pair) = super::detect_correction(&inserted, &after) {
+                        break Some(pair);
+                    }
+                }
+                if std::time::Instant::now() >= deadline {
+                    break None;
+                }
+            };
             unsafe { CFRelease(holder.0) };
-            let Some(after) = after else { return };
-            if let Some((mishear, correct)) = super::detect_correction(&inserted, &after) {
-                eprintln!("[whimpr] ✨ auto-learned: \"{mishear}\" -> \"{correct}\"");
-                crate::hotkey::dictionary_learn(correct, vec![mishear]);
+            let Some((observed, correct)) = found else { return };
+
+            // Prefer what recognition wrote over what cleanup wrote — that is the
+            // string the pre-filter will have to match next time. Keep both when they
+            // differ, since cleanup may mangle it the same way again.
+            let mut mishears = vec![observed.clone()];
+            if let Some(truth) = whimpr_core::dictionary::ground_truth_mishear(&raw, &observed) {
+                eprintln!("[whimpr] ✨ recognition actually wrote \"{truth}\"");
+                mishears.push(truth);
             }
+            eprintln!("[whimpr] ✨ auto-learned: {mishears:?} -> \"{correct}\"");
+            crate::hotkey::dictionary_learn(correct, mishears);
         });
     }
 }

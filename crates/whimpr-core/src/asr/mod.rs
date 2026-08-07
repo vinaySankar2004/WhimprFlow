@@ -1,6 +1,8 @@
-//! The ASR seam. Per-OS backends implement [`AsrEngine`]: FluidAudio on the Apple
-//! Neural Engine (macOS primary) and ONNX-Runtime Parakeet (Windows primary, macOS
-//! fallback). The core only ever sees this trait; the engine choice is made behind it.
+//! The ASR seam. One backend implements [`AsrEngine`] today — whisper.cpp on Metal,
+//! in `whimpr-asr`. The trait exists so a lower-latency engine can replace it without
+//! the core knowing; the ids below name the candidates, not shipped code.
+
+pub mod prompt;
 
 use serde::{Deserialize, Serialize};
 
@@ -44,5 +46,12 @@ pub trait AsrEngine: Send + Sync {
     }
 
     /// Transcribe one complete utterance.
-    fn transcribe(&self, pcm16k: &[f32]) -> anyhow::Result<Transcript>;
+    ///
+    /// `initial_prompt` conditions decoding toward particular spellings — the
+    /// dictionary, rendered by [`prompt::build_initial_prompt`]. It is a `Some`/`None`
+    /// argument rather than a separate method because a caller must decide, every
+    /// time, whether this run is biased: a prompted transcript is only trustworthy
+    /// next to an unprompted one to check it against (see [`prompt::accept_prompted`]).
+    fn transcribe(&self, pcm16k: &[f32], initial_prompt: Option<&str>)
+        -> anyhow::Result<Transcript>;
 }

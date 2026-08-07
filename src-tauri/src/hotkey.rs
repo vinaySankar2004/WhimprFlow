@@ -450,6 +450,57 @@ mod imp {
         }
     }
 
+    /// Transcribe a second time with the dictionary as Whisper's `initial_prompt`, and
+    /// keep that result only if it is a better version of the same sentence.
+    ///
+    /// Recognition is where a mis-heard name should be fixed; cleanup repairing it
+    /// afterwards is a workaround, and one that does nothing at all in `Raw` mode or
+    /// at cleanup level `None`, where no model ever sees the transcript.
+    ///
+    /// Two passes rather than always prompting, for two reasons. Prompting biases
+    /// every dictation, including the overwhelming majority with no dictionary word in
+    /// them — and a prompt Whisper cannot hear in the audio is one it may simply emit
+    /// anyway. Running unprompted first means the common case is untouched, and that
+    /// the biased result has an unbiased one to be checked against; without that
+    /// comparison a hallucinated name would go straight to the cursor. The cost is one
+    /// extra pass over a few seconds of audio, and only when the pre-filter matched.
+    fn biased_retranscribe(
+        asr: &whimpr_asr::WhisperEngine,
+        pcm: &[f32],
+        unprompted: String,
+        session: whimpr_core::SessionId,
+    ) -> String {
+        let vocab = DICTIONARY
+            .get()
+            .map(|d| d.lock().unwrap().prefilter(&unprompted, 15))
+            .unwrap_or_default();
+        let Some(prompt) = whimpr_core::asr::prompt::build_initial_prompt(&vocab) else {
+            return unprompted; // Nothing to bias toward — one pass is the whole job.
+        };
+        // Cancelling during the first pass should not buy a second one.
+        if is_cancelled(session) {
+            return unprompted;
+        }
+        eprintln!("[whimpr] re-transcribing with {prompt:?}");
+        let Ok(t) = asr.transcribe(pcm, Some(&prompt)) else {
+            eprintln!("[whimpr] prompted pass failed — keeping the unprompted transcript");
+            return unprompted;
+        };
+        if whimpr_core::asr::prompt::accept_prompted(&unprompted, &t.text, &vocab) {
+            if t.text != unprompted {
+                eprintln!("[whimpr] BIASED:     \"{}\"", t.text);
+            }
+            t.text
+        } else {
+            eprintln!(
+                "[whimpr] prompted pass changed more than the dictionary allows — \
+                 keeping the unprompted transcript: {:?}",
+                t.text
+            );
+            unprompted
+        }
+    }
+
     /// Clean a raw transcript per the current settings (mode + level), feeding in the
     /// dictionary vocabulary relevant to this utterance. Falls back to raw whenever
     /// cleanup is off, the provider is unavailable, it errors, or the gates reject it.
@@ -728,12 +779,19 @@ mod imp {
                         return;
                     }
                     let pcm = whimpr_audio::resample_to_16k(&res.samples, res.sample_rate);
-                    match asr.transcribe(&pcm) {
+                    match asr.transcribe(&pcm, None) {
                         Ok(t) => {
                             let raw = t.text;
                             eprintln!("[whimpr] TRANSCRIPT: \"{}\"", raw);
                             if is_cancelled(session) {
                                 eprintln!("[whimpr] cancelled after transcribing — not pasted");
+                                return;
+                            }
+                            // Give recognition a second look with the dictionary in
+                            // hand, when this utterance looks like it needs one.
+                            let raw = biased_retranscribe(&asr, &pcm, raw, session);
+                            if is_cancelled(session) {
+                                eprintln!("[whimpr] cancelled after re-transcribing — not pasted");
                                 return;
                             }
                             // Clean the transcript (cloud LLM if configured), then paste.
@@ -757,7 +815,9 @@ mod imp {
                                 // actually speak, and cleanup's job is to delete it.
                                 record_dictation(&text, &raw, res.duration_secs());
                                 // Watch the field for a post-paste correction to learn (✨).
-                                crate::autolearn::watch_correction(&text);
+                                // The raw transcript goes along so the mishear recorded
+                                // is what recognition wrote, not what cleanup wrote.
+                                crate::autolearn::watch_correction(&text, &raw);
                             }
                             let _ = app2.emit_to(
                                 OVERLAY_LABEL,

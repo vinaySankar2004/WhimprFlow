@@ -160,6 +160,55 @@ pub const MAX_NORMALIZED_DISTANCE: f32 = 0.30;
 /// pair is a guess, so it has to be nearly right to count.
 const MAX_BIGRAM_DISTANCE: f32 = 0.15;
 
+/// What speech recognition *actually wrote* where the user corrected a word.
+///
+/// Auto-learn works by diffing the pasted text against the field afterwards, so the
+/// mishear it observes is the **cleaned** form — whatever cleanup made of what Whisper
+/// heard, which is not necessarily what Whisper heard. Recording that as the mishear
+/// teaches the dictionary a spelling recognition may never actually produce.
+///
+/// The raw transcript is the ground truth, so this looks up the token in it that the
+/// correction replaced: the closest one to the observed mishear. Both forms are worth
+/// keeping — the raw one is what will need matching next time, the cleaned one is what
+/// the pre-filter will see if cleanup mangles it the same way again.
+///
+/// Returns `None` when the raw transcript has nothing recognizably similar, which is
+/// the honest answer when cleanup rewrote the region beyond recognition.
+pub fn ground_truth_mishear(raw_transcript: &str, observed: &str) -> Option<String> {
+    let observed_lc = observed.to_lowercase();
+    raw_transcript
+        .split_whitespace()
+        .map(|t| t.trim_matches(|c: char| c.is_ascii_punctuation()))
+        .filter(|t| !t.is_empty())
+        .filter(|t| !t.eq_ignore_ascii_case(observed))
+        .map(|t| (score(&t.to_lowercase(), &observed_lc), t))
+        // Ties go to the earlier token, which `min_by` gives us for free.
+        .filter(|(d, _)| *d <= MAX_GROUND_TRUTH_DISTANCE)
+        .min_by(|(a, _), (b, _)| a.total_cmp(b))
+        .map(|(_, t)| t.to_string())
+}
+
+/// How far the raw token may sit from the observed mishear and still be taken as the
+/// same word.
+///
+/// Deliberately looser than [`MAX_NORMALIZED_DISTANCE`], because the question is a
+/// different one. Selection scans every entry in the dictionary against every spoken
+/// word, so a wide net there means false corrections. Here we already know a
+/// correction happened, and we are picking the best of a handful of tokens in one
+/// short sentence — cleanup is entitled to have reshaped the word a fair bit on its
+/// way to the screen ("monvee" -> "Monvi"), and the fallback if nothing matches is
+/// simply to keep the observed form.
+const MAX_GROUND_TRUTH_DISTANCE: f32 = 0.55;
+
+/// Normalized edit distance, 0 = identical.
+fn score(a: &str, b: &str) -> f32 {
+    let maxlen = a.chars().count().max(b.chars().count());
+    if maxlen == 0 {
+        return 1.0;
+    }
+    strsim::levenshtein(a, b) as f32 / maxlen as f32
+}
+
 /// Is `a` within `max` normalized edit distance of `b` (0 = identical, 1 = nothing
 /// in common)?
 fn within(a: &str, b: &str, max: f32) -> bool {
@@ -232,6 +281,34 @@ mod tests {
     fn prefilter_still_catches_an_unlisted_near_mishear() {
         let v = store().prefilter("tell manvie about it", 15);
         assert!(v.iter().any(|e| e.correct == "Manvi"));
+    }
+
+    /// Cleanup capitalized and punctuated what Whisper wrote, so the mishear auto-learn
+    /// observes is "Monvi." while recognition actually produced "monvee". The dictionary
+    /// needs the latter — that is the string it will have to match next time.
+    #[test]
+    fn ground_truth_prefers_what_recognition_wrote() {
+        let raw = "hey can you send this to monvee before the standup";
+        assert_eq!(ground_truth_mishear(raw, "Monvi"), Some("monvee".to_string()));
+    }
+
+    #[test]
+    fn ground_truth_ignores_punctuation_and_case() {
+        assert_eq!(ground_truth_mishear("tell monvee, please", "monvi"), Some("monvee".to_string()));
+    }
+
+    /// Nothing similar in the raw transcript means cleanup rewrote the region; say so
+    /// rather than learning an unrelated word.
+    #[test]
+    fn ground_truth_is_none_when_nothing_resembles_it() {
+        assert_eq!(ground_truth_mishear("the weather is nice today", "Manvi"), None);
+    }
+
+    /// When recognition already wrote the observed form, there is no better truth to
+    /// find and the caller should keep what it had.
+    #[test]
+    fn ground_truth_skips_an_exact_match() {
+        assert_eq!(ground_truth_mishear("tell monvi about it", "monvi"), None);
     }
 
     #[test]
