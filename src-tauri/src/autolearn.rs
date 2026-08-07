@@ -9,7 +9,6 @@
 //! dictionary with common-word edits. Reads use the Accessibility API and only run
 //! when Accessibility is granted.
 
-#[cfg(target_os = "macos")]
 mod imp {
     use std::os::raw::{c_char, c_void};
     use std::ptr;
@@ -148,11 +147,7 @@ mod imp {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub use imp::watch_correction;
-
-#[cfg(not(target_os = "macos"))]
-pub fn watch_correction(_inserted: &str) {}
 
 /// Split into alphanumeric word tokens (punctuation stripped), original case kept.
 pub fn word_tokens(s: &str) -> Vec<String> {

@@ -10,15 +10,8 @@
 //!
 //! It auto-exits with success after 3 Fn presses, or times out after 60s.
 //!
-//! macOS-only demo; other platforms get a stub `main` so the workspace still
-//! builds (see `win.rs`/`hotkey.rs` for the real Windows push-to-talk hook).
+//! Not wired into the app — the Fn tap currently runs in-process in `hotkey.rs`.
 
-#[cfg(not(target_os = "macos"))]
-fn main() {
-    eprintln!("[whimpr-sidecar] this standalone Fn-key demo is macOS-only; nothing to do here.");
-}
-
-#[cfg(target_os = "macos")]
 mod imp {
 #![allow(dead_code)]
 

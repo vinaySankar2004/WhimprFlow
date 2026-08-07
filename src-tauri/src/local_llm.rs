@@ -55,28 +55,15 @@ impl Drop for LocalWorker {
     }
 }
 
-/// Platform application-support dir: `~/Library/Application Support/WhimprFlow`
-/// on macOS, `%APPDATA%\WhimprFlow` on Windows.
+/// `~/Library/Application Support/WhimprFlow`
 fn app_support_dir() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        let base = std::env::var("APPDATA").unwrap_or_default();
-        PathBuf::from(base).join("WhimprFlow")
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let home = std::env::var("HOME").unwrap_or_default();
-        PathBuf::from(home).join("Library/Application Support/WhimprFlow")
-    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home).join("Library/Application Support/WhimprFlow")
 }
 
 /// Find the worker binary: next to the app executable (bundled), else the dev build dir.
 pub fn worker_bin_path() -> Option<PathBuf> {
-    let exe_name = if cfg!(target_os = "windows") {
-        "whimpr-llm-worker.exe"
-    } else {
-        "whimpr-llm-worker"
-    };
+    let exe_name = "whimpr-llm-worker";
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let cand = dir.join(exe_name);
@@ -85,21 +72,13 @@ pub fn worker_bin_path() -> Option<PathBuf> {
             }
         }
     }
-    // Dev fallback.
-    #[cfg(target_os = "windows")]
-    {
-        let dev = std::env::current_dir()
-            .unwrap_or_default()
-            .join("target/release")
-            .join(exe_name);
-        return dev.exists().then_some(dev);
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let dev = PathBuf::from(home).join("WhimprFlow/target/release/whimpr-llm-worker");
-        dev.exists().then_some(dev)
-    }
+    // Dev fallback: a cargo build puts the worker beside the app binary, so this
+    // only matters for an unusual layout.
+    let dev = std::env::current_dir()
+        .unwrap_or_default()
+        .join("target/release")
+        .join(exe_name);
+    dev.exists().then_some(dev)
 }
 
 /// The local cleanup model path (same models dir as whisper/ASR). Prefer the

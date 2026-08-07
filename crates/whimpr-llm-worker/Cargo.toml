@@ -23,9 +23,6 @@ anyhow = { workspace = true }
 [dev-dependencies]
 whimpr-core = { path = "../whimpr-core" }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-llama-cpp-2 = { version = "0.1", features = ["metal"] }
-
-# No GPU feature on Windows yet — CPU backend first, Vulkan/CUDA can follow.
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-llama-cpp-2 = { version = "0.1" }
+[dependencies.llama-cpp-2]
+version = "0.1"
+features = ["metal"]

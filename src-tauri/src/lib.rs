@@ -10,8 +10,6 @@ mod autolearn;
 mod hotkey;
 mod local_llm;
 mod paste;
-#[cfg(target_os = "windows")]
-mod win;
 
 use serde::Serialize;
 use tauri::{
@@ -56,14 +54,6 @@ pub(crate) fn position_overlay(w: &WebviewWindow) {
     );
 }
 
-/// Float the pill above the Dock and let it follow the user into full-screen Spaces.
-///
-/// Tauri's `always_on_top` maps to NSFloatingWindowLevel (3), which is BELOW the
-/// Dock (20) — that is why a bottom-anchored pill reads as "not showing up". Raising
-/// to 25 clears the Dock while staying under the screen saver. The collection
-/// behavior is the other half: without FullScreenAuxiliary a window simply does not
-/// exist on another app's full-screen Space, which is exactly where someone dictating
-/// tends to be.
 /// Turn the overlay's NSWindow into a non-activating NSPanel.
 ///
 /// This is the difference between "floats over other windows" and "floats over
@@ -76,7 +66,6 @@ pub(crate) fn position_overlay(w: &WebviewWindow) {
 /// AppKit is fine with it here because NSPanel adds no instance variables over
 /// NSWindow. Non-activating also means clicking the pill never steals focus from the
 /// app being dictated into — which the paste path depends on.
-#[cfg(target_os = "macos")]
 fn promote_overlay_to_panel(w: &WebviewWindow) {
     use objc2::runtime::AnyClass;
     use objc2_app_kit::{NSPanel, NSWindowStyleMask};
@@ -99,10 +88,15 @@ fn promote_overlay_to_panel(w: &WebviewWindow) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn promote_overlay_to_panel(_w: &WebviewWindow) {}
-
-#[cfg(target_os = "macos")]
+/// Float the pill above the Dock and let it follow the user into full-screen Spaces.
+///
+/// Tauri's `always_on_top` maps to NSFloatingWindowLevel (3), which is BELOW the
+/// Dock (20) — that is why a bottom-anchored pill reads as "not showing up". Raising
+/// to 25 clears the Dock while staying under the screen saver. The collection
+/// behavior is the other half: without FullScreenAuxiliary a window simply does not
+/// exist on another app's full-screen Space, which is exactly where someone dictating
+/// tends to be. Re-asserted on every state change, because activating another app or
+/// switching Space can knock a window back down the stack.
 fn raise_overlay_level(w: &WebviewWindow) {
     use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
 
@@ -136,11 +130,7 @@ fn raise_overlay_level(w: &WebviewWindow) {
 
 /// Above the Dock (20) and normal app windows (0), below the screen saver.
 /// NSStatusWindowLevel; not exported as a constant by objc2-app-kit.
-#[cfg(target_os = "macos")]
 const OVERLAY_WINDOW_LEVEL: isize = 25;
-
-#[cfg(not(target_os = "macos"))]
-fn raise_overlay_level(_w: &WebviewWindow) {}
 
 fn build_overlay(app: &tauri::App) -> tauri::Result<WebviewWindow> {
     let overlay = WebviewWindowBuilder::new(

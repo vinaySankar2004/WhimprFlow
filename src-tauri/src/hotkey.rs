@@ -1,15 +1,18 @@
-//! Hold-Fn → pill wiring for the demo shell.
+//! The macOS dictation layer: Fn key → capture → ASR → cleanup → paste.
 //!
-//! This installs an in-process CoreGraphics event tap that feeds Fn key-down /
-//! key-up into the real [`whimpr_core`] dictation state machine, and turns the
-//! machine's actions into `whimpr://flowbar/state` events the overlay pill
-//! renders. There is no audio or ASR yet, so a finalized session is simulated as
-//! completing shortly after key release — enough to see the full
-//! recording → transcribing → done → idle loop driven by the actual state machine.
+//! An in-process CoreGraphics event tap feeds Fn key-down/key-up into the
+//! [`whimpr_core`] state machine, and `apply_action` enacts what the machine
+//! returns — start the mic, play the ping, drive the pill, transcribe on release,
+//! run cleanup through the configured provider, and paste.
 //!
-//! In the shipping product this hook lives in a separate sidecar process (so heavy
-//! inference can't stall it); running it in-process is an acceptable macOS-only
-//! path for this demo and the early milestones.
+//! The tap is global only when Accessibility is granted; without it macOS silently
+//! limits it to whenever this app is frontmost, which reads as "dictation does
+//! nothing in other apps". The tap thread therefore waits for the grant and starts
+//! working the moment it arrives, without a relaunch.
+//!
+//! Running the tap in-process is a known trade-off: heavy inference on a starved
+//! machine can stall it. `whimpr-ipc` and `whimpr-sidecar` exist to move it into a
+//! separate process but are not wired in yet.
 
 /// Dictionary entry shape sent to the Hub UI (auto-learned entries flagged).
 #[derive(Clone, serde::Serialize)]
@@ -34,7 +37,6 @@ impl Default for LocalModelStatus {
     }
 }
 
-#[cfg(target_os = "macos")]
 mod imp {
     use std::os::raw::c_void;
     use std::path::PathBuf;
@@ -800,64 +802,8 @@ mod imp {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub use imp::{
     asr_model_name, current_settings, dictionary_add, dictionary_entries, dictionary_learn,
     dictionary_remove, history, install, local_model_status, rebuild_providers, stats_summary,
     update_settings,
-};
-
-// Windows uses the real (but unverified) platform layer in `crate::win`.
-#[cfg(target_os = "windows")]
-pub use crate::win::{
-    current_settings, dictionary_add, dictionary_entries, dictionary_learn, dictionary_remove,
-    history, install, rebuild_providers, stats_summary, update_settings,
-};
-
-// The Windows layer tracks no load state of its own, so answer from the filesystem:
-// a present model is reported ready. Less precise than the macOS path (it cannot see
-// a failed worker spawn) but honest about what is on disk.
-#[cfg(not(target_os = "macos"))]
-pub fn local_model_status() -> LocalModelStatus {
-    let p = crate::local_llm::model_path();
-    match p.exists() {
-        true => LocalModelStatus {
-            state: "ready",
-            model: p.file_name().and_then(|n| n.to_str()).map(str::to_string),
-        },
-        false => LocalModelStatus { state: "missing", model: None },
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn asr_model_name() -> Option<String> {
-    None
-}
-
-// Other platforms (Linux, etc.): inert stubs so the crate still builds.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-mod other {
-    pub fn install(_app: tauri::AppHandle) {}
-    pub fn current_settings() -> whimpr_core::Settings {
-        whimpr_core::Settings::default()
-    }
-    pub fn update_settings(_new: whimpr_core::Settings) {}
-    pub fn rebuild_providers() {}
-    pub fn stats_summary(tz_offset_minutes: i32) -> whimpr_core::StatsSummary {
-        whimpr_core::StatsStore::default().summary(tz_offset_minutes, 0)
-    }
-    pub fn history(_limit: usize) -> Vec<whimpr_core::HistoryItem> {
-        Vec::new()
-    }
-    pub fn dictionary_entries() -> Vec<super::DictEntryDto> {
-        Vec::new()
-    }
-    pub fn dictionary_add(_correct: String, _mishears: Vec<String>) {}
-    pub fn dictionary_remove(_correct: &str) {}
-    pub fn dictionary_learn(_correct: String, _mishears: Vec<String>) {}
-}
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub use other::{
-    current_settings, dictionary_add, dictionary_entries, dictionary_learn, dictionary_remove,
-    history, install, rebuild_providers, stats_summary, update_settings,
 };

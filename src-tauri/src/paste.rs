@@ -8,7 +8,6 @@
 //! Posting the Cmd+V keystroke requires **Accessibility** permission; [`is_trusted`]
 //! reports whether it's granted so the shell can prompt.
 
-#[cfg(target_os = "macos")]
 mod imp {
     use std::os::raw::c_void;
     use std::ptr::null;
@@ -117,38 +116,13 @@ mod imp {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub use imp::{
     input_monitoring_granted, is_trusted, microphone_granted, paste_text, prompt_accessibility,
     request_input_monitoring,
 };
 
-#[cfg(not(target_os = "macos"))]
-pub fn paste_text(_text: &str) -> anyhow::Result<()> {
-    Ok(())
-}
 
-#[cfg(not(target_os = "macos"))]
-pub fn is_trusted() -> bool {
-    true
-}
 
-#[cfg(not(target_os = "macos"))]
-pub fn prompt_accessibility() -> bool {
-    true
-}
 
-#[cfg(not(target_os = "macos"))]
-pub fn microphone_granted() -> bool {
-    true
-}
 
-#[cfg(not(target_os = "macos"))]
-pub fn input_monitoring_granted() -> bool {
-    true
-}
 
-#[cfg(not(target_os = "macos"))]
-pub fn request_input_monitoring() -> bool {
-    true
-}

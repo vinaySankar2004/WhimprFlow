@@ -10,7 +10,6 @@
 /// Bundle id of the frontmost application — the paste target — e.g.
 /// `com.apple.mail`. Returns `None` when it can't be determined or when
 /// WhimprFlow itself is frontmost (so we don't format for our own Hub window).
-#[cfg(target_os = "macos")]
 #[allow(unused_unsafe)]
 pub fn frontmost_bundle_id() -> Option<String> {
     use objc2_app_kit::NSWorkspace;
@@ -28,7 +27,3 @@ pub fn frontmost_bundle_id() -> Option<String> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn frontmost_bundle_id() -> Option<String> {
-    None
-}
