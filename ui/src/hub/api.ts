@@ -151,6 +151,24 @@ export async function setSettings(settings: Settings): Promise<void> {
   }
 }
 
+/**
+ * Settings changed somewhere other than this window — today that means the tray's
+ * quick-settings menu. Without this the Hub keeps rendering whatever it last
+ * fetched, so flipping Auto Cleanup from the tray leaves the pane insisting the old
+ * level is still selected.
+ *
+ * Not fired for the Hub's own saves; echoing those back would round-trip every
+ * keystroke in a text field through the backend.
+ */
+export async function onSettingsChanged(cb: (s: Settings) => void): Promise<() => void> {
+  try {
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen<Settings>("whimpr://settings", (e) => cb(e.payload));
+  } catch {
+    return () => {}; // browser preview — no backend to hear from
+  }
+}
+
 export async function getStatus(): Promise<Status> {
   try {
     return await invoke<Status>("get_status");

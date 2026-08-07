@@ -89,6 +89,13 @@ These are not hypotheticals; each one bit during development.
   app — for a feature that only matters while dictating. It is enabled by `emit_bar`
   for the live states and disabled otherwise, which is also the only reason it can
   safely be the app's one *consuming* tap. Do not merge the two taps.
+- **A tray `CheckMenuItem` ticks itself on click, whatever your handler decides.**
+  So the tray's radio groups (Auto Cleanup, Dictation Key) are re-asserted wholesale
+  by `sync_tray_checks` after every change. Handling only the item that was clicked
+  leaves the previous choice still ticked, and clicking the already-chosen one
+  unticks it and empties the group. Also: the tray menu needs
+  `show_menu_on_left_click(true)` — the default is right-click only, which reads as
+  "the tray needs a double-click".
 - **Closing the Hub must hide it, never close it.** The app survives a real close —
   the overlay keeps the process alive — but the window is *destroyed*, and
   `get_webview_window("main")` returns `None` forever after, so the tray's Open item

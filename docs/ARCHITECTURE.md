@@ -345,6 +345,30 @@ counts as visible while the pill is up, so the flag says "true" with the Hub
 nowhere on screen. `show_hub` unminimizes before showing and shows before
 focusing, because `set_focus` is a no-op on a hidden or minimized window.
 
+### The tray's quick settings
+
+The menu carries Auto Cleanup, Dictation Key, and the record ping alongside Open
+and Quit. Those three are the ones worth changing *mid-task*, from whatever app you
+are dictating into. The Cleanup Engine stays out on purpose: picking it means
+reading a model name or pasting an API key, which is Hub work, and it is not a
+decision that changes between two messages.
+
+`show_menu_on_left_click(true)` is required. The default is right-click only, which
+presents as "the tray needs a double-click" — the first click does nothing visible,
+so people click again.
+
+Two things keep the tray and the Hub from disagreeing:
+
+- **Tick marks are re-asserted, never toggled.** A `CheckMenuItem` flips its own tick
+  on click whatever the app decides, so a radio group needs the losing sibling
+  cleared — and clicking the *already* chosen item would otherwise untick it and
+  leave the group empty. `sync_tray_checks` rewrites every tick from the settings
+  after each change, from either surface, which covers both.
+- **Only the tray emits `whimpr://settings`.** The Hub listens and re-renders. Its
+  own saves stay silent, because echoing a change back to the surface that made it
+  would round-trip every keystroke in the base-URL field through the backend and
+  into React state.
+
 ## The overlay pill
 
 A transparent, always-on-top window that renders idle / recording / processing.

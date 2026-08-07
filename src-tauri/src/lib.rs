@@ -12,15 +12,78 @@ mod hotkey;
 mod local_llm;
 mod paste;
 
+use std::sync::OnceLock;
+
 use serde::Serialize;
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
-    Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry,
 };
+use whimpr_core::{CleanupLevel, Settings, TriggerMode};
 
 const OVERLAY_LABEL: &str = "whimpr_bar";
 const HUB_LABEL: &str = "main";
+
+/// The tray's quick settings, and the event the Hub hears when one is used.
+///
+/// These three are on the tray because they are the ones worth changing *mid-task*,
+/// from whatever app you are dictating into: how hard cleanup edits, whether the
+/// key is held or tapped, and whether it pings. The Cleanup Engine deliberately
+/// stays out — picking it means reading a model name or pasting an API key, which
+/// is Hub work, and it is not a decision that changes between two messages.
+const SETTINGS_EVENT: &str = "whimpr://settings";
+
+/// Handles to the tray's tick marks, so the menu can be re-ticked whenever settings
+/// change. Without this the menu shows whatever was true at launch and quietly
+/// disagrees with the Hub the moment either surface is used.
+struct TrayChecks {
+    levels: Vec<(CleanupLevel, CheckMenuItem<Wry>)>,
+    triggers: Vec<(TriggerMode, CheckMenuItem<Wry>)>,
+    sound: CheckMenuItem<Wry>,
+}
+
+static TRAY_CHECKS: OnceLock<TrayChecks> = OnceLock::new();
+
+/// Point every tick mark at what the settings actually say. Cheap, and called on
+/// each change from either surface, so the two can never drift.
+fn sync_tray_checks(s: &Settings) {
+    let Some(t) = TRAY_CHECKS.get() else { return };
+    for (level, item) in &t.levels {
+        let _ = item.set_checked(*level == s.cleanup_level);
+    }
+    for (mode, item) in &t.triggers {
+        let _ = item.set_checked(*mode == s.trigger_mode);
+    }
+    let _ = t.sound.set_checked(s.sound_on_start);
+}
+
+/// Radio behavior for the two grouped submenus. A check item ticks itself on click
+/// whatever the app thinks, so the sibling that is no longer chosen has to be
+/// un-ticked explicitly — and clicking the already-chosen one would otherwise clear
+/// it, leaving a group with nothing selected. `sync_tray_checks` re-asserts the
+/// whole group from the settings, which handles both.
+fn set_level(app: &tauri::AppHandle, level: CleanupLevel) {
+    apply_settings_from_tray(app, |s| s.cleanup_level = level);
+}
+
+fn set_trigger(app: &tauri::AppHandle, mode: TriggerMode) {
+    apply_settings_from_tray(app, |s| s.trigger_mode = mode);
+}
+
+/// Apply a change made from the *tray*: persist it, re-tick the menu, and tell the
+/// Hub, which is otherwise showing stale toggles if it happens to be open.
+///
+/// The Hub's own `set_settings` deliberately does not emit this event. Echoing a
+/// change back to the surface that made it would round-trip every keystroke in the
+/// base-URL field through the backend and back into React state.
+fn apply_settings_from_tray(app: &tauri::AppHandle, mutate: impl FnOnce(&mut Settings)) {
+    let mut settings = hotkey::current_settings();
+    mutate(&mut settings);
+    hotkey::update_settings(settings.clone());
+    sync_tray_checks(&settings);
+    let _ = app.emit_to(HUB_LABEL, SETTINGS_EVENT, settings);
+}
 
 /// Anchor the overlay window bottom-center of the monitor the user is on.
 ///
@@ -242,9 +305,13 @@ fn get_settings() -> whimpr_core::Settings {
     hotkey::current_settings()
 }
 
+/// Save settings from the Hub. Re-ticks the tray too, so the quick menu never shows
+/// a level the Hub has already moved off. No event is emitted back — see
+/// [`apply_settings_from_tray`].
 #[tauri::command]
 fn set_settings(settings: whimpr_core::Settings) {
-    hotkey::update_settings(settings);
+    hotkey::update_settings(settings.clone());
+    sync_tray_checks(&settings);
 }
 
 /// Aggregated dictation stats for the Hub dashboard. `tz_offset_minutes` is the
@@ -464,17 +531,108 @@ pub fn run() {
             // Wire the Fn key to the pill via the real state machine.
             hotkey::install(app.handle().clone());
 
+            // Quick settings need to open on a single click. The default is a menu
+            // that only appears on right-click, so a left click did nothing visible
+            // and the menu looked like it needed a double-click to coax open.
+            let settings = hotkey::current_settings();
+
             let open = MenuItem::with_id(app, "open", "Open WhimprFlow", true, None::<&str>)?;
-            let sep = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit WhimprFlow", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &sep, &quit])?;
+
+            // Ids are "<group>:<value>" and parsed back in the handler, so adding a
+            // level or a trigger mode is one line here and one line in the match.
+            let level_items: Vec<(CleanupLevel, CheckMenuItem<Wry>)> = [
+                (CleanupLevel::None, "none", "None"),
+                (CleanupLevel::Messaging, "messaging", "Messaging"),
+                (CleanupLevel::Light, "light", "Light"),
+            ]
+            .into_iter()
+            .map(|(level, id, label)| {
+                CheckMenuItem::with_id(
+                    app,
+                    format!("level:{id}"),
+                    label,
+                    true,
+                    level == settings.cleanup_level,
+                    None::<&str>,
+                )
+                .map(|item| (level, item))
+            })
+            .collect::<tauri::Result<_>>()?;
+
+            let trigger_items: Vec<(TriggerMode, CheckMenuItem<Wry>)> = [
+                (TriggerMode::Hold, "hold", "Hold to talk"),
+                (TriggerMode::Toggle, "toggle", "Press to start, press to stop"),
+            ]
+            .into_iter()
+            .map(|(mode, id, label)| {
+                CheckMenuItem::with_id(
+                    app,
+                    format!("trigger:{id}"),
+                    label,
+                    true,
+                    mode == settings.trigger_mode,
+                    None::<&str>,
+                )
+                .map(|item| (mode, item))
+            })
+            .collect::<tauri::Result<_>>()?;
+
+            let sound = CheckMenuItem::with_id(
+                app,
+                "sound",
+                "Play a sound when recording starts",
+                true,
+                settings.sound_on_start,
+                None::<&str>,
+            )?;
+
+            let cleanup_menu = Submenu::with_items(
+                app,
+                "Auto Cleanup",
+                true,
+                &level_items.iter().map(|(_, i)| i as &dyn tauri::menu::IsMenuItem<Wry>).collect::<Vec<_>>(),
+            )?;
+            let trigger_menu = Submenu::with_items(
+                app,
+                "Dictation Key",
+                true,
+                &trigger_items.iter().map(|(_, i)| i as &dyn tauri::menu::IsMenuItem<Wry>).collect::<Vec<_>>(),
+            )?;
+
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &open,
+                    &PredefinedMenuItem::separator(app)?,
+                    &cleanup_menu,
+                    &trigger_menu,
+                    &sound,
+                    &PredefinedMenuItem::separator(app)?,
+                    &quit,
+                ],
+            )?;
+
+            let _ = TRAY_CHECKS.set(TrayChecks {
+                levels: level_items,
+                triggers: trigger_items,
+                sound,
+            });
 
             let mut tray = TrayIconBuilder::new()
                 .menu(&menu)
-                .show_menu_on_left_click(false)
+                .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_hub(app),
                     "quit" => app.exit(0),
+                    "sound" => apply_settings_from_tray(app, |s| {
+                        s.sound_on_start = !s.sound_on_start;
+                    }),
+                    "level:none" => set_level(app, CleanupLevel::None),
+                    "level:messaging" => set_level(app, CleanupLevel::Messaging),
+                    "level:light" => set_level(app, CleanupLevel::Light),
+                    "trigger:hold" => set_trigger(app, TriggerMode::Hold),
+                    "trigger:toggle" => set_trigger(app, TriggerMode::Toggle),
                     _ => {}
                 });
             if let Some(icon) = app.default_window_icon().cloned() {

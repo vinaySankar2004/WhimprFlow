@@ -11,6 +11,7 @@ import { Help } from "./Help";
 import {
   getSettings,
   setSettings,
+  onSettingsChanged,
   getStatus,
   type Settings,
   type Status,
@@ -29,6 +30,18 @@ export function App() {
   useEffect(() => {
     getSettings().then(setLocalSettings);
     refresh();
+    // listen() resolves asynchronously, so a cleanup that runs before it settles
+    // (StrictMode's double-mount) would otherwise leak a second listener.
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    void onSettingsChanged(setLocalSettings).then((un) => {
+      if (cancelled) un();
+      else unlisten = un;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 
   const update = (s: Settings) => {
