@@ -56,12 +56,11 @@ afterwards — the choice is only about what gets downloaded.
 | Cleanup | `qwen2.5-1.5b-instruct-q4_k_m.gguf` | 1.0 GB | under 16 GB |
 
 The cleanup model is the one that scales down, not the ASR one, and that is not
-arbitrary. Whisper's weights live in a Metal buffer that stays resident for as long
-as the app runs — 716 MB paid around the clock — while the llama worker mmaps its
-GGUF and pages it in only while it is actually cleaning up. So the big file is the
-cheap one to keep. Dropping to a smaller *Whisper* model would save less memory and
-cost far more accuracy: `ggml-base.en.bin` mis-hears ordinary names, which is most of
-what a personal dictionary then exists to repair.
+arbitrary. Dropping to a smaller *Whisper* model costs far more than it saves:
+`ggml-base.en.bin` mis-hears ordinary names, which is most of what a personal
+dictionary then exists to repair, while a smaller cleanup model only loses polish on
+text that is already right. Whisper's 716 MB is paid around the clock either way — its
+weights sit in a Metal buffer for as long as the app runs.
 
 The 4B cleanup model is meaningfully better at spoken self-corrections and structure.
 On a 16 GB machine, take it.

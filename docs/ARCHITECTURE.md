@@ -534,11 +534,23 @@ ladder on paper, and the one to actually install: measured against the f16 build
 the same clips it was indistinguishable in accuracy — better, on the hardest surname —
 at the same speed, for **716 MB** resident instead of **1755 MB**.
 
-That gigabyte is paid around the clock. Whisper's weights live in a Metal buffer that
-stays fully resident for as long as the app runs, whereas the llama worker mmaps its
-GGUF and pages it in on demand — which is why the 2.5 GB cleanup model shows ~63 MB of
-footprint while the smaller Whisper model shows all of its own. Neither costs CPU when
-idle; the cost is memory, and it is continuous.
+That gigabyte is paid around the clock: Whisper's weights live in a Metal buffer that
+stays fully resident for as long as the app runs. Neither model costs CPU when idle;
+the cost is memory, and it is continuous.
+
+**`ps` is the wrong instrument here and will tell you the opposite of the truth.**
+Measured on a 16 GB M-series machine moments after launch, with no dictation yet
+performed: `whimpr-tauri` **48 MB** RSS and `whimpr-llm-worker` **647 MB** (the 4B
+cleanup model). Read literally that says Whisper is free and cleanup is the expensive
+one, and both halves are wrong. Whisper's Metal buffer does not appear in the calling
+process's RSS at all, and the worker reaches its number by *loading* the GGUF, not by
+cleaning anything up — the first cleanup has not run. Use Activity Monitor's memory
+figures, or measure the whole system, before concluding anything about either.
+
+The cleanup model is still the one to scale down on a small machine, but the reason is
+accuracy, not footprint: a smaller Whisper mis-hears ordinary names, which is most of
+what the dictionary then exists to repair, while a smaller cleanup model loses
+polish on text that is already correct.
 
 Recognition latency on an M-series machine, 2.8 s of audio: ~185 ms to load at startup,
 ~1.1 s per pass. A dictation the dictionary touches runs two passes. For comparison

@@ -14,11 +14,11 @@
 # after which macOS still verifies the code signature at launch but does not run a
 # Gatekeeper policy check. The signature is real and checked below either way.
 #
-# Which models, and why it depends on the machine: Whisper's weights sit in a Metal
-# buffer resident for as long as the app runs, so ASR memory is paid around the clock;
-# the llama worker mmaps its GGUF and pages it in only while cleaning up. That makes
-# the cleanup model the one to scale down on a small machine, and both ladders take
-# the best file present, so the app needs no configuring afterwards.
+# Which models, and why it depends on the machine: the cleanup model is the one to
+# scale down on a small machine, because a smaller Whisper mis-hears ordinary names
+# (which is what a personal dictionary then exists to repair) while a smaller cleanup
+# model only loses polish on text that is already right. Both ladders take the best
+# file present, so the app needs no configuring afterwards.
 #
 # Bash 3.2 compatible on purpose — that is what /bin/bash is on a stock Mac.
 #
