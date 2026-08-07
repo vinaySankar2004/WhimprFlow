@@ -296,8 +296,10 @@ focusing, because `set_focus` is a no-op on a hidden or minimized window.
 ## The overlay pill
 
 A transparent, always-on-top window that renders idle / recording / processing.
-Five things make it actually visible, each fixing a real failure — and four of the
-five produce the *same* symptom, "the pill only shows on the desktop":
+Five things make it actually visible, each fixing a real failure. The first two fail
+as a pill hidden behind the Dock; the last three all fail as the *same* symptom, "the
+pill only shows on the desktop", which is why that report identifies nothing on its
+own:
 
 - Anchored to the monitor's **work area**, not its full rect, so it clears the Dock.
 - **Window level 25** (NSStatusWindowLevel), above the Dock's 20. Tauri's
@@ -314,7 +316,6 @@ five produce the *same* symptom, "the pill only shows on the desktop":
   WhimprFlow is *never* the active app. Left at the default the pill appears only
   when WhimprFlow itself is frontmost, which presents as "it only shows on the
   desktop" and is easily mistaken for the missing-Accessibility symptom below.
-
 - **Ordered in LAST**, after the promotion and the flags. This is the one that is
   pure sequencing and therefore the easiest to reintroduce: macOS assigns a window
   to a Space when it is **first ordered in**, and setting `collectionBehavior`
