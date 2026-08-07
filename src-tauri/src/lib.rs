@@ -166,11 +166,24 @@ fn build_overlay(app: &tauri::App) -> tauri::Result<WebviewWindow> {
     .skip_taskbar(true)
     .focused(false)
     .resizable(false)
-    .visible(true)
+    // Built HIDDEN, and this is the whole ballgame for full-screen Spaces. macOS
+    // assigns a window to a Space when it is first ordered in, and nothing about
+    // changing `collectionBehavior` afterwards migrates it — the flags read back
+    // perfectly correct while the window stays pinned to the Space it was born on.
+    // Since the app launches on the desktop, a window built visible is a desktop
+    // window forever, which presents as a pill that only ever appears on the
+    // desktop. So: create it hidden, promote it to a panel, set the level and
+    // collection behavior, and only THEN order it in — its first appearance is
+    // already CanJoinAllSpaces, so that is what it gets assigned.
+    .visible(false)
     .build()?;
     position_overlay(&overlay);
     // Panel first: changing the style mask can reset window state, so the level and
-    // collection behavior are applied after it.
+    // collection behavior are applied after it. `raise_overlay_level` finishes with
+    // `orderFrontRegardless`, which is what actually puts the window on screen for
+    // the first time — by which point it is a panel with the right behavior, so the
+    // Space assignment it gets is the one we want. Nothing calls `show()` on this
+    // window; ordering it in here is deliberate, not an oversight.
     promote_overlay_to_panel(&overlay);
     raise_overlay_level(&overlay);
     // Idle renders nothing, so the window must not swallow clicks aimed at whatever

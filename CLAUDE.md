@@ -59,13 +59,22 @@ These are not hypotheticals; each one bit during development.
   WhimprFlow is frontmost, i.e. never, since dictating means being in another app.
   Remove any one and it silently disappears in a specific situation. Non-activating
   also keeps focus in the app being dictated into, which paste depends on.
-- **"The pill only shows on the desktop" has two unrelated causes.** Missing
-  Accessibility (below) and a panel hiding on deactivate. Tell them apart from a
-  shell without touching the app: `CGWindowListCopyWindowInfo` reports
-  `kCGWindowIsOnscreen` per window, so sample the 340×92 layer-25 window with
-  another app frontmost. `onscreen=false` there is the panel; `true` means the
-  window is fine and the tap never fired. Guessing between the two costs an
-  install cycle each time.
+- **The overlay must be ordered in AFTER it is a panel with its collection behavior
+  set.** macOS assigns a window to a Space on its FIRST order-in and never migrates
+  it; set `CanJoinAllSpaces` afterwards and the flag reads back correct while the
+  window stays pinned to the Space it was born on. That is why it is built
+  `visible(false)` and ordered in by `raise_overlay_level`. Flip it back to
+  `visible(true)` and the pill works perfectly on the desktop and is absent from
+  every full-screen app — which is where dictation actually happens.
+- **"The pill only shows on the desktop" has several unrelated causes** — missing
+  Accessibility (below), the panel hiding on deactivate, and the Space-assignment
+  order above — and they are indistinguishable by reading the code, because all of
+  them leave the flags looking right. Do not guess; each wrong guess costs a build
+  and install. Ask the window server: `CGWindowListCopyWindowInfo` for
+  `kCGWindowIsOnscreen`, and `CGSCopySpacesForWindows` for the Spaces the window is
+  really on (`[1]` alone = pinned to the desktop). `CGSCopyManagedDisplaySpaces`
+  says whether the current Space is a full-screen app's (`type=4`) — a maximized
+  window and a full-screen one look alike in a screenshot and behave nothing alike.
 - **macOS runs its own action on the Fn key**, usually the emoji picker, on top of
   dictation. The setting is `AppleFnUsageType` in the **`com.apple.HIToolbox`**
   domain — reading it from NSGlobalDomain (`defaults read -g`) says "does not

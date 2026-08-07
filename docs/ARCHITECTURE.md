@@ -286,7 +286,8 @@ focusing, because `set_focus` is a no-op on a hidden or minimized window.
 ## The overlay pill
 
 A transparent, always-on-top window that renders idle / recording / processing.
-Four things make it actually visible, each fixing a real failure:
+Five things make it actually visible, each fixing a real failure — and four of the
+five produce the *same* symptom, "the pill only shows on the desktop":
 
 - Anchored to the monitor's **work area**, not its full rect, so it clears the Dock.
 - **Window level 25** (NSStatusWindowLevel), above the Dock's 20. Tauri's
@@ -304,11 +305,24 @@ Four things make it actually visible, each fixing a real failure:
   when WhimprFlow itself is frontmost, which presents as "it only shows on the
   desktop" and is easily mistaken for the missing-Accessibility symptom below.
 
-The window server settles which one you are looking at, and it can be asked from
-outside the app: `CGWindowListCopyWindowInfo` reports each window's layer and its
-`kCGWindowIsOnscreen`. If the 340×92 layer-25 window flips to `onscreen=false`
-exactly when another app comes forward, that is the panel hiding itself, not the
-hotkey failing.
+- **Ordered in LAST**, after the promotion and the flags. This is the one that is
+  pure sequencing and therefore the easiest to reintroduce: macOS assigns a window
+  to a Space when it is **first ordered in**, and setting `collectionBehavior`
+  afterwards does not migrate it. A window built visible on the desktop is a
+  desktop window for the rest of the process's life — `CanJoinAllSpaces` reads back
+  correctly and means nothing. So the overlay is built with `visible(false)` and
+  ordered in by the `orderFrontRegardless` at the end of `raise_overlay_level`,
+  once it is already a panel with the right behavior.
+
+None of this can be confirmed by reading the code back, because every one of these
+failures leaves the flags looking right. Ask the window server instead:
+
+- `CGWindowListCopyWindowInfo` gives each window's layer and `kCGWindowIsOnscreen`.
+- `CGSCopySpacesForWindows` (private, diagnostic only) gives the Spaces a window is
+  actually *on*, which is the only way to see the ordering bug. The pill's window
+  should come back on every Space; `[1]` alone means it is pinned to the desktop.
+  `CGSCopyManagedDisplaySpaces` lists the Spaces, where `type=4` is a full-screen
+  app's own Space — worth checking before assuming a window is merely occluded.
 
 Idle renders nothing and sets `ignore_cursor_events`, so it is neither visible
 nor in the way. State arrives as `whimpr://flowbar/state` events; mic level
