@@ -34,10 +34,12 @@ export function modeLabel(mode: CleanupMode): string {
 
 const LEVELS: { value: CleanupLevel; label: string; hint: string }[] = [
   { value: "none", label: "None", hint: "Transcribe exactly what you said, including mistakes." },
+  // Kept to roughly the length of the other two hints: the card wraps past about
+  // 80 characters, and a two-line row among one-line rows reads as a mistake.
   {
     value: "messaging",
     label: "Messaging",
-    hint: "Same cleanup, written the way you text: all lowercase, punctuation only where it's needed.",
+    hint: "Same cleanup, all lowercase, minimal punctuation.",
   },
   { value: "light", label: "Light", hint: "Clean up filler words and grammar. (Recommended)" },
 ];
