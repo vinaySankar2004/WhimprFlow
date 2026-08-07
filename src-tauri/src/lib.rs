@@ -214,10 +214,19 @@ fn get_stats(tz_offset_minutes: i32) -> whimpr_core::StatsSummary {
     hotkey::stats_summary(tz_offset_minutes)
 }
 
-/// Recent dictations for the Hub Home history list (newest first).
+/// One page of dictation history (newest first), filtered by search text and start
+/// time. Paged here rather than in the webview because the log only ever grows:
+/// shipping every dictation ever made so the UI can show ten of them gets slower
+/// every day, and a search over a truncated list silently misses older matches.
 #[tauri::command]
-fn get_history() -> Vec<whimpr_core::HistoryItem> {
-    hotkey::history(200)
+fn get_history(query: whimpr_core::HistoryQuery) -> whimpr_core::HistoryPage {
+    hotkey::history_page(query)
+}
+
+/// Erase the stored text of every dictation, keeping the word counts and streaks.
+#[tauri::command]
+fn clear_transcripts() {
+    hotkey::clear_transcripts();
 }
 
 /// Dictionary entries for the Hub Dictionary screen.
@@ -375,6 +384,7 @@ pub fn run() {
             set_settings,
             get_stats,
             get_history,
+            clear_transcripts,
             get_dictionary,
             add_dictionary_entry,
             remove_dictionary_entry,

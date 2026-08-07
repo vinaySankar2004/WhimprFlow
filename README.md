@@ -33,7 +33,9 @@ choose a cloud cleanup engine — and even then, only the transcript, never the 
   press-to-stop under Settings → Dictation Key.
 - **Personal dictionary + auto-learn** — teach it names and jargon; a post-paste
   Accessibility observer notices one-word corrections and learns them.
-- **Usage stats** — words, WPM, day streak, time saved, 7-day activity, stored locally.
+- **Usage stats and history** — words, WPM, day streak, time saved, 7-day activity, plus
+  a searchable, paged log of past dictations. All on this machine, and one button
+  erases the text of every dictation while keeping the counts.
 
 ## Layout
 

@@ -33,6 +33,15 @@ pub struct SessionRecord {
     /// predate this field.
     #[serde(default)]
     pub text: String,
+    /// The raw ASR transcript, before cleanup — empty when the record predates this
+    /// field or when the user turned transcript storage off.
+    ///
+    /// Kept because everything interesting about *how someone speaks* is in the words
+    /// cleanup removes: fillers, stutters, self-corrections, spoken punctuation. The
+    /// cleaned text alone cannot answer any of it. This is also the only honest
+    /// measure of what cleanup actually did for a given dictation.
+    #[serde(default)]
+    pub raw: String,
     /// Bundle id of the app the text was inserted into, if known.
     #[serde(default)]
     pub app: Option<String>,
@@ -45,6 +54,38 @@ pub struct HistoryItem {
     pub text: String,
     pub app: Option<String>,
     pub words: u32,
+}
+
+/// One page of history: which records to search, and which slice of the matches.
+///
+/// Filtering and paging happen here rather than in the webview because the log
+/// grows without bound — handing the UI every dictation ever made so it can show
+/// ten of them gets slower every day someone uses the app, and a search that only
+/// covers the most recent N silently fails to find older text.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct HistoryQuery {
+    /// Case-insensitive substring over the dictated text. Empty matches everything.
+    #[serde(default)]
+    pub search: String,
+    /// Only records at or after this Unix time. 0 means no lower bound. The caller
+    /// computes it, so day boundaries follow the user's own clock and no timezone
+    /// logic is needed here.
+    #[serde(default)]
+    pub since_unix: u64,
+    /// How many matches to skip (page number × page size).
+    #[serde(default)]
+    pub offset: usize,
+    /// Page size. 0 returns no items — useful for a count-only probe.
+    #[serde(default)]
+    pub limit: usize,
+}
+
+/// A page of matches plus the total that matched, so the UI can render "11–20 of
+/// 347" and know whether a next page exists without asking again.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct HistoryPage {
+    pub items: Vec<HistoryItem>,
+    pub total: usize,
 }
 
 /// The persisted stats log.
@@ -109,7 +150,9 @@ impl StatsStore {
         std::fs::write(path, serde_json::to_string_pretty(self).unwrap_or_default())
     }
 
-    /// Append one completed dictation.
+    /// Append one completed dictation. `raw` is the pre-cleanup transcript; pass an
+    /// empty string when transcript storage is off.
+    #[allow(clippy::too_many_arguments)]
     pub fn record(
         &mut self,
         words: u32,
@@ -117,25 +160,51 @@ impl StatsStore {
         chars: u32,
         ts_unix: u64,
         text: String,
+        raw: String,
         app: Option<String>,
     ) {
-        self.sessions.push(SessionRecord { ts_unix, words, duration_ms, chars, text, app });
+        self.sessions.push(SessionRecord { ts_unix, words, duration_ms, chars, text, raw, app });
     }
 
-    /// The most recent `limit` dictations, newest first, for the Home history list.
-    pub fn history(&self, limit: usize) -> Vec<HistoryItem> {
-        self.sessions
+    /// Drop the stored text of every dictation, keeping the counts. The stats — words,
+    /// speaking time, WPM, streak — are derived from the numeric fields, so this
+    /// clears what was *said* without resetting what was *earned*. That is what makes
+    /// it a usable privacy control rather than a factory reset nobody will press.
+    pub fn forget_transcripts(&mut self) {
+        for s in &mut self.sessions {
+            s.text.clear();
+            s.raw.clear();
+        }
+    }
+
+    /// One page of history, newest first, filtered by search text and start time.
+    pub fn query(&self, q: &HistoryQuery) -> HistoryPage {
+        let needle = q.search.trim().to_lowercase();
+        let matches = self
+            .sessions
             .iter()
             .rev()
             .filter(|s| !s.text.is_empty())
-            .take(limit)
-            .map(|s| HistoryItem {
-                ts_unix: s.ts_unix,
-                text: s.text.clone(),
-                app: s.app.clone(),
-                words: s.words,
-            })
-            .collect()
+            .filter(|s| s.ts_unix >= q.since_unix)
+            .filter(|s| needle.is_empty() || s.text.to_lowercase().contains(&needle));
+
+        // Count and slice in one pass over the same predicate chain, so `total` can
+        // never disagree with what the page actually contains.
+        let mut total = 0usize;
+        let mut items = Vec::new();
+        for s in matches {
+            total += 1;
+            let idx = total - 1;
+            if idx >= q.offset && items.len() < q.limit {
+                items.push(HistoryItem {
+                    ts_unix: s.ts_unix,
+                    text: s.text.clone(),
+                    app: s.app.clone(),
+                    words: s.words,
+                });
+            }
+        }
+        HistoryPage { items, total }
     }
 
     /// Aggregate everything the dashboard shows. `now_unix` and `tz_offset_minutes`
@@ -230,9 +299,9 @@ mod tests {
     fn aggregates_totals_and_wpm() {
         let mut s = StatsStore::default();
         // 60 words in 60s -> 60 wpm.
-        s.record(60, 60_000, 300, NOW, String::new(), None);
+        s.record(60, 60_000, 300, NOW, String::new(), String::new(), None);
         // 30 words in 15s -> 120 wpm.
-        s.record(30, 15_000, 150, NOW, String::new(), None);
+        s.record(30, 15_000, 150, NOW, String::new(), String::new(), None);
         let sum = s.summary(0, NOW);
         assert_eq!(sum.total_words, 90);
         assert_eq!(sum.total_sessions, 2);
@@ -246,11 +315,11 @@ mod tests {
     fn streak_counts_consecutive_days_including_gap_today() {
         let mut s = StatsStore::default();
         // Activity yesterday, day-before, and three days ago (but NOT today).
-        s.record(10, 5_000, 50, NOW - DAY, String::new(), None);
-        s.record(10, 5_000, 50, NOW - 2 * DAY, String::new(), None);
-        s.record(10, 5_000, 50, NOW - 3 * DAY, String::new(), None);
+        s.record(10, 5_000, 50, NOW - DAY, String::new(), String::new(), None);
+        s.record(10, 5_000, 50, NOW - 2 * DAY, String::new(), String::new(), None);
+        s.record(10, 5_000, 50, NOW - 3 * DAY, String::new(), String::new(), None);
         // Gap at 4 days ago, then one more.
-        s.record(10, 5_000, 50, NOW - 5 * DAY, String::new(), None);
+        s.record(10, 5_000, 50, NOW - 5 * DAY, String::new(), String::new(), None);
         let sum = s.summary(0, NOW);
         // Today empty -> start at yesterday; 3 consecutive days back, then a gap.
         assert_eq!(sum.day_streak, 3);
@@ -260,11 +329,99 @@ mod tests {
     #[test]
     fn last7_buckets_by_local_day() {
         let mut s = StatsStore::default();
-        s.record(5, 3_000, 25, NOW, String::new(), None); // today
-        s.record(7, 3_000, 35, NOW - 2 * DAY, String::new(), None); // 2 days ago
+        s.record(5, 3_000, 25, NOW, String::new(), String::new(), None); // today
+        s.record(7, 3_000, 35, NOW - 2 * DAY, String::new(), String::new(), None); // 2 days ago
         let sum = s.summary(0, NOW);
         assert_eq!(sum.last7_words[6], 5); // today
         assert_eq!(sum.last7_words[4], 7); // two days ago
         assert_eq!(sum.last7_words[5], 0);
+    }
+
+    /// 25 dictations, oldest first, one per hour going back from NOW.
+    fn logged(n: usize) -> StatsStore {
+        let mut s = StatsStore::default();
+        for i in (0..n).rev() {
+            s.record(
+                3,
+                2_000,
+                20,
+                NOW - (i as u64) * 3_600,
+                format!("dictation number {i}"),
+                format!("um dictation number {i}"),
+                Some("com.apple.Notes".into()),
+            );
+        }
+        s
+    }
+
+    #[test]
+    fn query_pages_newest_first_and_reports_the_full_total() {
+        let s = logged(25);
+        let page = s.query(&HistoryQuery { limit: 10, ..Default::default() });
+        assert_eq!(page.items.len(), 10);
+        assert_eq!(page.total, 25, "total is every match, not the page size");
+        // Newest first: index 0 was recorded last.
+        assert_eq!(page.items[0].text, "dictation number 0");
+
+        let page2 = s.query(&HistoryQuery { offset: 10, limit: 10, ..Default::default() });
+        assert_eq!(page2.items[0].text, "dictation number 10");
+        assert_eq!(page2.total, 25);
+
+        // Last page is short, and paging past the end is empty rather than an error.
+        assert_eq!(s.query(&HistoryQuery { offset: 20, limit: 10, ..Default::default() }).items.len(), 5);
+        assert!(s.query(&HistoryQuery { offset: 99, limit: 10, ..Default::default() }).items.is_empty());
+    }
+
+    #[test]
+    fn query_search_is_case_insensitive_and_totals_only_matches() {
+        let mut s = logged(3);
+        s.record(2, 1_000, 10, NOW, "Ship the RELEASE notes".into(), String::new(), None);
+        let page = s.query(&HistoryQuery { search: "release".into(), limit: 10, ..Default::default() });
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items.len(), 1);
+    }
+
+    /// Search must reach the whole log, not just the page — the bug in a client-side
+    /// filter over a capped list is that old matches silently do not exist.
+    #[test]
+    fn query_search_reaches_past_the_first_page() {
+        let mut s = logged(30);
+        s.record(2, 1_000, 10, NOW - 100 * 3_600, "the oldest one".into(), String::new(), None);
+        let page = s.query(&HistoryQuery { search: "oldest".into(), limit: 10, ..Default::default() });
+        assert_eq!(page.total, 1);
+    }
+
+    #[test]
+    fn query_since_bounds_the_window() {
+        let s = logged(25);
+        // Only the last 5 hours.
+        let page = s.query(&HistoryQuery { since_unix: NOW - 5 * 3_600, limit: 100, ..Default::default() });
+        assert_eq!(page.total, 6, "inclusive lower bound");
+    }
+
+    #[test]
+    fn forgetting_transcripts_keeps_the_numbers() {
+        let mut s = logged(4);
+        let before = s.summary(0, NOW);
+        s.forget_transcripts();
+        assert!(s.sessions.iter().all(|r| r.text.is_empty() && r.raw.is_empty()));
+        assert_eq!(s.summary(0, NOW), before, "stats are derived from counts, not text");
+        // …and an emptied record drops out of history rather than showing as a blank row.
+        assert_eq!(s.query(&HistoryQuery { limit: 10, ..Default::default() }).total, 0);
+    }
+
+    /// A stats.json written before `raw` existed must still load with every other
+    /// field intact — without `#[serde(default)]` the parse fails and the whole log
+    /// is silently replaced by an empty one.
+    #[test]
+    fn older_stats_file_without_raw_still_loads() {
+        let json = r#"{"sessions":[
+            {"ts_unix":1610107200,"words":5,"duration_ms":2000,"chars":25,
+             "text":"hello there","app":null}
+        ]}"#;
+        let s: StatsStore = serde_json::from_str(json).expect("old file still parses");
+        assert_eq!(s.sessions[0].text, "hello there");
+        assert_eq!(s.sessions[0].raw, "");
+        assert_eq!(s.summary(0, NOW).total_words, 5);
     }
 }

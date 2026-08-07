@@ -58,6 +58,18 @@ pub struct Settings {
     pub anthropic_model: String,
     /// Play the record-start ping.
     pub sound_on_start: bool,
+    /// Keep the raw pre-cleanup transcript alongside the cleaned text in `stats.json`.
+    /// On by default: it never leaves the machine, and it is what the speaking
+    /// insights are computed from — fillers and self-corrections only exist in the
+    /// raw text, since cleanup's whole job is deleting them. Turning it off stops
+    /// new raw text being written; it does not remove what is already stored (the
+    /// "Clear transcripts" action does that).
+    #[serde(default = "default_true")]
+    pub store_raw_transcripts: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -70,6 +82,7 @@ impl Default for Settings {
             openai_base_url: String::new(),
             anthropic_model: "claude-haiku-4-5".to_string(),
             sound_on_start: true,
+            store_raw_transcripts: true,
         }
     }
 }

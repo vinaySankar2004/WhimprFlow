@@ -277,27 +277,42 @@ mod imp {
 
     /// Log one completed dictation to the stats store (words, speaking time, text,
     /// target app) and persist it. Powers both the Hub stats and the history list.
-    pub fn record_dictation(text: &str, duration_secs: f32) {
+    /// `raw` is the pre-cleanup transcript, stored unless the user opted out.
+    pub fn record_dictation(text: &str, raw: &str, duration_secs: f32) {
         let words = whimpr_core::stats::count_words(text);
         if words == 0 {
             return;
         }
         let app = TARGET_APP.get().and_then(|m| m.lock().unwrap().clone());
+        let raw = if current_settings().store_raw_transcripts {
+            raw.trim().to_string()
+        } else {
+            String::new()
+        };
         if let Some(m) = STATS.get() {
             let mut store = m.lock().unwrap();
             let duration_ms = (duration_secs.max(0.0) * 1000.0) as u32;
             let chars = text.chars().count() as u32;
-            store.record(words, duration_ms, chars, unix_now(), text.to_string(), app);
+            store.record(words, duration_ms, chars, unix_now(), text.to_string(), raw, app);
             let _ = store.save(&stats_path());
         }
     }
 
-    /// The most recent dictations for the Hub Home history list.
-    pub fn history(limit: usize) -> Vec<whimpr_core::HistoryItem> {
+    /// One filtered, paged slice of the history for the Hub Home list.
+    pub fn history_page(query: whimpr_core::HistoryQuery) -> whimpr_core::HistoryPage {
         STATS
             .get()
-            .map(|m| m.lock().unwrap().history(limit))
+            .map(|m| m.lock().unwrap().query(&query))
             .unwrap_or_default()
+    }
+
+    /// Erase the stored text of every dictation, keeping the counts, and persist.
+    pub fn clear_transcripts() {
+        if let Some(m) = STATS.get() {
+            let mut store = m.lock().unwrap();
+            store.forget_transcripts();
+            let _ = store.save(&stats_path());
+        }
     }
 
     /// The dictionary entries for the Hub Dictionary screen (auto-learned flagged).
@@ -498,7 +513,11 @@ mod imp {
                 // model missed into real line breaks, strip stray code fences, cap blank
                 // lines. Guarantees no "new line"/"new paragraph" word reaches the cursor.
                 let cleaned = whimpr_core::cleanup::post_process(&cleaned);
-                if whimpr_core::cleanup::evaluate_gates(&raw_out, &cleaned, level).passed() {
+                // The gate sees the same vocab the prompt did, so the spellings the
+                // dictionary authorized don't read as the model inventing words.
+                if whimpr_core::cleanup::evaluate_gates(&raw_out, &cleaned, level, &ctx.vocab)
+                    .passed()
+                {
                     cleaned
                 } else {
                     eprintln!("[whimpr] cleanup gate rejected the edit — pasting raw");
@@ -732,8 +751,11 @@ mod imp {
                                 if let Err(e) = crate::paste::paste_text(&text) {
                                     eprintln!("[whimpr] paste failed: {e}");
                                 }
-                                // Log words + speaking time for the Hub stats (WPM, streak…).
-                                record_dictation(&text, res.duration_secs());
+                                // Log words + speaking time for the Hub stats (WPM, streak…),
+                                // keeping the raw transcript beside the cleaned text — the
+                                // difference between them is the only record of how you
+                                // actually speak, and cleanup's job is to delete it.
+                                record_dictation(&text, &raw, res.duration_secs());
                                 // Watch the field for a post-paste correction to learn (✨).
                                 crate::autolearn::watch_correction(&text);
                             }
@@ -989,7 +1011,7 @@ mod imp {
 }
 
 pub use imp::{
-    asr_model_name, cancel_now, current_settings, dictionary_add, dictionary_entries,
-    dictionary_learn, dictionary_remove, history, install, local_model_status, rebuild_providers,
-    stats_summary, stop_now, update_settings,
+    asr_model_name, cancel_now, clear_transcripts, current_settings, dictionary_add,
+    dictionary_entries, dictionary_learn, dictionary_remove, history_page, install,
+    local_model_status, rebuild_providers, stats_summary, stop_now, update_settings,
 };

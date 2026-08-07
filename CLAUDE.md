@@ -13,9 +13,10 @@ odd parts are odd. Everything below is the working agreement on top of it.
 ```bash
 ./dev.sh                                  # Vite + app, hot reload
 ./scripts/install-macos.sh                # build + install to /Applications + verify permissions
-cargo test -p whimpr-core -p whimpr-ipc   # 43 tests, fast, no models needed
+cargo test -p whimpr-core -p whimpr-ipc   # 57 tests, fast, no models needed
 cd ui && node_modules/.bin/tsc --noEmit   # typecheck the UI
-cargo run -p whimpr-llm-worker --example dictionary_check --release   # dictionary, end to end
+cargo run -p whimpr-llm-worker --example dictionary_check --release            # dictionary, end to end
+cargo run -p whimpr-llm-worker --example dictionary_check --release -- --audit # your own dictionary, no model
 ```
 
 ## Documentation is a source of truth, not a snapshot
@@ -72,6 +73,15 @@ These are not hypotheticals; each one bit during development.
 - **Do not "fix" the in-process Fn tap on principle.** The callback is cheap, heavy
   work already runs on spawned threads, and tap-disabled-by-timeout is caught and
   re-enabled. Move it to the sidecar when a real symptom appears, not before.
+- **The gates must see the utterance's vocab.** `gates::evaluate` takes the
+  prefiltered entries, because a dictionary fix is a word that is *not* in the raw
+  transcript and otherwise reads as a hallucination. Pass `&[]` only when there
+  genuinely was no dictionary. Getting this wrong is invisible in tests and shows up
+  as "the dictionary works in long sentences but not short ones".
+- **Prefilter's bigram pass is stricter than its unigram pass** (0.15 vs 0.30), and
+  levelling them re-introduces false corrections — a glued pair is a token the code
+  invented, not a word anyone said. Both numbers are load-bearing; the harness has a
+  negative case for each.
 
 ## Conventions
 
@@ -92,8 +102,13 @@ These are not hypotheticals; each one bit during development.
 - **Both cleanup providers share one prompt** (`cleanup::build_messages`) so they
   cannot drift.
 - Adding a field to `StatusReport` means updating `Status` **and** `EMPTY_STATUS`
-  in `ui/src/hub/api.ts`. Adding one to `Settings` needs `#[serde(default)]` or
-  `Settings::load` silently resets every saved setting.
+  in `ui/src/hub/api.ts`. Adding one to `Settings` or `SessionRecord` needs
+  `#[serde(default)]`, or `load` silently resets every saved setting / discards the
+  whole stats log.
+- **History is filtered and paged in Rust** (`StatsStore::query`), not in the
+  webview. The log only grows; a client-side filter over a truncated list cannot
+  find old matches, and it gets slower every day. Keep new list features on that
+  side of the boundary.
 
 ## Verifying
 

@@ -97,17 +97,32 @@ impl DictionaryStore {
             .filter(|t| !t.is_empty())
             .collect();
 
-        let mut grams: Vec<String> = toks.clone();
-        for w in toks.windows(2) {
-            grams.push(format!("{}{}", w[0], w[1]));
-        }
+        // Adjacent pairs, glued. These are guesses we manufactured, not words anyone
+        // said, so they are matched far more strictly below.
+        let bigrams: Vec<String> = toks
+            .windows(2)
+            .map(|w| format!("{}{}", w[0], w[1]))
+            .collect();
 
         let mut out = Vec::new();
         for e in &self.entries {
-            let targets: Vec<String> = std::iter::once(e.correct.to_lowercase())
-                .chain(e.mishears.iter().map(|m| m.to_lowercase()))
+            // Targets are compared against single tokens and against concatenated
+            // adjacent pairs, neither of which contains a space — so a multi-word
+            // entry or mishear ("charge bee") has to lose its space too. Left in, it
+            // can never match its own bigram exactly, and instead drifts close to
+            // *unrelated* bigrams by exactly the one edit the space costs.
+            let targets: Vec<String> = std::iter::once(e.correct.as_str())
+                .chain(e.mishears.iter().map(|m| m.as_str()))
+                .map(|t| t.split_whitespace().collect::<String>().to_lowercase())
+                .filter(|t| !t.is_empty())
                 .collect();
-            if grams.iter().any(|g| targets.iter().any(|t| close(g, t))) {
+            let hit = toks
+                .iter()
+                .any(|g| targets.iter().any(|t| within(g, t, MAX_NORMALIZED_DISTANCE)))
+                || bigrams
+                    .iter()
+                    .any(|g| targets.iter().any(|t| within(g, t, MAX_BIGRAM_DISTANCE)));
+            if hit {
                 out.push(VocabEntry {
                     correct: e.correct.clone(),
                     mishears: e.mishears.clone(),
@@ -121,8 +136,33 @@ impl DictionaryStore {
     }
 }
 
-/// Two tokens are "close" if identical or within a normalized edit distance of 0.34.
-fn close(a: &str, b: &str) -> bool {
+/// How far off a spoken token may be and still pull its entry into the prompt,
+/// as a fraction of the longer word.
+///
+/// 0.30 rather than a looser 0.34, for a reason worth keeping: at 0.34 a *one letter*
+/// difference is enough for any word of three characters ("we" pulling in "Wei") and
+/// a three-letter difference is enough at nine ("charge" pulling in "ChargeBee",
+/// which then really did get substituted into "did you charge the battery"). Both of
+/// those are one-third exactly, and both were false. The genuine catches do not
+/// depend on that last bit of slack — a listed mishear matches itself at distance 0,
+/// and a split name is caught by the bigram pass, also at distance 0. So the slack
+/// bought nothing but false positives.
+pub const MAX_NORMALIZED_DISTANCE: f32 = 0.30;
+
+/// The same, for a glued adjacent pair — much stricter, and deliberately so.
+///
+/// A bigram is a token *we* invented by joining two words the speaker said
+/// separately, purely to catch a name that recognition split in half. That job only
+/// ever needs an (almost) exact match: "charge bee" glues to exactly "chargebee".
+/// Give it the same slack as a real word and it becomes a noise generator — "charge
+/// the" glues to "chargethe", which is two letters from "ChargeBee", and the model
+/// duly rewrote "did you charge the battery" as "did you ChargeBee the battery". The
+/// pair is a guess, so it has to be nearly right to count.
+const MAX_BIGRAM_DISTANCE: f32 = 0.15;
+
+/// Is `a` within `max` normalized edit distance of `b` (0 = identical, 1 = nothing
+/// in common)?
+fn within(a: &str, b: &str, max: f32) -> bool {
     if a == b {
         return true;
     }
@@ -130,7 +170,7 @@ fn close(a: &str, b: &str) -> bool {
     if maxlen == 0 {
         return false;
     }
-    (strsim::levenshtein(a, b) as f32 / maxlen as f32) <= 0.34
+    (strsim::levenshtein(a, b) as f32 / maxlen as f32) <= max
 }
 
 #[cfg(test)]
@@ -163,6 +203,35 @@ mod tests {
     fn prefilter_ignores_unrelated_utterance() {
         let v = store().prefilter("the weather is nice today", 15);
         assert!(v.is_empty());
+    }
+
+    /// Precision, which is the entire reason this pre-filter exists. An entry whose
+    /// spelling contains an ordinary English word must not be dragged in every time
+    /// that word is spoken — once in the prompt, the model really does substitute it
+    /// ("did you charge the battery" -> "did you ChargeBee the battery").
+    #[test]
+    fn prefilter_ignores_an_entry_word_used_ordinarily() {
+        let v = store().prefilter("did you charge the battery before the flight", 15);
+        assert!(v.is_empty(), "selected {v:?}");
+    }
+
+    /// Short entries are the worst offenders: at a looser threshold a single letter
+    /// separates a three-letter name from a very common word.
+    #[test]
+    fn prefilter_does_not_match_a_short_entry_on_one_letter() {
+        let mut s = DictionaryStore::default();
+        s.add("Wei", Vec::new(), DictSource::Manual);
+        assert!(s.prefilter("we do not have that much left", 15).is_empty());
+        // …but the name itself is still caught.
+        assert_eq!(s.prefilter("wei is joining the call", 15).len(), 1);
+    }
+
+    /// Tightening the threshold must not cost the real catches: a listed mishear
+    /// matches itself exactly, and a genuinely close unlisted one still lands.
+    #[test]
+    fn prefilter_still_catches_an_unlisted_near_mishear() {
+        let v = store().prefilter("tell manvie about it", 15);
+        assert!(v.iter().any(|e| e.correct == "Manvi"));
     }
 
     #[test]

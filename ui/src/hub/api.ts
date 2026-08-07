@@ -19,6 +19,10 @@ export interface Settings {
   openai_base_url: string;
   anthropic_model: string;
   sound_on_start: boolean;
+  // Keep the raw pre-cleanup transcript next to the cleaned text, on this machine.
+  // It is what speaking insights are computed from — fillers and self-corrections
+  // only exist before cleanup deletes them.
+  store_raw_transcripts: boolean;
 }
 
 export type LocalModelState = "loading" | "ready" | "missing";
@@ -120,6 +124,7 @@ export const DEFAULT_SETTINGS: Settings = {
   openai_base_url: "",
   anthropic_model: "claude-haiku-4-5",
   sound_on_start: true,
+  store_raw_transcripts: true,
 };
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -213,11 +218,39 @@ export interface HistoryItem {
   words: number;
 }
 
-export async function getHistory(): Promise<HistoryItem[]> {
+/** Which slice of the history to fetch. Filtering and paging happen in Rust. */
+export interface HistoryQuery {
+  /** Case-insensitive substring over the dictated text; "" matches everything. */
+  search: string;
+  /** Unix seconds lower bound, 0 for no bound. Computed here so day boundaries
+   *  follow the user's own clock rather than UTC. */
+  since_unix: number;
+  offset: number;
+  limit: number;
+}
+
+export interface HistoryPage {
+  items: HistoryItem[];
+  /** Every match, not just this page — drives "11–20 of 347" and the Next button. */
+  total: number;
+}
+
+export const EMPTY_HISTORY_PAGE: HistoryPage = { items: [], total: 0 };
+
+export async function getHistory(query: HistoryQuery): Promise<HistoryPage> {
   try {
-    return await invoke<HistoryItem[]>("get_history");
+    return await invoke<HistoryPage>("get_history", { query });
   } catch {
-    return [];
+    return EMPTY_HISTORY_PAGE;
+  }
+}
+
+/** Erase the stored text of every dictation. Word counts and streaks survive. */
+export async function clearTranscripts(): Promise<void> {
+  try {
+    await invoke<void>("clear_transcripts");
+  } catch {
+    /* browser preview — no-op */
   }
 }
 

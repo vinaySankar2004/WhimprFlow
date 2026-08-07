@@ -118,37 +118,85 @@ Four aggressiveness levels: None, Light (default), Medium, High.
 rewrite it. `cleanup::gates::evaluate` rejects the output and pastes the raw
 transcript instead when it sees:
 
-- edit ratio above the level's ceiling
+- novelty ratio above the level's ceiling (output words that were never spoken)
 - a must-preserve token vanishing (number, URL, email, code-ish token)
-- over-deletion (shrank >40%)
+- over-deletion (shrank >55%)
 - hallucination (grew beyond punctuation)
 - a banned pattern (added greeting/sign-off, or an assistant-style reply)
 
 A wrong-but-clean paste is worse than an untidy-but-faithful one, so the gates
 prefer the raw text whenever they are unsure.
 
+`evaluate` takes the **utterance's vocab** — the same entries that went into the
+prompt — and treats those spellings as expected rather than novel. This is not a
+convenience parameter: a dictionary correction replaces a mis-heard token with a
+spelling that by definition is not in the raw transcript, so without it every
+custom-vocabulary fix reads as the model inventing a word. On a short dictation
+("hey monvi" → "Hey Manvi.") that is a 0.5 novelty ratio against a 0.34 ceiling, so
+the gate threw the fix away and pasted the mishear — the dictionary appeared to
+work on long sentences and silently do nothing on short ones. Only the authorized
+spellings are exempted, so a rewrite that happens to mention a dictionary name is
+still caught on all its other novel words, and the entity and length gates are
+untouched.
+
 ## Dictionary
 
 Teach it names and jargon it should always spell a particular way.
 
-`DictionaryStore::prefilter(utterance, 15)` selects candidate entries by
-normalized edit distance (≤0.34) against each spoken token *and* each adjacent
-token pair — the bigram pass is what catches a name split into two words
-("charge bee" → ChargeBee). Selected entries go into `CleanupContext.vocab` and
-become a `<CUSTOM_VOCABULARY>` block in the prompt.
+`DictionaryStore::prefilter(utterance, 15)` selects candidate entries by normalized
+edit distance against each spoken token *and* each adjacent token pair. Selected
+entries go into `CleanupContext.vocab`, become a `<CUSTOM_VOCABULARY>` block in the
+prompt, and are handed to the gates so the correction survives (see *Cleanup*).
 
-Auto-learn (macOS only, and deliberately conservative): after a paste,
-`autolearn::watch_correction` watches via the Accessibility API for a one-word
-fix and records it.
+**The two passes have different thresholds, and that asymmetry is the point.**
+
+| Pass | Ceiling | Why |
+|---|---|---|
+| single token | 0.30 | a real word the speaker said |
+| glued adjacent pair | 0.15 | a token *we* invented, so it must be nearly exact |
+
+The bigram pass exists to catch a name recognition split in half — "charge bee"
+glues to exactly "chargebee", distance 0. Given a real word's slack it instead
+becomes a noise generator: "charge the" glues to "chargethe", two letters from
+"ChargeBee", and the model duly rewrote "did you charge the battery" as "did you
+ChargeBee the battery". Both thresholds tightened for the same reason — at 0.34 a
+single wrong letter pulls in any three-letter entry ("we" → "Wei"). Nothing real was
+lost: a listed mishear matches itself at distance 0, and a split name matches its
+bigram at distance 0. Multi-word entries and mishears are compared with whitespace
+stripped, since the tokens they are matched against never contain a space.
+
+The vocabulary block also has to say when *not* to substitute. Given only "replace
+close mistakes", a small model will happily put a product name where an ordinary
+verb was; `assemble_user_message` spells out that entries are proper nouns and that
+a word making sense as spoken should be left alone.
+
+Auto-learn (deliberately conservative): after a paste, `autolearn::watch_correction`
+watches via the Accessibility API for a one-word fix and records it.
 
 Prove the whole chain end to end against the real model:
 
 ```bash
 cargo run -p whimpr-llm-worker --example dictionary_check --release
+cargo run -p whimpr-llm-worker --example dictionary_check --release -- --audit
 ```
 
-It runs each case twice — with and without the entry — because a pass only means
-something if the transcript fails without the dictionary.
+Three things the harness insists on, each because leaving it out lets a green run
+mean nothing:
+
+- **It asserts on the pasted text, not the model's reply** — running `post_process`
+  and the gates, because a cleanup the gates reject never reaches the cursor. The
+  version that stopped at the model's reply could not see the gate bug above.
+- **Every case runs twice, with and without the entry.** A model that already knew
+  the spelling would otherwise look like a working dictionary; that outcome is
+  reported as `PASS (weak)` rather than banked.
+- **Negative cases.** Precision is the whole reason `prefilter` exists, so some
+  cases assert the dictionary stays *out* of the way. Each case also loads ~36
+  unrelated entries, because a one-entry store is not a dictionary.
+
+Sampling in the worker is greedy, so re-running a case returns the same tokens —
+repeats buy nothing and the cases vary phrasing instead. `--audit` skips the model
+and reports on your real `dictionary.json`: which entries have no mishears listed
+and how far off recognition can be before they stop being selected.
 
 ## The overlay pill
 
@@ -186,6 +234,47 @@ id, because a cancelled session's cleanup can still be running when the next
 dictation starts, and anything that cleared the flag would let the abandoned one
 paste after all. Best effort by construction: once the paste has been posted
 there is nothing left to call off.
+
+## Where the data lives
+
+Everything persistent is four flat JSON files in one directory
+(`~/Library/Application Support/WhimprFlow/`, `hotkey::support_dir`). No database,
+no migrations.
+
+| File | Holds |
+|---|---|
+| `settings.json` | `Settings` — cleanup mode/level, trigger mode, model names, privacy |
+| `dictionary.json` | `DictionaryStore` — manual and ✨ auto-learned entries |
+| `stats.json` | `StatsStore` — one record per dictation, and the text |
+| `permissions.json` | written each launch, read by the installer (see *Permissions*) |
+| `models/` | the multi-GB weights, not committed (see *Models*) |
+
+Every store follows the same shape: `load` returns `Default` on a missing or
+unparseable file, `save` writes pretty JSON through on each mutation. That leniency
+is why a new `Settings` or `SessionRecord` field needs `#[serde(default)]` — without
+it one unknown shape fails the whole parse and silently resets everything saved.
+
+Two things deliberately live elsewhere. **API keys** go in the OS keychain (service
+`com.whimpr.whimprflow`), never a file. **Audio** is never persisted at all: samples
+exist in memory from `StartCapture` until transcription and are then dropped.
+
+### History and transcripts
+
+`SessionRecord` keeps the cleaned text *and* the raw pre-cleanup transcript, because
+everything interesting about how someone speaks is in the words cleanup removes —
+fillers, stutters, self-corrections. The cleaned text alone cannot answer any of it.
+`Settings::store_raw_transcripts` turns the raw copy off, and **Clear transcripts**
+in Settings empties the text of every record while keeping the counts: words, WPM
+and streak are derived from the numeric fields, so the control erases what was said
+without resetting what was earned.
+
+`StatsStore::query` does the Home list's search, date filtering and paging in Rust
+rather than the webview. The log only ever grows: shipping every dictation ever made
+so the UI can show ten of them gets slower every day, and a client-side filter over
+a truncated list silently fails to find older matches. `HistoryQuery` carries a
+`since_unix` the UI computes from its own clock, so day boundaries follow the user's
+timezone without any timezone logic in core; `HistoryPage` returns the matching
+total alongside the page so the UI can render "11–20 of 347".
 
 ## Permissions (macOS)
 
@@ -272,4 +361,9 @@ means adding the branches back, not maintaining dead ones now.
   that would add a second binary needing its own TCC grant, bundling and signing.
 - No notarization or installer pipeline. Local install only.
 - The Hub's Insights pane and stats are lightly exercised compared to the
-  dictation path.
+  dictation path. Its **Your Voice** tab is still a placeholder: the raw transcript
+  it needs is now being stored (see *Where the data lives*), but nothing computes
+  filler rates, self-correction frequency or pace from it yet.
+- The harness covers the dictionary against *text* transcripts, so its mishears are
+  written by hand rather than produced by Whisper. Recorded audio fixtures driven
+  through the real ASR would close that gap, at the cost of committing audio.

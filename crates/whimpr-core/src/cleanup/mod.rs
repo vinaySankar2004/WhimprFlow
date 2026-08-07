@@ -125,9 +125,17 @@ pub fn build_messages(raw: &str, ctx: &CleanupContext) -> Vec<CleanupMsg> {
 pub fn assemble_user_message(raw: &str, ctx: &CleanupContext) -> String {
     let mut out = String::new();
     if !ctx.vocab.is_empty() {
+        // The block has to say when NOT to substitute as loudly as when to. Given only
+        // "replace close mistakes", a small model will rewrite the ordinary verb in
+        // "did you charge the battery" as "ChargeBee" — a false correction is worse
+        // than a missed one, because the speaker did say the word they said.
         out.push_str(
-            "# Custom Vocabulary\nUse these as the spelling authority; replace phonetically \
-             close mistakes with the exact spelling when the text clearly refers to one:\n\
+            "# Custom Vocabulary\nThese are proper nouns — names, products, technical terms. \
+             Use them as the spelling authority: when the transcript clearly refers to one of \
+             them but spells it wrong, replace it with the exact spelling shown.\n\
+             Do NOT substitute an entry for an ordinary English word being used in its ordinary \
+             sense, even when it looks or sounds similar. If the sentence still makes sense with \
+             the word the speaker used, leave that word alone.\n\
              <CUSTOM_VOCABULARY>\n",
         );
         for v in &ctx.vocab {

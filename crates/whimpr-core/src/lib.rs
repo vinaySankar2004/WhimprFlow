@@ -1,13 +1,13 @@
-//! `whimpr-core` — the platform-agnostic brain of WhimprFlow.
+//! `whimpr-core` — the pure brain of WhimprFlow.
 //!
-//! Everything here is shared verbatim between macOS and Windows. Native concerns
-//! (the hotkey hook, text injection, accessibility reads) live in the sidecar; the
-//! ASR and cleanup-LLM implementations live in their own crates and plug in behind
-//! the [`asr`] and [`cleanup`] trait seams defined here.
+//! No I/O, no platform code, no GPU: the dictation [`state`] machine, the cleanup
+//! prompts/levels/[`gates`](cleanup::gates), the [`dictionary`], [`settings`] and
+//! [`stats`]. Native concerns (the CGEventTap, paste, accessibility reads) live in
+//! `src-tauri`; the ASR and cleanup-LLM implementations live in their own crates and
+//! plug in behind the [`asr`] and [`cleanup`] trait seams defined here.
 //!
-//! What is implemented so far (M0/M1 foundation): the dictation [`state`] machine.
-//! Subsequent milestones fill in the audio pipeline, ASR/cleanup traits, dictionary,
-//! settings, and storage modules.
+//! Because nothing here touches the world, this is where the tests are — and why
+//! passing them is not on its own evidence that the app works.
 
 pub mod asr;
 pub mod cleanup;
@@ -21,6 +21,6 @@ pub use asr::{AsrEngine, AsrEngineId, Transcript};
 pub use cleanup::{CleanupContext, CleanupLevel, CleanupProvider, ProviderId, VocabEntry};
 pub use dictionary::{DictSource, DictionaryEntry, DictionaryStore};
 pub use settings::{CleanupMode, Settings, TriggerMode};
-pub use stats::{HistoryItem, SessionRecord, StatsStore, StatsSummary};
+pub use stats::{HistoryItem, HistoryPage, HistoryQuery, SessionRecord, StatsStore, StatsSummary};
 pub use state::{Action, BarState, DictationState, Input, PipelineEvent, StateMachine, TriggerToken};
 pub use types::{RecordMode, SessionId};

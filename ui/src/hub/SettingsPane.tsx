@@ -3,6 +3,7 @@ import { font, palette } from "../tokens/values";
 import { theme } from "./theme";
 import { Button, Card, Dot, PageTitle, Segmented } from "./ui";
 import {
+  clearTranscripts,
   modelLabel,
   openKeyboardSettings,
   requestAccessibility,
@@ -250,6 +251,9 @@ export function SettingsPane({
   status: Status;
   refresh: () => void;
 }) {
+  // Latches so the button reads "Cleared" rather than silently doing nothing the
+  // second time — there is no other visible confirmation on this screen.
+  const [cleared, setCleared] = useState(false);
   return (
     <div style={{ maxWidth: 720 }}>
       <PageTitle>Settings</PageTitle>
@@ -365,6 +369,59 @@ export function SettingsPane({
           {settings.trigger_mode === "hold"
             ? "Tip: a quick double-tap of Fn also starts a hands-free session that keeps recording until you press Fn again."
             : "Recording continues after you let go of Fn — press it again to stop. It also stops on its own at the 20-minute session cap."}
+        </div>
+      </Card>
+
+      <Card style={{ marginBottom: 16 }}>
+        <SectionTitle sub="Your dictations are stored on this Mac and never uploaded.">
+          History &amp; privacy
+        </SectionTitle>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ maxWidth: 430 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: theme.textStrong }}>
+              Keep the raw transcript
+            </div>
+            <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 4, lineHeight: 1.5 }}>
+              Saves what you said before cleanup tidied it. It is what speaking insights are
+              built from — fillers and self-corrections only exist in the raw text.
+            </div>
+          </div>
+          <Segmented
+            options={[
+              { value: "on", label: "On" },
+              { value: "off", label: "Off" },
+            ]}
+            value={settings.store_raw_transcripts ? "on" : "off"}
+            onChange={(v) => onChange({ ...settings, store_raw_transcripts: v === "on" })}
+          />
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            marginTop: 18,
+            paddingTop: 16,
+            borderTop: `1px solid ${theme.border}`,
+          }}
+        >
+          <div style={{ maxWidth: 430 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: theme.textStrong }}>Clear transcripts</div>
+            <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 4, lineHeight: 1.5 }}>
+              Erases the text of every past dictation. Your word count, WPM and streak are
+              kept — they are counted, not quoted.
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              if (cleared) return;
+              void clearTranscripts().then(() => setCleared(true));
+            }}
+          >
+            {cleared ? "Cleared" : "Clear"}
+          </Button>
         </div>
       </Card>
 
