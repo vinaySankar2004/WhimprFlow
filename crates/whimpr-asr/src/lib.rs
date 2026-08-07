@@ -6,6 +6,20 @@ use std::path::Path;
 use whimpr_core::asr::{AsrCaps, AsrEngine, AsrEngineId, Transcript};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+/// Silence appended to every utterance before recognition, in samples at 16 kHz.
+///
+/// Not cosmetic. whisper.cpp will not begin a new segment within a second of the end
+/// of the audio (`if (seek + 100 >= seek_end) break;`) and drops its prompt for short
+/// trailing segments — so a recording that stops the instant the speaker does can lose
+/// its final words. Upstream warns about exactly this and recommends padding.
+///
+/// Push-to-talk produces precisely that shape: the key comes up on the last syllable.
+/// Measured on a 5 s clip, `large-v3-turbo` returned "...reviewed by Manvi, at Charge"
+/// and, with a second of silence appended, the whole sentence. Larger models segment
+/// more finely and so are hit harder, which makes this a prerequisite for upgrading
+/// the model rather than a nicety.
+const TAIL_PAD_SAMPLES: usize = 16_000;
+
 /// A loaded whisper model ready to transcribe utterances.
 pub struct WhisperEngine {
     ctx: WhisperContext,
@@ -72,8 +86,15 @@ impl AsrEngine for WhisperEngine {
             params.set_initial_prompt(p);
         }
 
+        // See TAIL_PAD_SAMPLES: without a tail of silence the last words of an
+        // abruptly-ended recording can be dropped, which is the shape push-to-talk
+        // always produces.
+        let mut padded = Vec::with_capacity(pcm16k.len() + TAIL_PAD_SAMPLES);
+        padded.extend_from_slice(pcm16k);
+        padded.resize(pcm16k.len() + TAIL_PAD_SAMPLES, 0.0);
+
         state
-            .full(params, pcm16k)
+            .full(params, &padded)
             .map_err(|e| anyhow::anyhow!("whisper full: {e}"))?;
 
         let n = state

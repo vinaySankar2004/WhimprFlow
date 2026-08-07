@@ -82,6 +82,10 @@ These are not hypotheticals; each one bit during development.
   levelling them re-introduces false corrections — a glued pair is a token the code
   invented, not a word anyone said. Both numbers are load-bearing; the harness has a
   negative case for each.
+- **Do not remove the tail padding in `whimpr-asr`.** whisper.cpp refuses to start a
+  segment within a second of the end of the audio, so an utterance that stops the
+  instant the speaker does loses its last words — which is every push-to-talk
+  recording. It looks like a model problem and is not; larger models lose more.
 - **Never prompt Whisper without keeping the unprompted transcript.** `initial_prompt`
   makes it emit words it was primed for from audio that lacked them, and the only
   defence is `accept_prompted` comparing the two. Collapsing the two passes into one

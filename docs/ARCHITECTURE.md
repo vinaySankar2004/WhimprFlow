@@ -172,6 +172,20 @@ close mistakes", a small model will happily put a product name where an ordinary
 verb was; `assemble_user_message` spells out that entries are proper nouns and that
 a word making sense as spoken should be left alone.
 
+### Every utterance gets a second of silence appended
+
+whisper.cpp will not begin a new segment within a second of the end of the audio
+(`if (seek + 100 >= seek_end) break;`) and drops its prompt for short trailing
+segments. A recording that stops the instant the speaker does can therefore lose its
+final words — and push-to-talk produces exactly that shape, because the key comes up
+on the last syllable. Upstream warns about this and recommends padding; `whimpr-asr`
+appends `TAIL_PAD_SAMPLES` of zeros before every call.
+
+Measured, not assumed: on a 5 s clip `large-v3-turbo` returned "…reviewed by Manvi, at
+Charge" and, with a second of silence appended, the whole sentence. Bigger models
+segment more finely and lose more this way, so this is a prerequisite for moving up
+the model ladder rather than a nicety.
+
 ### Recognition is asked twice
 
 A mis-heard name is best fixed where it was mis-heard, not repaired downstream — and
