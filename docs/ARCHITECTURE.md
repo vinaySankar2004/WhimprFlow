@@ -175,27 +175,21 @@ a word making sense as spoken should be left alone.
 
 ### A listed mishear is not the model's decision
 
-That precision guard is right in general and has one blind spot, which is the case
-users hit most: **the model substitutes a mishear that looks like a mistake and
-refuses one that looks like a real name.** With `Geetha (mis-heard as: Gita, Geeta)`
-in the prompt, the shipped 4B model turned a bare "Gita" into "Geetha" and left "Hey
-Geeta, how's it going?" exactly as it was — "Geeta" is a perfectly good spelling, the
-sentence makes sense as spoken, so the guard says stop. Rewriting the block to insist
-that listed mishears are mandatory changed nothing on either sentence.
+That guard has one blind spot, and it is the case users hit most: **the model
+substitutes a mishear that looks like a mistake and refuses one that looks like a real
+name.** Given `Geetha (mis-heard as: Gita, Geeta)`, the 4B model turned a bare "Gita"
+into "Geetha" and left "Hey Geeta, how's it going?" untouched — "Geeta" is a good
+spelling and the sentence makes sense as spoken. Rewording the block to make listed
+mishears mandatory changed neither sentence.
 
-`DictionaryStore::apply_listed_mishears` runs afterwards and enacts them: every
-**listed** mishear, matched whole-word and case-insensitively (multi-word ones as a
-phrase, longest rule first), becomes its entry's spelling. Not a second guess at the
-model's job — the user already answered the question by typing the mishear, so there
-is no judgment left to exercise. Unlisted near-misses stay entirely the model's, which
-is where `prefilter`'s precision work matters.
-
-It runs on the text about to be pasted, whichever path produced it, so a listed
-mishear is also fixed where no prompt can reach: cleanup off, gates rejected the edit,
-provider down. Mishears are punctuation-trimmed first, because users add one by
-pasting what landed in the field ("Vinayk.") and the stray period would stop it ever
-matching. Same division of labour as `post_process`: the model does the smart part,
-this guarantees the mechanical one.
+`DictionaryStore::apply_listed_mishears` enacts them instead, whole-word and
+case-insensitively (multi-word ones as a phrase, longest rule first). The user already
+answered the question by typing the mishear, so there is no judgment left to make;
+unlisted near-misses stay the model's, which is what `prefilter`'s precision work is
+for. It runs on the text about to be pasted whatever produced it, so a listed mishear
+is fixed where no prompt reaches — cleanup off, gates rejected the edit, provider down.
+Mishears are punctuation-trimmed first: users add one by pasting what landed in the
+field ("Vinayk."), and the stray period would stop it ever matching.
 
 ### Every utterance gets a second of silence appended
 
@@ -279,9 +273,8 @@ mean nothing:
 
 - **It asserts on the pasted text, not the model's reply** — running `post_process`,
   the gates and `apply_listed_mishears`, because a cleanup the gates reject never
-  reaches the cursor. The version that stopped at the model's reply could not see the
-  gate bug above. A case the deterministic pass rescued says so in its output, since
-  that means the prompt alone would not have produced it.
+  reaches the cursor. The version that stopped at the reply could not see the gate bug
+  above. Cases the deterministic pass rescued are flagged: the prompt alone missed them.
 - **Every case runs twice, with and without the entry.** A model that already knew
   the spelling would otherwise look like a working dictionary; that outcome is
   reported as `PASS (weak)` rather than banked.

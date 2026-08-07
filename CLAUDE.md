@@ -97,12 +97,11 @@ These are not hypotheticals; each one bit during development.
   work already runs on spawned threads, and tap-disabled-by-timeout is caught and
   re-enabled. Move it to the sidecar when a real symptom appears, not before.
 - **The cleanup model will not apply a listed mishear that looks like a real name.**
-  It substitutes what reads as a mistake ("monvi" → "Manvi") and refuses what reads as
+  It fixes what reads as a mistake ("monvi" → "Manvi") and refuses what reads as
   correct — "Hey Geeta, how's it going?" came back untouched with `Geetha (mis-heard
-  as: Geeta)` right there in the prompt, because the precision guard says a word that
-  makes sense as spoken should be left alone. Rewording the vocabulary block does not
-  move it; that was measured, not assumed. `apply_listed_mishears` enacts listed
-  mishears after cleanup for this reason. Do not fold it back into the prompt.
+  as: Geeta)` in the prompt. Rewording the vocabulary block does not move it; that was
+  measured. `apply_listed_mishears` enacts them after cleanup instead — do not fold it
+  back into the prompt.
 - **The gates must see the utterance's vocab.** `gates::evaluate` takes the
   prefiltered entries, because a dictionary fix is a word that is *not* in the raw
   transcript and otherwise reads as a hallucination. Pass `&[]` only when there
