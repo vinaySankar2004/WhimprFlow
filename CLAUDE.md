@@ -53,10 +53,19 @@ These are not hypotheticals; each one bit during development.
   mutex for the whole multi-second generation, so the Hub would freeze mid-
   dictation. Status lives in a separate short-lived static for this reason.
 - **The overlay's oddities are load-bearing.** Work-area anchoring clears the Dock,
-  level 25 beats it in z-order, and the non-activating NSPanel is what allows it
-  onto another app's full-screen Space. Remove any one and it silently disappears
-  in a specific situation. Non-activating also keeps focus in the app being
-  dictated into, which paste depends on.
+  level 25 beats it in z-order, the non-activating NSPanel is what allows it onto
+  another app's full-screen Space, and `hidesOnDeactivate` must be forced off
+  because NSPanel defaults it to true — the pill would then show only while
+  WhimprFlow is frontmost, i.e. never, since dictating means being in another app.
+  Remove any one and it silently disappears in a specific situation. Non-activating
+  also keeps focus in the app being dictated into, which paste depends on.
+- **"The pill only shows on the desktop" has two unrelated causes.** Missing
+  Accessibility (below) and a panel hiding on deactivate. Tell them apart from a
+  shell without touching the app: `CGWindowListCopyWindowInfo` reports
+  `kCGWindowIsOnscreen` per window, so sample the 340×92 layer-25 window with
+  another app frontmost. `onscreen=false` there is the panel; `true` means the
+  window is fine and the tap never fired. Guessing between the two costs an
+  install cycle each time.
 - **macOS runs its own action on the Fn key**, usually the emoji picker, on top of
   dictation. The setting is `AppleFnUsageType` in the **`com.apple.HIToolbox`**
   domain — reading it from NSGlobalDomain (`defaults read -g`) says "does not

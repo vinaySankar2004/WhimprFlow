@@ -286,7 +286,7 @@ focusing, because `set_focus` is a no-op on a hidden or minimized window.
 ## The overlay pill
 
 A transparent, always-on-top window that renders idle / recording / processing.
-Three things make it actually visible, each fixing a real failure:
+Four things make it actually visible, each fixing a real failure:
 
 - Anchored to the monitor's **work area**, not its full rect, so it clears the Dock.
 - **Window level 25** (NSStatusWindowLevel), above the Dock's 20. Tauri's
@@ -296,6 +296,19 @@ Three things make it actually visible, each fixing a real failure:
   full-screen Space at any level, because it is not on that Space at all.
   Non-activating also means clicking the pill never steals focus from the app
   being dictated into — which the paste path depends on.
+- **`hidesOnDeactivate` forced off**, which is the bill that comes with being a
+  panel. AppKit hides panels belonging to the inactive app, and `NSPanel` defaults
+  the flag to true where `NSWindow` defaults it to false — so promoting the window
+  is what breaks it. Correct for an inspector panel, fatal here: while dictating,
+  WhimprFlow is *never* the active app. Left at the default the pill appears only
+  when WhimprFlow itself is frontmost, which presents as "it only shows on the
+  desktop" and is easily mistaken for the missing-Accessibility symptom below.
+
+The window server settles which one you are looking at, and it can be asked from
+outside the app: `CGWindowListCopyWindowInfo` reports each window's layer and its
+`kCGWindowIsOnscreen`. If the 340×92 layer-25 window flips to `onscreen=false`
+exactly when another app comes forward, that is the panel hiding itself, not the
+hotkey failing.
 
 Idle renders nothing and sets `ignore_cursor_events`, so it is neither visible
 nor in the way. State arrives as `whimpr://flowbar/state` events; mic level

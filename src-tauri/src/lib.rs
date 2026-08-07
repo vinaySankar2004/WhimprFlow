@@ -86,6 +86,14 @@ fn promote_overlay_to_panel(w: &WebviewWindow) {
         panel.setStyleMask(panel.styleMask() | NSWindowStyleMask::NonactivatingPanel);
         panel.setFloatingPanel(true);
         panel.setBecomesKeyOnlyIfNeeded(true);
+        // The sting in the tail of being a panel: AppKit hides a panel whenever its
+        // owning app is not the active one, and NSPanel defaults this to true where
+        // NSWindow defaults it to false. For an ordinary inspector panel that is the
+        // right behavior; for this pill it is fatal, because the app is NEVER active
+        // while dictating — the whole point is that the user is in some other app.
+        // Left at the default the pill is visible only while WhimprFlow itself is
+        // frontmost, which reads exactly like "it only shows on the desktop".
+        panel.setHidesOnDeactivate(false);
     }
 }
 
@@ -116,15 +124,21 @@ fn raise_overlay_level(w: &WebviewWindow) {
                 | NSWindowCollectionBehavior::FullScreenAuxiliary
                 | NSWindowCollectionBehavior::Stationary,
         );
+        // Re-asserted with the rest of the window state, and for the same reason: this
+        // is a panel, so the default is to vanish the moment another app takes over.
+        // See `promote_overlay_to_panel`.
+        ns.setHidesOnDeactivate(false);
         // Order front WITHOUT making it key: the app being dictated into must keep
         // keyboard focus, or the paste lands in the wrong place.
         ns.orderFrontRegardless();
         eprintln!(
-            "[whimpr] overlay level {} -> {} (wanted {}), collectionBehavior {:?}",
+            "[whimpr] overlay level {} -> {} (wanted {}), collectionBehavior {:?}, \
+             hidesOnDeactivate {}",
             before,
             ns.level(),
             OVERLAY_WINDOW_LEVEL,
-            ns.collectionBehavior()
+            ns.collectionBehavior(),
+            ns.hidesOnDeactivate()
         );
     }
 }
