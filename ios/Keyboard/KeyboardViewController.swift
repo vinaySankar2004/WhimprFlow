@@ -37,6 +37,29 @@ final class KeyboardViewController: UIInputViewController {
     /// appearance.
     private var appliedStyle: UIUserInterfaceStyle?
 
+    /// The keyboard's height. Declared, and installed in `viewDidLoad` so the very
+    /// first layout is already this tall.
+    ///
+    /// 242 matches the stock keyboard on a 6.1" iPhone — measured on the simulator by
+    /// comparing where the host's search field sits over each keyboard. The original
+    /// 258 was 16pt taller, which moved the top edge on every switch. Matching it is
+    /// necessary, but it was not the glitch: a device screen recording, frame by
+    /// frame, showed a single frame per switch in which this view is laid out at the
+    /// *outgoing* keyboard's height (in Spotlight the stock keyboard carries a
+    /// suggestion strip and is taller still). That is why the layout below hangs from
+    /// the bottom with a fixed panel height — see the note on the constraints.
+    ///
+    /// Not left to the system: without a constraint iOS hands the extension almost no
+    /// height and the panel collapses onto its own label. Not installed later, in
+    /// `updateViewConstraints`: the keyboard then appears at whatever it was given and
+    /// jumps. Priority 999 so it yields to the system's transient height during a
+    /// switch rather than conflicting; 1000 was tried and changed nothing.
+    ///
+    /// Not fixable here: iOS relaunches the extension process on most summons (the
+    /// log shows a fresh PID each time) and draws the keyboard frame before the new
+    /// process has drawn anything. Every cold third-party keyboard has that frame.
+    private let keyboardHeight: CGFloat = 242
+
     /// The glyph currently on the mic key, so it is only rebuilt on a real change.
     /// `.some(nil)` is a real value here — it means the waveform has the space —
     /// hence the double optional rather than a plain String?.
@@ -76,16 +99,6 @@ final class KeyboardViewController: UIInputViewController {
         refresh()
     }
 
-    // No height constraint, on purpose.
-    //
-    // Every keyboard switch animates the keyboard frame to the incoming keyboard's
-    // height. A keyboard that declares its own height therefore moves the top edge on
-    // every switch in both directions — which is the "flicker up top" — and if the
-    // constraint lands after the first layout, the keyboard also appears at the system
-    // height and then jumps, on every relaunch of the extension. Taking the height iOS
-    // gives every keyboard means the edge never moves. The layout below is flexible:
-    // the mic panel absorbs whatever is left after the key row.
-    //
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         // The display link keeps firing on a keyboard the user has switched away from
@@ -191,8 +204,21 @@ final class KeyboardViewController: UIInputViewController {
         view.addSubview(micButton)
         view.addSubview(row)
 
+        let height = view.heightAnchor.constraint(equalToConstant: keyboardHeight)
+        height.priority = UILayoutPriority(999)
+
         NSLayoutConstraint.activate([
-            micButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+            height,
+            // The panel has a fixed height and hangs from the key row, which hangs
+            // from the bottom — nothing is pinned to the top. For one frame during a
+            // keyboard switch iOS lays this view out at the *outgoing* keyboard's
+            // height, which in Spotlight is taller (a suggestion strip); a top-pinned,
+            // flexible panel then fills that extra height by growing upward over the
+            // host's text field, and snaps back the next frame. Seen frame-by-frame in
+            // a device screen recording. Bottom-anchored, the same transient frame
+            // leaves an empty band of backdrop above the panel instead, which is not
+            // visible against the keyboard container.
+            micButton.heightAnchor.constraint(equalToConstant: keyboardHeight - 8 - 8 - 46 - 6),
             micButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6),
             micButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -6),
 
