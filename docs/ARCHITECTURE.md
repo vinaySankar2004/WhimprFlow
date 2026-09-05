@@ -124,6 +124,18 @@ daily cap lands. Pasting raw there returns text with the fillers still in it and
 a log line to explain why, so it reads as "cleanup is broken" rather than "the quota
 ran out". Raw stays the last resort: no engine available, or the gates rejected.
 
+**The local worker is only preloaded when local cleanup is the selected engine.**
+Loading it means paging in a 2.3 GB model that then stays resident for the life of the
+app — measured at 2.2 GB on a machine whose `cleanup_mode` was the cloud, held around
+the clock for a fallback that fires only on a 429 or a dropped network. So a cloud
+mode spawns it on first need (`ensure_local`, idempotent under the `LOCAL` lock) and
+`reap_idle_engines` stops it again once it has gone five minutes unused; choosing local
+in Settings warms it immediately rather than making the next dictation wait. Dropping
+the worker kills the child process, which is what actually returns the memory.
+`local_state` still reports on the *model file*, not on whether the process is warm —
+a pane saying "missing" beside a model sitting right there would be wrong. The same
+treatment applies to the Whisper model; see *Where recognition runs*.
+
 `CleanupMode::OpenAi` names the *protocol*, not the vendor — that string is in every
 saved `settings.json`, so renaming the variant resets the file. `openai_base_url`
 repoints it, making Groq, OpenRouter, Gemini's compatibility endpoint and OpenAI a URL
@@ -327,8 +339,32 @@ that whenever the dictionary hits and a second pass runs.
 That moves the bottleneck rather than removing it. With cloud ASR on, cleanup is the
 expensive stage: 1386 ms on that 13 s utterance and 4804 ms on a 30 s one, against
 ~500-600 ms of recognition. Cleanup cost scales with how much text the model has to
-*generate*, so it grows with utterance length in a way ASR does not — the next real
-latency work is there, not here.
+*generate*, so it grows with utterance length in a way ASR does not.
+
+**Streaming is not the fix, and it is the first thing everyone reaches for.** The
+gates have to see the whole cleanup before any of it is pasted — that is the entire
+point of them — and the paste is one clipboard round trip, so tokens arriving earlier
+buy nothing. What is actually available, in order of payoff: not generating tokens
+nobody reads (`reasoning_effort: "low"`, above), the *second* ASR pass that
+`biased_retranscribe` runs whenever the dictionary hits, and the ~1.5k tokens of
+system prompt and few-shot turns prefilled on every request — which the local worker
+pays in full every time, because it builds a fresh context per request and throws the
+KV cache of that identical prefix away. Reusing it across requests is the standing
+local-latency win and is not done yet. The genuine architectural answer is the one
+Wispr-style products use: transcribe *while* the key is held, so releasing it leaves
+only the tail to process. That is a rewrite of the capture path, not a tuning knob.
+
+Both stage timings are recorded per dictation (`asr_ms`, `cleanup_ms`), so none of
+this has to be re-measured by hand.
+
+**Neither local model is loaded until it is the engine that will be used.** Whisper's
+weights sit in a Metal buffer and the cleanup worker's in its own process, for as long
+as the app holds them — measured together at ~2.87 GB resident on a machine set to
+cloud for both stages, versus ~105 MB with this. `ensure_asr` and `ensure_local` load
+on first need, so a fallback still rescues the dictation; `reap_idle_engines` then
+drops whichever one is not the selected engine after five minutes unused, because "it
+only stays resident after an error" is exactly how a memory footprint becomes
+mysterious. The selected engine is never reaped — that one is warm on purpose.
 
 Three things the cloud engine has to get right, none of them optional:
 

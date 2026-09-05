@@ -198,6 +198,15 @@ These are not hypotheticals; each one bit during development.
   transcript, and a completion-cue reframing were each measured and each changed
   nothing. Do not spend the day again; `cleanup_check` keeps it visible as a
   `known_limit`, and the remaining levers are a bigger model or a deterministic pass.
+- **Neither local model is loaded unless it is the selected engine.** Whisper's
+  weights live in a Metal buffer and the cleanup worker's in its own process for as
+  long as the app holds them: ~2.87 GB resident, measured, on a machine set to cloud
+  for both stages, against ~105 MB once they load on demand. `ensure_asr` /
+  `ensure_local` load on first need so a fallback still rescues the dictation, and
+  `reap_idle_engines` drops whichever is *not* selected after five minutes unused —
+  "it only stays resident after an error" is how a footprint becomes mysterious. Do
+  not restore the eager load to shave a second off a fallback, and do not reap the
+  selected engine.
 - **Never prompt Whisper without keeping the unprompted transcript.** `initial_prompt`
   makes it emit words it was primed for from audio that lacked them, and the only
   defence is `accept_prompted` comparing the two. Collapsing the two passes into one

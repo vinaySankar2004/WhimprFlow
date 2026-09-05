@@ -92,7 +92,11 @@ fi
 # The 4B cleanup model is far better at spoken self-corrections and structure, and
 # costs 2.3 GB of paged-in weights while it runs. Below 16 GB the 1.5B is the sane
 # default; local_llm.rs falls back to it by design.
-if [ "$CLEANUP_CHOICE" = "auto" ]; then
+if [ "$CLOUD" = "1" ]; then
+  # Announcing a model choice on an install that downloads no models reads as a
+  # contradiction two lines before "Nothing to download".
+  echo "    Cloud install: no models, both stages on Groq. A free API key is needed."
+elif [ "$CLEANUP_CHOICE" = "auto" ]; then
   if [ "$MEM_GB" -ge 16 ]; then CLEANUP_CHOICE="large"; else CLEANUP_CHOICE="small"; fi
   echo "    Cleanup model chosen automatically for ${MEM_GB} GB: $CLEANUP_CHOICE"
 fi

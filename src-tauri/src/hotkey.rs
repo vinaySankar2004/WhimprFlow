@@ -164,11 +164,23 @@ mod imp {
     /// Cleanup uses it to format for the medium (email vs. text vs. chat).
     static TARGET_APP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
     static CAPTURE: OnceLock<Mutex<Option<whimpr_audio::CaptureHandle>>> = OnceLock::new();
-    static ASR: OnceLock<Arc<whimpr_asr::WhisperEngine>> = OnceLock::new();
+    /// The local Whisper engine, loaded on demand rather than at launch.
+    ///
+    /// An `Option` behind a `Mutex` rather than a `OnceLock<Arc<_>>` because it has
+    /// to be droppable: its weights live in a Metal buffer for as long as the app
+    /// holds them (547 MB for the q5_0 turbo build), and a machine set to cloud ASR
+    /// should not be paying that around the clock for a fallback. See `ensure_asr`
+    /// and `reap_idle_engines`.
+    static ASR: OnceLock<Mutex<Option<Arc<whimpr_asr::WhisperEngine>>>> = OnceLock::new();
     /// Cloud ASR, rebuilt alongside the cleanup provider whenever the key changes.
-    /// Kept beside the local engine rather than replacing it: `asr_mode` is a toggle
-    /// the user flips per-dictation, so both have to stay warm.
+    /// Kept beside the local engine rather than replacing it, because `asr_mode` is a
+    /// toggle the user can flip from the tray between one dictation and the next. It
+    /// costs nothing to keep: it is an HTTP client, not a model.
     static CLOUD_ASR: OnceLock<Mutex<Option<Arc<whimpr_asr::CloudAsr>>>> = OnceLock::new();
+    /// When each on-demand engine was last used, in `CLOCK` milliseconds, so the
+    /// reaper can tell a warm engine from an abandoned one. Zero means never used.
+    static ASR_LAST_USED: AtomicU64 = AtomicU64::new(0);
+    static LOCAL_LAST_USED: AtomicU64 = AtomicU64::new(0);
     static OPENAI: OnceLock<Mutex<Option<whimpr_cleanup::OpenAiProvider>>> = OnceLock::new();
     static LOCAL: OnceLock<Mutex<Option<crate::local_llm::LocalWorker>>> = OnceLock::new();
     static SETTINGS: OnceLock<Mutex<whimpr_core::Settings>> = OnceLock::new();
@@ -179,6 +191,107 @@ mod imp {
     /// multi-second generation, so a status command that locked it would freeze the
     /// Hub mid-dictation. This one is held for microseconds.
     static LOCAL_STATUS: OnceLock<Mutex<super::LocalModelStatus>> = OnceLock::new();
+
+    /// How long an on-demand engine may sit unused before it is dropped.
+    ///
+    /// Only ever applies to an engine that is *not* the selected one — it was loaded
+    /// to rescue a dictation the cloud could not serve, and once that has passed
+    /// there is no reason for gigabytes to stay resident until the app is quit. Long
+    /// enough that a run of failures (a rate limit lasts minutes, an outage longer)
+    /// reuses one warm load rather than reloading per dictation.
+    const ENGINE_IDLE_TTL_MS: u64 = 5 * 60_000;
+
+    /// Load the local Whisper model if it is not already loaded. Returns it either way.
+    ///
+    /// The `Mutex` is held across the load, so two dictations racing here cannot both
+    /// pay for it. Nothing else takes this lock for longer than a clone, so unlike
+    /// `LOCAL` it is safe to touch from anywhere.
+    fn ensure_asr() -> Option<Arc<whimpr_asr::WhisperEngine>> {
+        let slot = ASR.get_or_init(|| Mutex::new(None));
+        let mut guard = slot.lock().unwrap();
+        if guard.is_none() {
+            let path = model_path();
+            if !path.exists() {
+                eprintln!("[whimpr] ASR model not found at {}", path.display());
+                return None;
+            }
+            match whimpr_asr::WhisperEngine::load(&path) {
+                Ok(engine) => {
+                    eprintln!("[whimpr] ASR model loaded — ready to transcribe");
+                    *guard = Some(Arc::new(engine));
+                }
+                Err(e) => eprintln!("[whimpr] ASR model load failed: {e}"),
+            }
+        }
+        ASR_LAST_USED.store(now_ms().max(1), Ordering::SeqCst);
+        guard.clone()
+    }
+
+    /// Drop an on-demand engine that is not the selected one and has gone unused.
+    ///
+    /// The point of the whole arrangement: a machine set to the cloud for both stages
+    /// should sit at the app's own ~60 MB, not at three gigabytes of models it is not
+    /// using. Loading one to serve a fallback is right; keeping it for the rest of the
+    /// session afterwards is not, and "it only happens after an error" is exactly how
+    /// a memory footprint becomes mysterious.
+    ///
+    /// The selected engine is never reaped, however long it idles — that one is warm
+    /// on purpose, and reloading it mid-dictation is the cost this avoids.
+    fn reap_idle_engines() {
+        let settings = current_settings();
+        let now = now_ms();
+        let stale = |last: &AtomicU64| {
+            let t = last.load(Ordering::SeqCst);
+            t > 0 && now.saturating_sub(t) > ENGINE_IDLE_TTL_MS
+        };
+
+        if !matches!(settings.asr_mode, whimpr_core::AsrMode::Local) && stale(&ASR_LAST_USED) {
+            if let Some(slot) = ASR.get() {
+                // try_lock: a dictation in flight holds this, and waiting to free
+                // memory is precisely the wrong trade. It will be stale next minute.
+                if let Ok(mut guard) = slot.try_lock() {
+                    if guard.take().is_some() {
+                        ASR_LAST_USED.store(0, Ordering::SeqCst);
+                        eprintln!("[whimpr] released the local ASR model — unused and not selected");
+                    }
+                }
+            }
+        }
+        if !matches!(settings.cleanup_mode, CleanupMode::Local) && stale(&LOCAL_LAST_USED) {
+            if let Some(slot) = LOCAL.get() {
+                if let Ok(mut guard) = slot.try_lock() {
+                    // Dropping the worker kills the child process (see `impl Drop`),
+                    // which is what actually returns the model's memory.
+                    if guard.take().is_some() {
+                        LOCAL_LAST_USED.store(0, Ordering::SeqCst);
+                        eprintln!(
+                            "[whimpr] stopped the local cleanup worker — unused and not selected"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Make sure the local cleanup worker is running, spawning it if it is not.
+    ///
+    /// Idempotent and safe to call on every local cleanup: once the worker is in the
+    /// slot this is one lock and a check. It exists because the worker is no longer
+    /// preloaded in a cloud mode — see the spawn site in `start` — so the first
+    /// fallback cleanup is the one that pays for the model load, and it must not find
+    /// an empty slot and give up.
+    ///
+    /// Takes the `LOCAL` lock, so it must never be called from a Tauri command: a
+    /// cleanup in flight holds that lock for its whole multi-second generation, and
+    /// the Hub would freeze mid-dictation. The status statics exist for that reason.
+    fn ensure_local() {
+        let Some(slot) = LOCAL.get() else { return };
+        let mut guard = slot.lock().unwrap();
+        if guard.is_none() {
+            *guard = crate::local_llm::spawn_default();
+        }
+        LOCAL_LAST_USED.store(now_ms().max(1), Ordering::SeqCst);
+    }
 
     fn set_local_status(state: &'static str, model: Option<String>) {
         let slot = LOCAL_STATUS.get_or_init(|| Mutex::new(super::LocalModelStatus::default()));
@@ -489,6 +602,13 @@ mod imp {
                 let _ = OPENAI.set(Mutex::new(openai));
             }
         }
+        // Picking local cleanup warms the worker now rather than making the next
+        // dictation wait for a 2.3 GB model load with the paste blocked. On a
+        // background thread because this runs from a Tauri command and `ensure_local`
+        // takes a lock a cleanup in flight holds for seconds.
+        if matches!(settings.cleanup_mode, CleanupMode::Local) {
+            std::thread::spawn(ensure_local);
+        }
     }
 
     /// Transcribe a second time with the dictionary as Whisper's `initial_prompt`, and
@@ -617,6 +737,7 @@ mod imp {
         };
         // Run the on-device model with the same prompt + per-app formatting.
         let run_local = || -> Option<anyhow::Result<String>> {
+            ensure_local();
             LOCAL.get().and_then(|m| {
                 m.lock().unwrap().as_mut().map(|w| {
                     // System prompt + few-shot demonstration turns + the transcript,
@@ -910,7 +1031,7 @@ mod imp {
                     // Falling back rather than failing keeps the same promise cleanup
                     // makes: a missing key or a dead network costs you speed, never the
                     // dictation you just spoke.
-                    let local_asr = || ASR.get().cloned().map(|a| a as Arc<dyn AsrEngine>);
+                    let local_asr = || ensure_asr().map(|a| a as Arc<dyn AsrEngine>);
                     let cloud_asr = || {
                         CLOUD_ASR
                             .get()
@@ -1154,19 +1275,21 @@ mod imp {
         let _ = MACHINE.set(Mutex::new(StateMachine::new()));
         let _ = CLOCK.set(Instant::now());
 
-        // Load the speech-to-text model off the main thread (it takes ~1s).
+        // Load the speech-to-text model off the main thread, and only when it is the
+        // engine that will be used — its weights sit in a Metal buffer for as long as
+        // the app runs (547 MB for the q5_0 turbo build), so on a machine set to cloud
+        // ASR that is half a gigabyte held permanently for a fallback. Same reasoning
+        // as the cleanup worker below, and the same shape: `ensure_asr` loads on first
+        // need, which costs the fallback one ~1s load and nothing after.
+        //
+        // Settings are read here rather than taken from the load below, because that
+        // load has not happened yet and this wants to be off the main thread.
         std::thread::spawn(|| {
-            let path = model_path();
-            if !path.exists() {
-                eprintln!("[whimpr] ASR model not found at {}", path.display());
-                return;
-            }
-            match whimpr_asr::WhisperEngine::load(&path) {
-                Ok(engine) => {
-                    let _ = ASR.set(Arc::new(engine));
-                    eprintln!("[whimpr] ASR model loaded — ready to transcribe");
-                }
-                Err(e) => eprintln!("[whimpr] ASR model load failed: {e}"),
+            if matches!(
+                whimpr_core::Settings::load(&settings_path()).asr_mode,
+                whimpr_core::AsrMode::Local
+            ) {
+                ensure_asr();
             }
         });
 
@@ -1183,22 +1306,34 @@ mod imp {
         let _ = STATS.set(Mutex::new(whimpr_core::StatsStore::load(&stats_path())));
         rebuild_providers();
 
-        // Start the local cleanup worker in the background (model load takes a few
-        // seconds; the first local cleanup waits for it, subsequent ones are fast).
-        std::thread::spawn(|| {
-            set_local_status("loading", None);
+        // The local cleanup worker is only *preloaded* when local cleanup is the
+        // selected engine. Loading it is loading a 2.3 GB model, and it stays paged
+        // in for as long as the app runs — so on a machine set to cloud cleanup that
+        // is a couple of gigabytes held around the clock for a fallback that fires
+        // only when the endpoint 429s or the network drops. Measured on this
+        // machine: 2.2 GB resident, with `cleanup_mode` set to the cloud.
+        //
+        // So in a cloud mode it is spawned on first need instead (see `ensure_local`),
+        // which costs that one fallback cleanup a few seconds of model load and
+        // nothing after. The default install, where local *is* the engine, keeps its
+        // warm start exactly as before.
+        let _ = LOCAL.set(Mutex::new(None));
+        let preload = matches!(current_settings().cleanup_mode, CleanupMode::Local);
+        std::thread::spawn(move || {
+            // Status tracks whether local cleanup is *available*, which is a question
+            // about the model on disk, not about whether the process is warm. A pane
+            // that said "missing" next to a model sitting right there would be wrong.
             let model = crate::local_llm::model_path();
-            let worker = crate::local_llm::spawn_default();
-            if worker.is_some() {
-                let name = model
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|s| s.to_string());
-                set_local_status("ready", name);
-            } else {
+            if !model.exists() {
                 set_local_status("missing", None);
+                return;
             }
-            let _ = LOCAL.set(Mutex::new(worker));
+            let name = model.file_name().and_then(|n| n.to_str()).map(str::to_string);
+            if preload {
+                set_local_status("loading", None);
+                ensure_local();
+            }
+            set_local_status("ready", name);
         });
 
         // Accessibility is the ONE permission that makes the Fn CGEventTap global AND
@@ -1225,6 +1360,15 @@ mod imp {
         std::thread::spawn(|| loop {
             std::thread::sleep(Duration::from_millis(100));
             handle_input(Input::Tick { now_ms: now_ms() });
+        });
+
+        // Give back the memory of any model that was loaded to serve a fallback and
+        // is no longer the engine in use. Its own thread rather than the 100 ms tick:
+        // it takes locks a dictation holds, and it has nothing to do 599 times out of
+        // 600. See `reap_idle_engines`.
+        std::thread::spawn(|| loop {
+            std::thread::sleep(Duration::from_secs(60));
+            reap_idle_engines();
         });
 
         // The event tap runs on a thread with its own CFRunLoop. CRITICAL: create it
