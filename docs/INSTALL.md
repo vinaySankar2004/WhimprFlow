@@ -245,11 +245,12 @@ The recipient's side of this only works if there is a release to fetch.
 
 ```bash
 scripts/install-macos.sh --package /tmp/whimpr-release
-gh release create "v0.1.2" \
-  /tmp/whimpr-release/WhimprFlow.app.zip \
-  /tmp/whimpr-release/WhimprFlow.app.zip.sha256 \
-  --generate-notes
 ```
+
+Bump `version` in `Cargo.toml` and `src-tauri/tauri.conf.json` first. The script
+prints the exact `gh release create` line to run, with the version it just built and
+both asset paths filled in — no version is written down here, because one written down
+here is one that goes stale.
 
 `--package` is a mode of `install-macos.sh` rather than a separate script so the
 worker-bundling and sign-nested-code-first sequence cannot drift from the one that is

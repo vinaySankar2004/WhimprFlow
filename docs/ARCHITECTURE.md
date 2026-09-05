@@ -9,8 +9,8 @@ and neither is on unless it is turned on.
 
 ## The loop
 
-Hold **Fn**, speak, release. Text lands at the cursor. (Or press once to start and
-again to stop — see *The dictation key* below.)
+Hold **Fn**, speak, release. Text lands at the cursor. (Or one of two other triggers —
+see *The dictation key*.)
 
 ```
 Fn down ─ CGEventTap ─→ state machine ─→ StartCapture ─→ cpal mic (mono, device rate)
@@ -229,20 +229,18 @@ case-sensitive where a message is not. Neither pass touches a raw paste: `Raw` m
 and level `None` mean verbatim. `dictionary_check --messaging` drives the chain
 against the real model.
 
-`cleanup_check` is the harness for cleanup itself, as `dictionary_check` is for the
-dictionary. It drives the same production chain — `pre_normalize_layout`,
-`build_messages`, the real worker process, `post_process`, `de_dash`, the gates — and
-asserts on the text that would reach the cursor, printing the model's own reply
-whenever the gates rejected it, since `pasted` is by then the untouched transcript and
-says nothing about what went wrong. Most of its cases are real dictations lifted out
-of `stats.json` rather than invented, and it prints timing and the token budget for
-every one, which makes it the measuring instrument for any prompt change.
+`cleanup_check` is to cleanup what `dictionary_check` is to the dictionary: it drives
+the same production chain — `pre_normalize_layout`, `build_messages`, the real worker,
+`post_process`, `de_dash`, the gates — and asserts on the text that would reach the
+cursor. When the gates reject, it prints the model's own reply, because `pasted` is by
+then the untouched transcript and says nothing about what went wrong. Most cases are
+real dictations lifted from `stats.json`, and every one reports its timing and token
+budget, which is what makes it a measuring instrument for prompt changes.
 
-Cases the small model is known to fail carry a `known_limit` note and do not fail the
-run: a suite that is permanently red stops being read, which is how a real regression
-gets missed. The check inverts instead — a known limit that starts *passing* fails the
-run as a stale note, because a suite that lies about what the model cannot do is worse
-than no suite.
+Cases the small model is known to fail carry a `known_limit` and do not fail the run —
+a permanently red suite stops being read, which is how a real regression gets missed.
+The check inverts instead: a known limit that starts *passing* fails as a stale note,
+since a suite that lies about what the model cannot do is worse than no suite.
 
 ```bash
 cargo run -p whimpr-llm-worker --example cleanup_check --release
@@ -273,15 +271,14 @@ still there sometimes" is, and it is not an edge case for anyone who dictates
 instructions: roughly a third of the raw-identical pastes in a real 249-dictation
 history are this shape.
 
-Three prompt fixes were tried and **all three changed nothing** — few-shot
-demonstrations of exactly this (including the banana transcript itself, with the right
-output beside it, in context), a reminder appended after the transcript on the recency
-theory, and reframing the tail as a completion cue. Both failing cases returned
-byte-identical replies every time; sampling is greedy, so that is the model's fixed
-answer rather than variance. It is a capability limit of a 4B model. The levers that
-remain are a larger cleanup model — the cloud path runs a 20B, where this has not been
-observed — or a deterministic post-step in the spirit of `apply_listed_mishears`. The
-note in `cleanup/prompts.rs` records the dead end so the day does not get spent twice.
+Three prompt fixes were tried and **all three changed nothing**: few-shot
+demonstrations of exactly this (the banana transcript itself, right answer beside it,
+in context), a reminder appended *after* the transcript, and reframing the tail as a
+completion cue. Both cases returned byte-identical replies every time — sampling is
+greedy, so that is the model's fixed answer, not variance. It is a 4B capability
+limit. What remains is a larger cleanup model (the cloud path's 20B, where this has
+not been seen) or a deterministic post-step like `apply_listed_mishears`. The note in
+`cleanup/prompts.rs` records the dead end so the day is not spent twice.
 
 `evaluate` takes the **utterance's vocab** — the same entries that went into the
 prompt — and treats those spellings as expected rather than novel. This is not a
@@ -366,17 +363,15 @@ expensive stage: 1386 ms on that 13 s utterance and 4804 ms on a 30 s one, again
 *generate*, so it grows with utterance length in a way ASR does not.
 
 **Streaming is not the fix, and it is the first thing everyone reaches for.** The
-gates have to see the whole cleanup before any of it is pasted — that is the entire
-point of them — and the paste is one clipboard round trip, so tokens arriving earlier
-buy nothing. What is actually available, in order of payoff: not generating tokens
-nobody reads (`reasoning_effort: "low"`, above), the *second* ASR pass that
-`biased_retranscribe` runs whenever the dictionary hits, and the ~1.5k tokens of
-system prompt and few-shot turns prefilled on every request — which the local worker
-pays in full every time, because it builds a fresh context per request and throws the
-KV cache of that identical prefix away. Reusing it across requests is the standing
-local-latency win and is not done yet. The genuine architectural answer is the one
-Wispr-style products use: transcribe *while* the key is held, so releasing it leaves
-only the tail to process. That is a rewrite of the capture path, not a tuning knob.
+gates must see the whole cleanup before any of it is pasted — that is their entire
+point — and the paste is one clipboard round trip, so earlier tokens buy nothing.
+What is actually available, in order of payoff: not generating tokens nobody reads
+(`reasoning_effort: "low"`, above); the *second* ASR pass `biased_retranscribe` runs
+whenever the dictionary hits; and the ~1.5k-token prompt prefix, which the local
+worker re-prefills every request because it builds a fresh context and discards the
+KV cache. The real architectural answer is the one Wispr-style products use —
+transcribe *while* the key is held, so releasing it leaves only the tail. That is a
+rewrite of the capture path, not a tuning knob.
 
 Both stage timings are recorded per dictation (`asr_ms`, `cleanup_ms`), so none of
 this has to be re-measured by hand.
@@ -903,6 +898,18 @@ means adding the branches back, not maintaining dead ones now.
 - The harness covers the dictionary against *text* transcripts, so its mishears are
   written by hand rather than produced by Whisper. Recorded audio fixtures driven
   through the real ASR would close that gap, at the cost of committing audio.
+- **The local cleanup worker re-prefills its whole prompt every request.** It builds
+  a fresh llama context per call, so the ~1.5k tokens of system prompt and few-shot
+  turns — byte-identical between requests — are prefilled again each time and the KV
+  cache is thrown away. On short dictations that fixed cost is most of the wait
+  (~1.5 s of a ~1.6 s cleanup, measured with `cleanup_check`). Reusing the cache
+  across requests is the standing local-latency win; it does not affect the cloud
+  path, which is why it has not been done yet.
+- **The 4B cleanup model answers dictation that is a request** instead of writing it
+  down, and no prompt fix moved it (see *Cleanup*). It fails safe — the gates paste
+  the raw transcript — so the cost is no cleanup rather than a wrong paste, on a
+  shape that is common for anyone who dictates instructions. `cleanup_check` keeps
+  it visible as a `known_limit`.
 - **There is no microphone picker.** `whimpr_audio::start` takes the first device
   that opens, default first (see *Opening the mic*), which is right when the default
   is unusable and wrong when it is merely not the one you wanted — a Continuity iPhone
