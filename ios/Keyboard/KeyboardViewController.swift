@@ -44,6 +44,11 @@ final class KeyboardViewController: UIInputViewController {
     /// appearance.
     private var appliedStyle: UIUserInterfaceStyle?
 
+    /// The glyph currently on the mic key, so it is only rebuilt on a real change.
+    /// `.some(nil)` is a real value here — it means the waveform has the space —
+    /// hence the double optional rather than a plain String?.
+    private var appliedMicSymbol: String??
+
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -64,7 +69,17 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // Appearance only. It is guarded to a no-op unless the setting changed, and
+        // it must be right before the first frame is drawn.
         applyAppearance()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // Syncing state *after* the transition rather than during it. `refresh()`
+        // touches the mic key, the waveform and the discard button, and doing that
+        // while the keyboard is sliding in is the jitter seen when switching back to
+        // it. Nothing here is urgent enough to be worth a frame of the animation.
         refresh()
     }
 
@@ -98,8 +113,12 @@ final class KeyboardViewController: UIInputViewController {
 
     override func traitCollectionDidChange(_ previous: UITraitCollection?) {
         super.traitCollectionDidChange(previous)
-        // Dynamic colours re-resolve themselves; the layer-backed bits do not.
+        // This also fires during transitions, so only act when light/dark genuinely
+        // flipped. Dynamic colours re-resolve themselves; CGColor on a layer does not,
+        // which is why the border is repainted by hand.
+        guard previous?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
         micButton.backgroundColor = Palette.surface.resolvedColor(with: traitCollection)
+        micButton.layer.borderColor = Palette.border.resolvedColor(with: traitCollection).cgColor
     }
 
     /// Follow the app's appearance setting, which the keyboard reads from the shared
@@ -270,6 +289,11 @@ final class KeyboardViewController: UIInputViewController {
         if Handoff.isAppLive {
             Handoff.post(.start)
         } else {
+            // Say why. iOS is about to switch apps, and without a reason that reads as
+            // the keyboard malfunctioning rather than as the one thing it cannot avoid:
+            // a terminated app cannot be woken by a notification, and no extension can
+            // launch its container app in the background.
+            micLabel.text = "WhimprFlow isn't running — opening it"
             openContainerApp()
         }
     }
@@ -370,16 +394,23 @@ final class KeyboardViewController: UIInputViewController {
     /// instead — showing both put a static mic above moving bars, which read as two
     /// unrelated things happening.
     private func setMic(symbol: String?, label: String) {
-        var configuration = UIButton.Configuration.plain()
-        if let symbol {
-            configuration.image = UIImage(
-                systemName: symbol,
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 30, weight: .medium)
-            )
+        // Only when it actually changed. Assigning `configuration` forces the button
+        // to rebuild and re-lay-out its contents, and `refresh()` runs on every
+        // appearance — so doing this unconditionally rebuilds the mic key in the
+        // middle of the keyboard's presentation transition, every single time, for a
+        // state that is usually identical to the last one.
+        if symbol != appliedMicSymbol {
+            appliedMicSymbol = symbol
+            var configuration = UIButton.Configuration.plain()
+            if let symbol {
+                configuration.image = UIImage(
+                    systemName: symbol,
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 30, weight: .medium)
+                )
+            }
+            configuration.baseForegroundColor = isDictating ? Palette.accent : Palette.textPrimary
+            micButton.configuration = configuration
         }
-        configuration.baseForegroundColor = isDictating ? Palette.accent : Palette.textPrimary
-        micButton.configuration = configuration
-        micButton.backgroundColor = Palette.surface
-        micLabel.text = label
+        if micLabel.text != label { micLabel.text = label }
     }
 }

@@ -86,7 +86,12 @@ final class WaveformView: UIView {
         displayLink?.invalidate()
         displayLink = nil
         smoothed = Array(repeating: 0, count: barCount)
-        UIView.animate(withDuration: 0.2) { self.layoutBars() }
+        // Deliberately not animated. `stop()` is called from `viewWillDisappear`,
+        // which is *during* the keyboard's dismissal transition, and starting a
+        // 0.2-second animation there animates against the system's own — the bars
+        // visibly slide while the keyboard is already sliding away. Settling
+        // instantly is invisible on a view that is leaving the screen anyway.
+        layoutBars()
     }
 
     @objc private func tick() {

@@ -73,6 +73,13 @@ final class DictationController {
     func startStandby() {
         guard settings.keepSessionAlive else { return }
         guard blocker == nil else { return }
+        // A call or Siri arriving mid-sentence takes the microphone away. Transcribe
+        // what was captured rather than discarding it: the words up to the
+        // interruption are still the user's, and losing them silently is worse than
+        // an ending that stops short of where they meant to finish.
+        recorder.onCaptureInterrupted = { [weak self] in
+            Task { @MainActor in await self?.finishRecording() }
+        }
         do {
             try recorder.startEngine()
         } catch {

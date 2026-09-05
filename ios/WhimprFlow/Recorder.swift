@@ -35,6 +35,22 @@ final class Recorder {
     /// Whether the samples arriving are being kept.
     private(set) var isCapturing = false
 
+    /// Whether standby *should* be up, as opposed to whether it currently is.
+    ///
+    /// Recovery needs the difference. `AVAudioEngine` stops itself for reasons that
+    /// have nothing to do with this app — a phone call, Siri, AirPods connecting — and
+    /// without a record of intent there is no way to tell "stopped because it was
+    /// asked to" from "stopped and should be brought back".
+    private var wantsEngine = false
+
+    /// Audio-lifecycle observers, torn down with the recorder.
+    private var observers: [NSObjectProtocol] = []
+
+    /// Called when the engine stopped without being asked to, while a dictation was in
+    /// flight. The controller decides what to do with the partial recording; this type
+    /// does not have the context to.
+    var onCaptureInterrupted: (() -> Void)?
+
     enum Failure: LocalizedError {
         case denied
         case sessionFailed(String)
@@ -94,6 +110,12 @@ final class Recorder {
     /// avoidable and should not be hidden — an app holding the mic open is exactly
     /// what this is.
     func startEngine() throws {
+        wantsEngine = true
+        observeAudioLifecycle()
+        try bringUpEngine()
+    }
+
+    private func bringUpEngine() throws {
         guard !isEngineRunning else { return }
         guard Self.hasPermission else { throw Failure.denied }
         try activateSession()
@@ -131,6 +153,12 @@ final class Recorder {
     /// Tear the engine down completely. Releases the microphone and lets iOS suspend
     /// the app, after which the keyboard has to open it to dictate.
     func stopEngine() {
+        wantsEngine = false
+        tearDownEngine()
+        deactivateSession()
+    }
+
+    private func tearDownEngine() {
         guard isEngineRunning else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
@@ -138,7 +166,93 @@ final class Recorder {
         isCapturing = false
         level = 0
         LevelChannel.shared.level = 0
-        deactivateSession()
+    }
+
+    // MARK: - Surviving interruptions
+
+    /// Watch for everything that stops the engine without asking.
+    ///
+    /// This is what keeps standby — and therefore the keyboard's ability to dictate
+    /// without opening the app — alive across an ordinary day. Without it a single
+    /// phone call ends standby permanently: the engine stops, nothing restarts it, the
+    /// app has no active audio, iOS suspends and then terminates it, and every mic-key
+    /// tap from then on opens the app. The user sees an app that "randomly stops
+    /// working", with no event to connect it to.
+    private func observeAudioLifecycle() {
+        guard observers.isEmpty else { return }
+        let centre = NotificationCenter.default
+        let session = AVAudioSession.sharedInstance()
+
+        // A call, Siri, or another app taking the microphone.
+        observers.append(centre.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] note in
+            guard let self else { return }
+            let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt ?? 0
+            switch AVAudioSession.InterruptionType(rawValue: raw) {
+            case .began:
+                self.handleUnexpectedStop()
+            case .ended:
+                // The session is inactive until it is reactivated, so recovery has to
+                // go through the full bring-up rather than just engine.start().
+                self.recover()
+            default:
+                break
+            }
+        })
+
+        // The route changed underneath us — AirPods connecting, a headset unplugged.
+        // The engine's input format can change with it, so the tap has to be rebuilt
+        // rather than the engine merely restarted.
+        observers.append(centre.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.recover()
+        })
+
+        // The audio server restarted. Every object obtained from it is stale.
+        observers.append(centre.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleUnexpectedStop()
+            self?.recover()
+        })
+    }
+
+    /// The engine went down mid-dictation. Tell the controller, which owns the
+    /// decision about the partial recording.
+    private func handleUnexpectedStop() {
+        guard isCapturing else { return }
+        onCaptureInterrupted?()
+    }
+
+    /// Put standby back, if it is supposed to be up.
+    ///
+    /// Rebuilds rather than restarts: after a configuration change the input node's
+    /// format may differ, and a tap installed against the old one delivers nothing.
+    /// Retried once after a moment because the route is sometimes still settling when
+    /// the notification arrives, and a bring-up in that window throws.
+    private func recover() {
+        guard wantsEngine else { return }
+        tearDownEngine()
+        do {
+            try bringUpEngine()
+        } catch {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                guard let self, self.wantsEngine, !self.isEngineRunning else { return }
+                try? self.bringUpEngine()
+            }
+        }
+    }
+
+    deinit {
+        observers.forEach(NotificationCenter.default.removeObserver)
     }
 
     /// Start keeping what the microphone hears. Starts the engine first if it is not
