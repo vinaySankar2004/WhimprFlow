@@ -15,6 +15,25 @@ final class Settings {
         static let level = "settings.cleanupLevel"
         static let dictionary = "settings.dictionary"
         static let backgroundSession = "settings.backgroundSession"
+        static let appearance = "settings.appearance"
+    }
+
+    // MARK: - Appearance
+
+    /// Light, dark, or whatever the system is doing. Default is the system.
+    var appearance: Appearance {
+        didSet { defaults.set(appearance.rawValue, forKey: Key.appearance) }
+    }
+
+    /// The same value, readable without building a `Settings`.
+    ///
+    /// The keyboard needs the appearance and nothing else from here, and it is a
+    /// separate process that cannot ask the app — it reads the shared container
+    /// directly. Instantiating the observable object in an extension to get one enum
+    /// would drag the dictionary and its JSON along for no reason.
+    static var storedAppearance: Appearance {
+        let raw = (Handoff.defaults ?? .standard).string(forKey: Key.appearance) ?? ""
+        return Appearance(rawValue: raw) ?? .system
     }
 
     // MARK: - Cleanup level
@@ -52,6 +71,7 @@ final class Settings {
     private init() {
         level = CleanupLevel(rawValue: defaults.string(forKey: Key.level) ?? "") ?? .light
         keepSessionAlive = defaults.object(forKey: Key.backgroundSession) as? Bool ?? true
+        appearance = Appearance(rawValue: defaults.string(forKey: Key.appearance) ?? "") ?? .system
         if let data = defaults.data(forKey: Key.dictionary),
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let entries = object["entries"] as? [[String: Any]] {

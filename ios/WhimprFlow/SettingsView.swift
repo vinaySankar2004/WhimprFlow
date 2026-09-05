@@ -25,6 +25,7 @@ struct SettingsView: View {
                 keySection
                 keyboardSection
                 dictionarySection
+                appearanceSection
                 behaviourSection
                 aboutSection
             }
@@ -38,8 +39,8 @@ struct SettingsView: View {
                 }
             }
         }
-        .tint(Theme.accent400)
-        .preferredColorScheme(.dark)
+        .tint(Theme.accent)
+        .preferredColorScheme(settings.appearance.colorScheme)
     }
 
     // MARK: - Sections
@@ -139,11 +140,26 @@ struct SettingsView: View {
             } label: {
                 LabeledContent("Dictionary") {
                     Text("\(settings.dictionary.entries.count)")
-                        .foregroundStyle(Theme.slate400)
+                        .foregroundStyle(Theme.textSecondary)
                 }
             }
         } footer: {
             Text("Names and terms recognition gets wrong, and the spellings to use instead.")
+        }
+    }
+
+    private var appearanceSection: some View {
+        Section {
+            Picker("Theme", selection: $settings.appearance) {
+                ForEach(Appearance.allCases) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+        } header: {
+            Text("Appearance")
+        } footer: {
+            Text("System follows your device's light or dark setting. The keyboard matches whatever you choose here.")
         }
     }
 
@@ -255,7 +271,7 @@ struct DictionaryView: View {
 
             Section("Words") {
                 if settings.dictionary.entries.isEmpty {
-                    Text("No words yet.").foregroundStyle(Theme.slate400)
+                    Text("No words yet.").foregroundStyle(Theme.textSecondary)
                 } else {
                     ForEach(Array(settings.dictionary.entries.enumerated()), id: \.offset) { index, entry in
                         VStack(alignment: .leading, spacing: 4) {
@@ -265,7 +281,7 @@ struct DictionaryView: View {
                             if !mishears.isEmpty {
                                 Text(mishears.joined(separator: ", "))
                                     .font(.caption.monospaced())
-                                    .foregroundStyle(Theme.slate400)
+                                    .foregroundStyle(Theme.textSecondary)
                             }
                         }
                         .swipeActions {

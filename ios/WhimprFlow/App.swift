@@ -4,12 +4,15 @@ import SwiftUI
 struct WhimprFlowApp: App {
     @Environment(\.scenePhase) private var scenePhase
     private let dictation = DictationController.shared
+    /// Observed so a change in Settings re-renders the whole scene, which is what
+    /// applies the appearance without a relaunch.
+    @State private var settings = Settings.shared
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(dictation)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(settings.appearance.colorScheme)
                 // The keyboard opens `whimprflow://dictate` when it cannot signal an
                 // already-running app. Arriving here means "start recording now".
                 .onOpenURL { url in
@@ -72,7 +75,7 @@ struct RootView: View {
                 }
                 .onAppear(perform: dictation.refreshConfiguration)
         }
-        .tint(Theme.accent400)
+        .tint(Theme.accent)
     }
 }
 

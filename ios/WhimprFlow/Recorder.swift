@@ -137,6 +137,7 @@ final class Recorder {
         isEngineRunning = false
         isCapturing = false
         level = 0
+        LevelChannel.shared.level = 0
         deactivateSession()
     }
 
@@ -157,6 +158,8 @@ final class Recorder {
         guard isCapturing else { return [] }
         isCapturing = false
         level = 0
+        // Or the keyboard's waveform freezes at the last thing it heard.
+        LevelChannel.shared.level = 0
 
         var captured = lock.withLock { samples }
         Self.normalizeForASR(&captured)
@@ -192,6 +195,11 @@ final class Recorder {
         lock.withLock { samples.append(contentsOf: chunk) }
 
         let meter = Self.level(from: chunk)
+        // Straight to shared memory from the audio thread — a store, no allocation and
+        // nothing to await, so the keyboard's waveform tracks the voice at the rate
+        // the microphone actually delivers rather than the rate the main thread
+        // happens to drain.
+        LevelChannel.shared.level = meter
         Task { @MainActor [weak self] in self?.level = meter }
     }
 

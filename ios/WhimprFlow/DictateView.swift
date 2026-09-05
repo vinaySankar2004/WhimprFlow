@@ -48,7 +48,7 @@ struct DictateView: View {
         .animation(Theme.spring, value: dictation.phase)
         .navigationTitle("WhimprFlow")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(Theme.slate950, for: .navigationBar)
+        .toolbarBackground(Theme.background, for: .navigationBar)
     }
 
     /// Whatever the screen currently has to say: why it cannot start, what it
@@ -104,7 +104,7 @@ struct MicButton: View {
                 if isRecording {
                     ForEach(0..<2) { index in
                         Circle()
-                            .stroke(Theme.accent400.opacity(0.28 - Double(index) * 0.1), lineWidth: 2)
+                            .stroke(Theme.accent.opacity(0.28 - Double(index) * 0.1), lineWidth: 2)
                             .frame(width: ringSize(index))
                             .animation(.easeOut(duration: 0.18), value: level)
                     }
@@ -125,7 +125,7 @@ struct MicButton: View {
                 Circle()
                     .fill(fill)
                     .frame(width: 116)
-                    .overlay(Circle().strokeBorder(Theme.cardBorder, lineWidth: 1))
+                    .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
                     .shadow(color: isRecording ? Theme.accentGlow : .black.opacity(0.5),
                             radius: isRecording ? 26 : 14, y: 8)
                     .scaleEffect(breathe && !isRecording && !isTranscribing ? 1.03 : 1.0)
@@ -136,7 +136,7 @@ struct MicButton: View {
                 } else {
                     Image(systemName: icon)
                         .font(.system(size: 40, weight: .medium))
-                        .foregroundStyle(isTranscribing ? Theme.pillTextMuted : Theme.pillText)
+                        .foregroundStyle(isTranscribing ? Theme.textSecondary : Theme.textPrimary)
                         .contentTransition(.symbolEffect(.replace))
                 }
             }
@@ -163,7 +163,7 @@ struct MicButton: View {
         return base + CGFloat(level) * (34 - CGFloat(index) * 8)
     }
 
-    private var fill: Color { isRecording ? Theme.slate800 : Theme.slate850 }
+    private var fill: Color { isRecording ? Theme.control : Theme.surface }
 
     private var icon: String {
         switch phase {
@@ -226,7 +226,7 @@ struct StatusLine: View {
     var body: some View {
         Text(isBlocked ? "Not set up yet" : text)
             .font(.subheadline)
-            .foregroundStyle(Theme.slate400)
+            .foregroundStyle(Theme.textSecondary)
             .multilineTextAlignment(.center)
             .frame(minHeight: 22)
     }
@@ -253,7 +253,7 @@ struct ResultCard: View {
                 SectionLabel("Result")
                 Text(text)
                     .font(.body)
-                    .foregroundStyle(Theme.slate100)
+                    .foregroundStyle(Theme.textPrimary)
                     .textSelection(.enabled)
                 // Every fallback in this app is deliberately silent, so a raw or slow
                 // result has no explanation unless it is shown. This is that.
@@ -264,7 +264,7 @@ struct ResultCard: View {
                 } else if let engine, engine == .raw {
                     Text("pasted raw — cleanup was rejected by the gates")
                         .font(.caption)
-                        .foregroundStyle(Theme.slate400)
+                        .foregroundStyle(Theme.textSecondary)
                 }
             }
         }
@@ -284,7 +284,7 @@ struct Notice: View {
                     .foregroundStyle(tone == .error ? Theme.error : Theme.warn)
                 Text(text)
                     .font(.subheadline)
-                    .foregroundStyle(Theme.slate200)
+                    .foregroundStyle(Theme.textPrimary)
             }
         }
     }
