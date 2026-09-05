@@ -256,35 +256,37 @@ time — leaves the existing Accessibility and Microphone grants intact.
 
 ## Publishing a release (for the maintainer)
 
-The recipient's side of this only works if there is a release to fetch.
+The recipient's side of this only works if there is a release to fetch. Since v0.1.7
+releases are signed with a Developer ID and notarized, which is what lets the app open
+on a stranger's Mac with no script at all.
 
-```bash
-scripts/install-macos.sh --package /tmp/whimpr-release
-```
+1. Bump `version` in `Cargo.toml` and `src-tauri/tauri.conf.json`.
+2. Build, sign and notarize:
 
-Bump `version` in `Cargo.toml` and `src-tauri/tauri.conf.json` first. The script
-prints the exact `gh release create` line to run, with the version it just built and
-both asset paths filled in — no version is written down here, because one written down
-here is one that goes stale.
+   ```bash
+   APPLE_SIGNING_IDENTITY="Developer ID Application: <name> (<team>)" \
+   NOTARY_PROFILE=<notarytool profile> ./scripts/build-macos.sh
+   ```
 
-`--package` is a mode of `install-macos.sh` rather than a separate script so the
-worker-bundling and sign-nested-code-first sequence cannot drift from the one that is
-exercised on every local install. It signs with a real Apple timestamp, since a
-signature without one stops verifying when the certificate expires — irrelevant for a
-local build that gets replaced daily, not irrelevant for a zip someone keeps.
+   The identity comes from the environment on purpose: the script refuses to
+   produce a release with anything but a Developer ID, because v0.1.0 shipped with a
+   development certificate, passed every local check, and would not open on the
+   first user's Mac. The profile is one stored by `xcrun notarytool
+   store-credentials`, so no secret is ever on the command line.
+3. Publish with the `gh release create` line the script prints, attaching all three
+   assets. Two of the names are load-bearing: `setup-macos.sh` fetches
+   `releases/latest/download/WhimprFlow.app.zip` and its `.sha256` by exact name.
+4. **Verify the published asset cold** — download it from the release page, not the
+   build directory, and check `codesign -dv` says `Developer ID Application`,
+   `xcrun stapler validate` finds a ticket, and `Contents/MacOS/` holds **both**
+   `whimpr-tauri` and `whimpr-llm-worker`. Two real releases shipped broken because
+   the local build was trusted instead: one signed with a development certificate,
+   one missing the worker, which pastes raw uncleaned text and looks like cleanup
+   being broken.
 
-Both asset names matter: `setup-macos.sh` fetches
-`releases/latest/download/WhimprFlow.app.zip` and its `.sha256` by exact name.
-
-**This is not `scripts/build-macos.sh`.** That script demands a Developer ID and
-notarizes, which is the correct way to ship to strangers and needs the paid Apple
-Developer Program. Without it, the release is signed with an Apple *Development*
-certificate — fine here only because Gatekeeper assesses **quarantined** files, and
-`setup-macos.sh` clears that flag before first launch. The code signature is still
-verified, both by the script and by macOS at every launch.
-
-Enrolling in the Developer Program later is a strict improvement: `build-macos.sh`
-then produces a notarized, stapled dmg that opens on a double-click with no script at
-all. Be aware that switching to a Developer ID **changes the app's designated
-requirement**, so every existing installation's Accessibility and Microphone grants
-go stale and have to be re-granted once.
+`scripts/install-macos.sh --package <dir>` still exists for a build without the
+Developer Program. It signs with a development certificate, which works only because
+`setup-macos.sh` clears the quarantine flag before first launch. Do not switch between
+the two identities casually: it **changes the app's designated requirement**, so
+every existing installation's Accessibility and Microphone grants go stale and must be
+re-granted once.
