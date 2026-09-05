@@ -1,0 +1,20 @@
+[package]
+name = "whimpr-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The C ABI over `whimpr-core`, for shells that are not Rust — today the iOS app and
+# its keyboard extension.
+#
+# `staticlib` is what Xcode links; `rlib` keeps the crate usable from Rust tests so
+# the bridge itself can be tested without a device.
+[lib]
+name = "whimpr_ffi"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+whimpr-core = { path = "../whimpr-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }

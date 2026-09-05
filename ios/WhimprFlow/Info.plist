@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>WhimprFlow</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+
+	<!-- The keyboard extension cannot record; it opens this scheme to hand the job
+	     to the app. Launching your *own* container app is the one exception to the
+	     App Review rule that a keyboard "must not launch other apps". -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.whimpr.whimprflow</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>whimprflow</string>
+			</array>
+		</dict>
+	</array>
+
+	<!-- Holding a live capture session is what lets the mic key record without the
+	     visible app switch. Starting a *new* session from the background is what
+	     iOS refuses; keeping an already-active one alive is what this permits. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+
+	<key>NSMicrophoneUsageDescription</key>
+	<string>WhimprFlow records what you dictate so it can be transcribed. Audio is sent to the transcription service you configured and is never stored.</string>
+
+	<!-- Answers the export-compliance question once, here, instead of stopping every
+	     TestFlight upload to ask it. False is the correct answer: the app makes HTTPS
+	     calls and does nothing else with cryptography, which is the standard exemption.
+	     Omit this and each upload sits in "Missing Compliance" until you click through
+	     a form, and testers cannot install it in the meantime. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+
+	<!-- A launch screen is required, and an empty dict gives a white flash before a
+	     dark app. This paints the same slate the app opens on. -->
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+</dict>
+</plist>

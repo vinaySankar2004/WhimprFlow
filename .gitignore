@@ -25,3 +25,12 @@ src-tauri/gen/
 .env
 .env.*
 *.pem
+
+# iOS build products.
+# The Xcode project is GENERATED from ios/project.yml by XcodeGen — edit that, run
+# `xcodegen generate`, and never commit the .xcodeproj: a hand-merged .pbxproj is how
+# a project starts failing to parse.
+ios/WhimprFlow.xcodeproj/
+# Built by scripts/build-ios-core.sh from whimpr-ffi on every Xcode build.
+ios/Frameworks/
+ios/DerivedData/

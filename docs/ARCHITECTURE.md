@@ -125,15 +125,35 @@ emoji picker.
 
 | Crate | Does |
 |---|---|
-| `whimpr-core` | State machine, cleanup prompts/levels/gates, dictionary, settings, stats. No I/O, no platform code — this is where the tests live. |
+| `whimpr-core` | State machine, cleanup prompts/levels/gates, the `pipeline` that orders the passes around a provider, dictionary, settings, stats. No I/O, no platform code — this is where the tests live, and what a non-macOS shell links against. |
 | `whimpr-asr` | Speech-to-text behind the `AsrEngine` trait: `whisper-rs` on Metal (default), and `cloud::CloudAsr` calling Groq's hosted Whisper. |
 | `whimpr-audio` | `cpal` mic capture (device/format search, see *Opening the mic*), downmix, resample to 16 kHz, throttled RMS for the waveform. |
 | `whimpr-cleanup` | Cloud cleanup behind the provider trait: one client for any endpoint speaking the OpenAI chat-completions format (Groq by default, repointed by `openai_base_url`). Keys come from the OS keychain, never a file. |
 | `whimpr-llm-worker` | Separate binary running llama.cpp. Separate because llama.cpp's ggml and whisper.cpp's ggml cannot coexist in one process. Speaks one JSON request per line over stdio. |
+| `whimpr-ffi` | A C ABI over `whimpr-core` for shells that are not Rust — today the iOS app and its keyboard. One JSON-in/JSON-out function plus a free, because every type crossing it is already `Serialize`/`Deserialize`. Also holds the macOS/iOS output-parity suite. |
 | `whimpr-ipc` | Length-prefixed JSON wire protocol for a hotkey sidecar. **Built and tested, but not wired in** — the Fn tap currently runs in-process. |
 | `whimpr-sidecar` | The sidecar binary for that protocol. Also **not currently used**. |
 | `src-tauri` | The app: tray, Hub window, overlay pill, hotkey tap, paste, auto-learn. The macOS-native parts live in `hotkey.rs` (CGEventTap), `paste.rs`, `autolearn.rs`, `appctx.rs`, `fnkey.rs`. |
 | `ui/` | React + TypeScript. Two Vite entry points: `index.html` (Hub) and `overlay.html` (pill). |
+| `ios/` | The iOS/iPadOS app and keyboard extension. Cloud-only, links `whimpr-core` through `whimpr-ffi`. See [ios/README.md](../ios/README.md). |
+
+### The second shell
+
+macOS is not the only shell any more, and that is the reason `pipeline` exists as a
+module rather than as code inline in `hotkey.rs`. iOS runs the identical prompt,
+levels, gates, dictionary and pass ordering by linking the core; it supplies its own
+recording and its own HTTP, and decides nothing about the text.
+
+The shape is forced by one constraint: **an iOS keyboard extension cannot record
+audio** — Apple's QA1872 states it and offers no workaround. So the keyboard signals
+the app (Darwin notification when the app is alive, a `whimprflow://` open when it is
+not), the app records and runs the pipeline, and the result crosses back through the
+App Group container for `insertText`.
+
+Parity between the two shells is asserted, not assumed:
+`crates/whimpr-ffi/tests/parity.rs` sends the same inputs down both paths and compares
+the pasted text byte for byte. Its short cases are the sensitive ones — a lost
+`ctx.vocab` is invisible in long sentences because the novelty ratio absorbs it.
 
 ## Cleanup
 
@@ -263,7 +283,15 @@ emits unspaced is a clause break. Real dictations came out as `says-I`, `link-ca
 and a dash with a digit on each side (a range, "9-5") stay hyphens. The cost is that a
 genuine "well—known" becomes "well, known"; that is the rarer mistake by a wide margin.
 
-Order is load-bearing. `de_dash` and `strip_parenthetical_fillers` run before the gate,
+Order is load-bearing, and `whimpr-core/src/pipeline.rs` is where it is enforced —
+`prepare` for the passes before the provider, `finish` for the ones after it. That
+sequence used to be inline in `hotkey.rs`, which was fine while macOS was the only
+shell; the iOS keyboard is a second one, and two shells re-deriving an order whose
+mistakes are all silent is exactly how they drift. A shell now supplies only what the
+core cannot see — the settings, the dictionary, the focused app — and calls the
+provider in between.
+
+`de_dash` and `strip_parenthetical_fillers` run before the gate,
 so the gate judges what will actually be pasted. `messaging_style` runs *after* the dictionary, which writes the
 authoritative — capitalized — spelling, and would otherwise leave a corrected name as
 the one capital in the message. It spares `?`, `!` and `...` (they carry tone), a

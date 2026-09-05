@@ -8,6 +8,7 @@ members = [
     "crates/whimpr-audio",
     "crates/whimpr-asr",
     "crates/whimpr-cleanup",
+    "crates/whimpr-ffi",
     "crates/whimpr-llm-worker",
     "crates/whimpr-sidecar",
     "src-tauri",

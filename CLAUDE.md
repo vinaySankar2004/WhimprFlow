@@ -9,8 +9,16 @@
 
 Local-first voice dictation: hold Fn, speak, release, clean text lands at the
 cursor. Rust + Tauri v2 core, React/TS webviews, Whisper on Metal for ASR, a
-llama.cpp worker for cleanup. **macOS only** — there are no `cfg` branches or
-platform stubs, and adding one back should be a deliberate decision, not a reflex.
+llama.cpp worker for cleanup.
+
+**The desktop app is macOS only** — there are no `cfg` branches or platform stubs in
+it, and adding one back should be a deliberate decision, not a reflex. There is also
+an **iOS/iPadOS app** in `ios/`: a cloud-only keyboard-plus-app pair that links
+`whimpr-core` rather than reimplementing it. It shares the prompt, levels, gates,
+dictionary and pipeline ordering, and nothing else. Read
+**[ios/README.md](ios/README.md)** before touching it — the constraint the whole
+design follows from (a keyboard extension cannot record audio, at all) is not
+guessable from the code.
 
 Read `docs/ARCHITECTURE.md` first — it explains how the loop works and *why* the
 odd parts are odd. Everything below is the working agreement on top of it.
@@ -27,6 +35,9 @@ cargo run -p whimpr-llm-worker --example dictionary_check --release            #
 cargo run -p whimpr-llm-worker --example dictionary_check --release -- --audit # your own dictionary, no model
 cargo run -p whimpr-llm-worker --example dictionary_check --release -- --messaging # same, at the Messaging level
 cargo run -p whimpr-llm-worker --example cleanup_check --release              # cleanup quality, real cases, real model
+cargo test -p whimpr-ffi                  # the C bridge, and macOS/iOS output parity
+cd ios && xcodegen generate               # regenerate the Xcode project after project.yml
+./scripts/build-ios-core.sh               # whimpr-core → ios/Frameworks/WhimprCore.xcframework
 ```
 
 ## Documentation is a source of truth, not a snapshot
@@ -266,13 +277,40 @@ These are not hypotheticals; each one bit during development.
   "to save a pass" removes the comparison and there is nothing left to catch it.
   Note the count check, not just the membership check: an echoed glossary is *all*
   authorized words.
+- **An iOS keyboard extension cannot record audio, and no setting changes that.**
+  Apple's QA1872 says so outright and offers no workaround; the runtime error is
+  `AVAudioSessionErrorCodeCannotStartRecording` (561145187). `RequestsOpenAccess`
+  buys network and the shared container, not the microphone. The keyboard therefore
+  signals the *app*, which records — and the app being merely backgrounded is fine
+  (it holds an audio session), while the app being *killed* is what the
+  `whimprflow://dictate` fallback exists for. Do not "simplify" the liveness
+  heartbeat to a boolean flag: a killed app never gets to clear one, and a stale
+  `true` leaves the mic key silently doing nothing.
+- **The iOS side must not reimplement the pipeline — and there is a test that says
+  so.** `crates/whimpr-ffi/tests/parity.rs` runs both paths and asserts byte-identical
+  output. Its short cases (`"call monvi"`) are the load-bearing ones: in a long
+  sentence an authorized spelling is a small fraction of the output and the novelty
+  ratio absorbs a lost `ctx.vocab`, so a long-cases-only suite passes while the bug is
+  real. Verified by mutation. Do not trim them.
+- **This repository's own path contains spaces.** `HEADER_SEARCH_PATHS` is a
+  space-separated list, so an unquoted entry in `ios/project.yml` splits into two
+  nonexistent paths and Swift fails with `cannot find 'whimpr_call' in scope` — which
+  reads as a link error and is not. Both targets need the bridging header, not just
+  the app.
 
 ## Conventions
 
 - **`whimpr-core` is pure.** State machine, prompts, gates, dictionary, settings,
   stats — no I/O, no platform code. This is where tests belong. Native code lives
   in `src-tauri`: `hotkey.rs` (CGEventTap), `paste.rs`, `autolearn.rs`, `appctx.rs`,
-  `fnkey.rs`.
+  `fnkey.rs`. It is also what iOS links, so "pure" now has a second enforcer: it must
+  keep compiling for `aarch64-apple-ios`.
+- **The order of the passes around a provider is `whimpr_core::pipeline`, not the
+  shell.** `prepare` before the model, `finish` after it. A shell supplies only what
+  the core cannot see — settings, dictionary, focused app — and calls the provider in
+  between. Several steps in that order fail *silently* when swapped, so two shells
+  re-deriving it from prose is how they drift; `whimpr-ffi` exposes it as two coarse
+  ops for the same reason.
 - **The state machine is a reducer**: `step(input) -> Vec<Action>`. The shell
   enacts actions; it does not re-derive state. Add behavior by emitting an
   `Action`, not by special-casing in the shell.
@@ -305,3 +343,11 @@ Anything involving what is *visible on screen* (the pill, Spaces, full-screen
 behavior) cannot be confirmed from a shell. Query the window server
 (`CGWindowListCopyWindowInfo` reports layer and on-screen state) or ask the user.
 Do not claim a visual fix works without one of those.
+
+On iOS the simulator is honest about layout and about the bridge, and dishonest about
+everything the design actually rests on: it does not record real audio, does not model
+app suspension faithfully, and does not exercise Full Access or App Group
+provisioning. Verify a UI change there; verify recording, the background session and
+the keyboard on a device, and say which of the two you did. `ios/README.md` keeps a
+**Status** section naming exactly what is and is not confirmed — update it rather than
+letting it drift into a claim nobody checked.

@@ -4964,6 +4964,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "whimpr-ffi"
+version = "0.1.7"
+dependencies = [
+ "serde",
+ "serde_json",
+ "whimpr-core",
+]
+
+[[package]]
 name = "whimpr-ipc"
 version = "0.1.7"
 dependencies = [
