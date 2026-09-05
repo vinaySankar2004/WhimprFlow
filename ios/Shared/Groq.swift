@@ -28,19 +28,51 @@ struct GroqClient {
             switch self {
             case let .http(code, body):
                 switch code {
-                case 401, 403:
+                case 401:
                     return "Groq rejected the API key. Check it in Settings."
+                // Not the same as 401, and must not be reported as one: the key is
+                // accepted and the *request* is refused.
+                //
+                // In practice, on this app, it has meant a VPN every time. Groq sits
+                // behind a CDN that refuses datacenter exit addresses, so a perfectly
+                // good key fails from behind a VPN and works the moment it is off.
+                // Reported as "check your key" — which is what 401 and 403 collapsed
+                // to before — it sends people to delete and re-create a key that was
+                // never the problem, which is exactly what happened here.
+                case 403:
+                    return "Groq refused the request (403). This is usually a VPN — "
+                        + "Groq blocks VPN and datacenter addresses, so try turning it "
+                        + "off. \(Self.detail(body))"
                 case 429:
                     return "Groq is rate limiting — the daily free quota may be spent. Try again later."
                 case 500...599:
                     return "Groq is having trouble (error \(code)). Try again in a moment."
                 default:
-                    return "Groq returned \(code): \(body.prefix(160))"
+                    return "Groq returned \(code). \(Self.detail(body))"
                 }
             case .empty: return "Groq returned no text."
             case .truncated: return "The reply was cut off before it finished."
             case .notConfigured: return "No API key is set."
             }
+        }
+
+        /// Pull the human-readable sentence out of an error body.
+        ///
+        /// Groq answers `{"error":{"message":"…"}}`. Showing that beats any wording
+        /// invented here, because the cause of a refusal is on their side and only
+        /// they know which one it was. Falls back to the raw body, trimmed, when the
+        /// shape is not what is expected — an unparsed body still says more than a
+        /// status code alone.
+        static func detail(_ body: String) -> String {
+            guard let data = body.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let error = object["error"] as? [String: Any],
+                  let message = error["message"] as? String
+            else {
+                let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? "No detail was returned." : String(trimmed.prefix(200))
+            }
+            return message
         }
     }
 

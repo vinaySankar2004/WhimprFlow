@@ -20,15 +20,16 @@ struct WhimprFlowApp: App {
                     dictation.observeKeyboard()
                     _ = await Recorder.requestPermission()
                     dictation.refreshConfiguration()
+                    dictation.startStandby()
                 }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
-            case .active: dictation.startHeartbeat()
-            // Background is not necessarily death — with the audio background mode the
-            // session survives — but the heartbeat is what tells the keyboard whether
-            // that actually happened, so it keeps running and simply stops if we are
-            // suspended. `.inactive` is a transient state and is left alone.
+            // Standby is entered on activation and deliberately *not* left on
+            // backgrounding: the running capture engine is the only thing keeping the
+            // app alive back there, and stopping it is what made every mic-key tap
+            // fall back to opening the app. `.inactive` is transient and left alone.
+            case .active: dictation.startStandby()
             case .background, .inactive: break
             @unknown default: break
             }
@@ -61,7 +62,12 @@ struct RootView: View {
                 // The key and the microphone permission both live outside the
                 // observation graph, so the screen is told to re-read them whenever
                 // they could have changed rather than polling.
-                .sheet(isPresented: $showingSettings, onDismiss: dictation.refreshConfiguration) {
+                .sheet(isPresented: $showingSettings, onDismiss: {
+                    dictation.refreshConfiguration()
+                    // The standby switch and the API key both live in there, and each
+                    // decides whether standby can run at all.
+                    dictation.applyStandbyPreference()
+                }) {
                     SettingsView()
                 }
                 .onAppear(perform: dictation.refreshConfiguration)

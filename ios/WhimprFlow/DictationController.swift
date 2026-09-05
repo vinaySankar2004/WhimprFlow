@@ -59,27 +59,57 @@ final class DictationController {
 
     // MARK: - Lifecycle
 
-    /// Begin publishing the liveness heartbeat the keyboard reads.
+    /// Enter standby: hold the microphone open and publish the liveness heartbeat, so
+    /// the keyboard's mic key can start a dictation without opening this app.
     ///
-    /// A heartbeat rather than a flag: the app can be killed without getting to clear
-    /// a flag, and a stale "I'm alive" would leave the mic key silently doing
-    /// nothing. Stopping it is therefore also how the keyboard learns to bounce.
-    func startHeartbeat() {
-        guard settings.keepSessionAlive, heartbeat == nil else { return }
+    /// The engine has to be genuinely *running*, not merely permitted to run.
+    /// `UIBackgroundModes: audio` keeps an app alive only while audio is active;
+    /// declaring the mode and idling gets the app suspended seconds after it
+    /// backgrounds, which silently made every mic-key tap fall back to opening it.
+    ///
+    /// The heartbeat is a heartbeat and not a flag because the app can be killed
+    /// without getting to clear a flag, and a stale "I'm alive" leaves the mic key
+    /// doing nothing at all. Its stopping is how the keyboard learns to bounce.
+    func startStandby() {
+        guard settings.keepSessionAlive else { return }
+        guard blocker == nil else { return }
+        do {
+            try recorder.startEngine()
+        } catch {
+            // Standby is an optimization; failing it must not break dictation, which
+            // still works by opening the app.
+            stopStandby()
+            return
+        }
+        guard heartbeat == nil else { return }
         Handoff.markAlive()
         heartbeat = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(Handoff.livenessWindow / 3))
-                guard self != nil else { return }
+                guard let self, self.recorder.isEngineRunning else { return }
                 Handoff.markAlive()
             }
         }
     }
 
-    func stopHeartbeat() {
+    /// Leave standby: release the microphone and stop claiming to be reachable.
+    func stopStandby() {
         heartbeat?.cancel()
         heartbeat = nil
         Handoff.clearAlive()
+        // Never while a dictation is in flight — that would drop the recording.
+        if !recorder.isCapturing {
+            recorder.stopEngine()
+        }
+    }
+
+    /// Re-read the standby preference and act on it.
+    func applyStandbyPreference() {
+        if settings.keepSessionAlive {
+            startStandby()
+        } else {
+            stopStandby()
+        }
     }
 
     /// Listen for the keyboard's mic key.
@@ -119,7 +149,7 @@ final class DictationController {
         }
         guard phase != .recording, phase != .transcribing else { return }
         do {
-            try recorder.start()
+            try recorder.beginCapture()
             phase = .recording
             Handoff.state = .recording
         } catch {
@@ -129,14 +159,14 @@ final class DictationController {
 
     func cancelRecording() {
         guard phase == .recording else { return }
-        _ = recorder.stop()
+        _ = recorder.endCapture()
         phase = .idle
         Handoff.state = .idle
     }
 
     func finishRecording() async {
         guard phase == .recording else { return }
-        let samples = recorder.stop()
+        let samples = recorder.endCapture()
         phase = .transcribing
         Handoff.state = .transcribing
 

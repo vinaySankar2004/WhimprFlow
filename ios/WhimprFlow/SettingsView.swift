@@ -82,18 +82,31 @@ struct SettingsView: View {
                     switch check {
                     case .idle: EmptyView()
                     case .running: ProgressView()
-                    case let .ok(detail):
-                        Label(detail, systemImage: "checkmark.circle.fill")
+                    case .ok:
+                        Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(Theme.success)
-                            .font(.caption)
-                    case let .failed(detail):
-                        Label(detail, systemImage: "xmark.circle.fill")
+                    case .failed:
+                        Image(systemName: "xmark.circle.fill")
                             .foregroundStyle(Theme.error)
-                            .font(.caption)
                     }
                 }
             }
             .disabled(!keyIsSet || check == .running)
+
+            // On its own line and in full. A refusal collapsed to "HTTP 403" tells
+            // you a number; the sentence underneath it tells you whether to change
+            // the key, the model, or nothing at all.
+            switch check {
+            case let .ok(detail):
+                Text(detail).font(.caption).foregroundStyle(Theme.success)
+            case let .failed(detail):
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(Theme.error)
+                    .textSelection(.enabled)
+            default:
+                EmptyView()
+            }
         } header: {
             Text("Groq API key")
         } footer: {
@@ -140,10 +153,13 @@ struct SettingsView: View {
         } header: {
             Text("Behaviour")
         } footer: {
+            // The orange dot is the visible consequence of this switch, and someone
+            // who finds it without being told will reasonably assume they are being
+            // listened to. Say it here, before they turn it on.
             Text("""
-            On, the mic key records without visibly switching to this app — but iOS may suspend the app, and dictation then falls back to opening it.
+            On, the mic key dictates without switching to this app. Keeping it ready means holding the microphone open, so iOS shows the orange microphone dot whenever WhimprFlow is in the background, and it uses more battery. Nothing is recorded or sent until you tap the mic key — audio is discarded until then.
 
-            Off, the mic key always opens this app first. Slower, and completely reliable.
+            Off, the mic key opens this app first. Slower, no orange dot, no background battery use.
             """)
         }
     }
@@ -201,21 +217,13 @@ struct SettingsView: View {
                 dictionary: DictionaryStore()
             )
             _ = try await GroqClient(apiKey: key).cleanup(prepared: prepared)
-            check = .ok("reachable")
+            check = .ok("Reachable — the key works and \(Settings.Groq.cleanupModel) answered.")
         } catch {
-            check = .failed(shortReason(error))
+            // The error's own description, not a summary of it: these are the words
+            // that say whether the key, the model or the account is the problem, and
+            // a check that hides them is not a diagnostic.
+            check = .failed(error.localizedDescription)
         }
-    }
-
-    private func shortReason(_ error: Error) -> String {
-        if case let GroqClient.Failure.http(code, _) = error {
-            switch code {
-            case 401: return "key rejected"
-            case 429: return "rate limited"
-            default: return "HTTP \(code)"
-            }
-        }
-        return "unreachable"
     }
 }
 

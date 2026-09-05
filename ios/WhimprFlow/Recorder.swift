@@ -22,7 +22,18 @@ final class Recorder {
 
     /// 0…1, already log-scaled for display. See `level(from:)`.
     private(set) var level: Float = 0
-    private(set) var isRunning = false
+
+    /// Whether the engine is running at all — which is not the same as recording.
+    ///
+    /// The engine runs in **standby** whenever the app wants to stay reachable from
+    /// the keyboard, discarding everything it hears. `UIBackgroundModes: audio` keeps
+    /// an app alive only while audio is *actively* running; declaring the mode and
+    /// then idling gets you suspended within seconds of backgrounding, which is what
+    /// made the keyboard's mic key always fall back to opening the app.
+    private(set) var isEngineRunning = false
+
+    /// Whether the samples arriving are being kept.
+    private(set) var isCapturing = false
 
     enum Failure: LocalizedError {
         case denied
@@ -75,12 +86,17 @@ final class Recorder {
 
     // MARK: - Capture
 
-    func start() throws {
-        guard !isRunning else { return }
+    /// Start the engine in standby: capturing from the microphone and throwing it
+    /// away, so the app stays alive in the background and the mic key can reach it
+    /// without a visible app switch.
+    ///
+    /// The orange microphone indicator is on for as long as this runs. That is not
+    /// avoidable and should not be hidden — an app holding the mic open is exactly
+    /// what this is.
+    func startEngine() throws {
+        guard !isEngineRunning else { return }
         guard Self.hasPermission else { throw Failure.denied }
         try activateSession()
-
-        lock.withLock { samples.removeAll(keepingCapacity: true) }
 
         let input = engine.inputNode
         // The hardware format, whatever it happens to be. Never assume: a Bluetooth
@@ -109,15 +125,37 @@ final class Recorder {
         } catch {
             throw Failure.sessionFailed(error.localizedDescription)
         }
-        isRunning = true
+        isEngineRunning = true
     }
 
-    /// Stop capture and return the recording, normalized and ready to send.
-    func stop() -> [Float] {
-        guard isRunning else { return [] }
+    /// Tear the engine down completely. Releases the microphone and lets iOS suspend
+    /// the app, after which the keyboard has to open it to dictate.
+    func stopEngine() {
+        guard isEngineRunning else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        isRunning = false
+        isEngineRunning = false
+        isCapturing = false
+        level = 0
+        deactivateSession()
+    }
+
+    /// Start keeping what the microphone hears. Starts the engine first if it is not
+    /// already in standby, so a dictation works whether or not standby is enabled.
+    func beginCapture() throws {
+        try startEngine()
+        lock.withLock { samples.removeAll(keepingCapacity: true) }
+        isCapturing = true
+    }
+
+    /// Stop keeping samples and return the recording, normalized and ready to send.
+    ///
+    /// Leaves the engine running: dropping back to standby rather than stopping is
+    /// what keeps the app reachable for the *next* dictation. Call `stopEngine()` to
+    /// actually release the microphone.
+    func endCapture() -> [Float] {
+        guard isCapturing else { return [] }
+        isCapturing = false
         level = 0
 
         var captured = lock.withLock { samples }
@@ -126,6 +164,12 @@ final class Recorder {
     }
 
     private func accept(_ buffer: AVAudioPCMBuffer, target: AVAudioFormat) {
+        // Standby: the engine must keep running to hold the app alive, but nothing it
+        // hears is kept, converted or measured. Returning here rather than not
+        // installing the tap is deliberate — removing and reinstalling a tap around
+        // every dictation restarts the engine, and the gap that opens while it spins
+        // back up swallows the first word.
+        guard isCapturing else { return }
         guard let converter else { return }
         let ratio = target.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1024
