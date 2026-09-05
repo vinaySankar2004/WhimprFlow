@@ -174,6 +174,18 @@ To build the core alone:
 - **`xcodegen generate` overwrites the project.** Adding a file through Xcode's UI
   does not survive. Files are picked up by directory, so a new `.swift` inside an
   existing folder needs only a regenerate.
+- **Xcode's build phases do not see your `PATH`.** They run without sourcing any shell
+  profile, so `~/.cargo/bin` is absent and the Rust build phase dies with
+  `rustup: command not found` — which Xcode reports only as *"Command
+  PhaseScriptExecution failed with a nonzero exit code"*. Running the same script in a
+  terminal works, because an interactive shell already added it, so it reads as a
+  project fault rather than an environment one. `build-ios-core.sh` sources
+  `~/.cargo/env` and prepends the usual locations itself; test any change to it the
+  way Xcode will run it:
+
+  ```bash
+  env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$HOME" ./scripts/build-ios-core.sh
+  ```
 - **Do not pass `CODE_SIGNING_ALLOWED=NO` when testing on the simulator.** It builds
   and runs, but the app then carries no `application-identifier`, so every Keychain
   write fails and the API key silently will not save — which reads as a bug in the

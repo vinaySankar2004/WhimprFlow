@@ -13,6 +13,29 @@
 
 set -euo pipefail
 
+# Xcode runs a build phase with a minimal PATH and without sourcing any shell
+# profile, so `~/.cargo/bin` is simply absent and the script dies with
+# "rustup: command not found" — surfacing in Xcode as the uninformative "Command
+# PhaseScriptExecution failed with a nonzero exit code". Running the same script
+# from a terminal works, because an interactive shell has already added it, which
+# makes this look like a project problem rather than an environment one.
+if [ -f "$HOME/.cargo/env" ]; then
+  # shellcheck source=/dev/null
+  . "$HOME/.cargo/env"
+fi
+# Homebrew too, for a toolchain installed that way rather than through rustup.
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+for tool in cargo rustup; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    echo "error: $tool is not on PATH." >&2
+    echo "  Building the iOS app needs the Rust toolchain: https://rustup.rs" >&2
+    echo "  If it is installed, it is somewhere this script does not look;" >&2
+    echo "  PATH was: $PATH" >&2
+    exit 1
+  }
+done
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$ROOT/ios/Frameworks"
 FRAMEWORK="$OUT/WhimprCore.xcframework"

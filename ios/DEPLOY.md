@@ -217,6 +217,7 @@ year. Setting a calendar reminder for day 80 is cheaper than being told it broke
 | "Groq rejected the API key" | Wrong or revoked key. Re-copy from the Groq console; keys are shown once. |
 | Rate limited | The free tier's daily cap. It resets. |
 | Key will not save | Building unsigned. Never pass `CODE_SIGNING_ALLOWED=NO` — the app then has no `application-identifier` and every Keychain write fails. |
+| "Command PhaseScriptExecution failed with a nonzero exit code" | The Rust build phase could not find `cargo`. Xcode build phases run without your shell profile, so `~/.cargo/bin` is off `PATH`; `build-ios-core.sh` handles this, so if it recurs, expand the phase's log in the Issue navigator for the real message. |
 | Upload rejected, "redundant version" | You did not bump `CURRENT_PROJECT_VERSION`. |
 | Build stuck in "Missing Compliance" | `ITSAppUsesNonExemptEncryption` did not make it into the build. It is in `Info.plist`; check the archive really contains it. |
 
