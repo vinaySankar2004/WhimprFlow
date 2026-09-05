@@ -108,8 +108,12 @@ These are not hypotheticals; each one bit during development.
 - **Closing the Hub must hide it, never close it.** The app survives a real close —
   the overlay keeps the process alive — but the window is *destroyed*, and
   `get_webview_window("main")` returns `None` forever after, so the tray's Open item
-  and the Dock icon both go dead with no error anywhere. `CloseRequested` is
-  intercepted for exactly this reason. It reads as "the tray menu is broken".
+  goes dead with no error anywhere. `CloseRequested` is intercepted for exactly this
+  reason. It reads as "the tray menu is broken", and since the app is an **accessory**
+  (menu bar only, no Dock icon) the tray is the *only* way back — there is no Dock
+  tile to fall back on. Related: an accessory app is not foregrounded by macOS on
+  its own, so `show_hub` must call `activate_app` or the Hub appears behind the app
+  you were in with its fields inert.
 - **Do not "fix" the in-process Fn tap on principle.** The callback is cheap, heavy
   work already runs on spawned threads, and tap-disabled-by-timeout is caught and
   re-enabled. Move it to the sidecar when a real symptom appears, not before.

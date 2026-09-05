@@ -13,6 +13,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# For `localtime_r` in logfile.rs: log timestamps have to match the clock the user
+# read the time off, and hand-defining `struct tm` is field-order roulette.
+libc = "0.2"
 whimpr-core = { path = "../crates/whimpr-core" }
 whimpr-ipc = { path = "../crates/whimpr-ipc" }
 whimpr-audio = { path = "../crates/whimpr-audio" }

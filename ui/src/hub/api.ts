@@ -227,6 +227,21 @@ export async function openKeyboardSettings(): Promise<void> {
   }
 }
 
+/**
+ * Reveal the diagnostics log in Finder.
+ *
+ * The one thing worth clicking when something is wrong and nothing on screen says
+ * why: every decision the app made is in there with a timestamp, so it can be read
+ * or handed to someone who can read it, without a terminal.
+ */
+export async function revealLogs(): Promise<void> {
+  try {
+    await invoke<void>("reveal_logs");
+  } catch {
+    /* browser preview */
+  }
+}
+
 export async function setApiKey(provider: "openai", key: string): Promise<void> {
   try {
     await invoke<void>("set_api_key", { provider, key });

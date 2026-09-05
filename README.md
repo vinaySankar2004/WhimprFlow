@@ -51,6 +51,9 @@ this whole job to Claude Code. To build it yourself instead, see **Build** below
 - **Optional cloud ASR** — the same Whisper model on Groq, measured ~3x faster. Its own
   switch, separate from cloud cleanup (see *Privacy*). Keys live in the macOS Keychain,
   **never in a file**.
+- **Lives in the menu bar, not the Dock** — an accessory app, like Amphetamine or
+  Grammarly. Open the Hub from the menu bar icon; there is no Dock tile to click,
+  because dictating means being in some other app.
 - **Floating pill** — a non-activating panel showing idle / recording / processing that
   follows you across Spaces, including other apps' full-screen ones. ■ stops and pastes,
   ✕ or **Esc** discards — and cancelling still works while it's transcribing, before

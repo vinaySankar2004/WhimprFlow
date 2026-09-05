@@ -4,5 +4,25 @@
 <dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>WhimprFlow uses your microphone to transcribe what you say into text.</string>
+
+    <!--
+      Menu-bar app, not a Dock app — the shape Amphetamine and Grammarly have.
+      A dictation tool is reached by holding a key inside some OTHER app, so a Dock
+      tile is a permanent slot spent on an icon nobody clicks.
+
+      Declared here rather than left to `set_activation_policy(Accessory)` at
+      runtime, which was tried first and is not sufficient on its own: LaunchServices
+      fixes the application type from this file at launch, so the app came up as a
+      Foreground app with a Dock tile — `lsappinfo` reported `ApplicationType =
+      "Foreground"` and System Events `background only = false` — before any Rust
+      had run. The runtime call stays as well, because it is what gives `cargo run`
+      the same behavior without a bundle.
+
+      Consequence worth knowing: with no Dock tile, the tray's "Open WhimprFlow" is
+      the ONLY way back to the Hub, which is why closing the Hub must hide it rather
+      than destroy it. See `CloseRequested` in lib.rs.
+    -->
+    <key>LSUIElement</key>
+    <true/>
 </dict>
 </plist>

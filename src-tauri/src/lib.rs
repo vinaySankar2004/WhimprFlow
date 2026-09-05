@@ -10,6 +10,7 @@ mod autolearn;
 mod fnkey;
 mod hotkey;
 mod local_llm;
+mod logfile;
 mod paste;
 
 use std::sync::OnceLock;
@@ -295,8 +296,36 @@ fn show_hub(app: &tauri::AppHandle) {
     let Some(hub) = app.get_webview_window(HUB_LABEL) else { return };
     let _ = hub.unminimize();
     let _ = hub.show();
+    activate_app();
     let _ = hub.set_focus();
 }
+
+/// Bring WhimprFlow to the front.
+///
+/// Needed because the app is an **accessory** (no Dock icon, see `setup`). macOS
+/// does not hand an accessory app the foreground on its own, so `show()` and
+/// `set_focus()` alone put the Hub on screen *behind* whatever you were using, with
+/// its text fields dead — which reads as a frozen window rather than an unfocused
+/// one. This is the call that makes opening from the tray behave like opening an app.
+///
+/// Ordered before `set_focus` so the window is raised within an app that is already
+/// frontmost, rather than being raised and then having the activation reshuffle it.
+#[cfg(target_os = "macos")]
+fn activate_app() {
+    use objc2_app_kit::NSApplication;
+    use objc2_foundation::MainThreadMarker;
+    // Must be the main thread: this is AppKit. Called from the tray callback, which
+    // already runs there, so a marker check is enough without a hop.
+    if let Some(mtm) = MainThreadMarker::new() {
+        // `activate`, not the deprecated `activateIgnoringOtherApps:`. For an
+        // accessory app responding to its own tray click the two behave the same,
+        // and this one is not on its way out.
+        NSApplication::sharedApplication(mtm).activate();
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn activate_app() {}
 
 /// Keep the overlay window in step with what the pill is showing.
 ///
@@ -430,6 +459,19 @@ fn open_keyboard_settings() {
     open_url("x-apple.systempreferences:com.apple.Keyboard-Settings.extension");
 }
 
+/// Show the diagnostics log in Finder.
+///
+/// The one thing worth clicking when "it isn't working" and nobody can see why:
+/// every decision the app made is in there with a timestamp, so it can be read, or
+/// sent to someone who can read it, without a terminal.
+#[tauri::command]
+fn reveal_logs() {
+    let path = logfile::log_path();
+    // -R selects the file rather than opening it in a text editor, which is what
+    // you want when the next step is dragging it into a message.
+    let _ = std::process::Command::new("open").arg("-R").arg(&path).status();
+}
+
 fn has_key(account: &str) -> bool {
     keyring::Entry::new("com.whimpr.whimprflow", account)
         .ok()
@@ -520,6 +562,10 @@ fn set_api_key(provider: String, key: String) -> Result<(), String> {
 }
 
 pub fn run() {
+    // First thing, before anything has a chance to log: from here on every
+    // `eprintln!` in the app — and the cleanup worker's inherited stderr, and a
+    // panic backtrace — lands in a timestamped file instead of nowhere.
+    logfile::install();
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -537,7 +583,8 @@ pub fn run() {
             open_keyboard_settings,
             stop_dictation,
             cancel_dictation,
-            set_api_key
+            set_api_key,
+            reveal_logs
         ])
         // The red button hides the Hub, it does not close it. Closing would DESTROY
         // the window — the app would keep running (the overlay holds it open) with no
@@ -553,14 +600,23 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            // Regular app: shows in the Dock with a normal, focusable main window.
-            // (Can switch to a menu-bar-only accessory app later for the Wispr look.)
+            // **Accessory**, not Regular: menu bar only, no Dock icon, no app menu —
+            // the shape Amphetamine and Grammarly have. A dictation tool is reached
+            // by holding a key in some other app, so a Dock icon is a permanent slot
+            // spent on something nobody clicks; the tray is where it belongs.
+            //
+            // Two consequences, both handled rather than discovered later:
+            // `activate_app` exists because macOS will not foreground an accessory
+            // app on its own, and the tray's Open item is now the *only* way back to
+            // the Hub — which is what makes `CloseRequested` intercepting the red
+            // button load-bearing rather than merely tidy (see below).
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             build_overlay(app)?;
             let hub = build_hub(app)?;
             let _ = hub.show();
+            activate_app();
             let _ = hub.set_focus();
 
             // Wire the Fn key to the pill via the real state machine.

@@ -425,13 +425,21 @@ mod imp {
     /// Log one completed dictation to the stats store (words, speaking time, text,
     /// target app) and persist it. Powers both the Hub stats and the history list.
     /// `raw` is the pre-cleanup transcript, stored unless the user opted out.
-    pub fn record_dictation(
-        text: &str,
-        raw: &str,
-        duration_secs: f32,
-        asr_ms: u32,
-        cleanup_ms: u32,
-    ) {
+    /// Everything the usage log records about one dictation beyond its text.
+    ///
+    /// A struct rather than six more positional arguments: two of these fields are
+    /// `u32` milliseconds and two are engine-name strings, so the wrong order
+    /// compiles cleanly and silently mislabels the log.
+    pub struct Trace {
+        pub duration_secs: f32,
+        pub asr_ms: u32,
+        pub cleanup_ms: u32,
+        pub asr_engine: &'static str,
+        pub cleanup_engine: &'static str,
+        pub degraded: Option<String>,
+    }
+
+    pub fn record_dictation(text: &str, raw: &str, trace: Trace) {
         let words = whimpr_core::stats::count_words(text);
         if words == 0 {
             return;
@@ -447,13 +455,16 @@ mod imp {
             store.push(whimpr_core::SessionRecord {
                 ts_unix: unix_now(),
                 words,
-                duration_ms: (duration_secs.max(0.0) * 1000.0) as u32,
+                duration_ms: (trace.duration_secs.max(0.0) * 1000.0) as u32,
                 chars: text.chars().count() as u32,
                 text: text.to_string(),
                 raw,
                 app,
-                asr_ms,
-                cleanup_ms,
+                asr_ms: trace.asr_ms,
+                cleanup_ms: trace.cleanup_ms,
+                asr_engine: trace.asr_engine.to_string(),
+                cleanup_engine: trace.cleanup_engine.to_string(),
+                degraded: trace.degraded,
             });
             let _ = store.save(&stats_path());
         }
@@ -721,25 +732,36 @@ mod imp {
     /// doing this earlier would let a corrected name arrive at the cursor as the one
     /// capitalized word in an all-lowercase message. It is skipped in `Raw` mode,
     /// where "paste exactly what you said" outranks a typing habit.
-    fn clean_transcript(raw: &str) -> String {
+    /// The text that will be pasted, plus which engine produced it and why that was
+    /// not the engine the user selected.
+    ///
+    /// The attribution is not decoration. Every degradation in this app is
+    /// deliberately silent — falling back is what keeps the dictation alive — so a
+    /// run of raw or oddly-slow pastes has no explanation unless the reason was
+    /// written down as it happened.
+    struct Cleaned {
+        text: String,
+        /// "cloud" | "local" | "raw"
+        engine: &'static str,
+        degraded: Option<String>,
+    }
+
+    fn clean_transcript(raw: &str) -> Cleaned {
         let settings = current_settings();
-        let text = run_cleanup(raw, &settings);
-        let text = match DICTIONARY.get() {
-            Some(dict) => {
-                let fixed = dict.lock().unwrap().apply_listed_mishears(&text);
-                if fixed != text {
-                    eprintln!("[whimpr] DICTIONARY: \"{fixed}\"");
-                }
-                fixed
+        let mut out = run_cleanup(raw, &settings);
+        if let Some(dict) = DICTIONARY.get() {
+            let fixed = dict.lock().unwrap().apply_listed_mishears(&out.text);
+            if fixed != out.text {
+                eprintln!("[whimpr] DICTIONARY: \"{fixed}\"");
             }
-            None => text,
-        };
+            out.text = fixed;
+        }
         if settings.cleanup_level.forces_lowercase()
             && !matches!(settings.cleanup_mode, CleanupMode::Raw)
         {
-            return whimpr_core::cleanup::messaging_style(&text);
+            out.text = whimpr_core::cleanup::messaging_style(&out.text);
         }
-        text
+        out
     }
 
     /// Clean a raw transcript per the current settings (mode + level), feeding in the
@@ -747,10 +769,11 @@ mod imp {
     /// unavailable or errors falls back to the local model; raw is the last resort,
     /// used when cleanup is off, no engine at all is available, or the gates reject
     /// the edit.
-    fn run_cleanup(raw: &str, settings: &whimpr_core::Settings) -> String {
+    fn run_cleanup(raw: &str, settings: &whimpr_core::Settings) -> Cleaned {
         let level = settings.cleanup_level;
         if matches!(settings.cleanup_mode, CleanupMode::Raw) || level.bypasses_llm() {
-            return raw.to_string();
+            // Raw by request, not by failure — so nothing is degraded here.
+            return Cleaned { text: raw.to_string(), engine: "raw", degraded: None };
         }
         // Turn explicit spoken layout cues ("new line", "new paragraph") into break
         // markers up front — the model passes an opaque marker through reliably but
@@ -779,6 +802,11 @@ mod imp {
             app_bundle_id,
             ..Default::default()
         };
+        // Which engine actually ran, and why it was not the selected one. `Cell`
+        // rather than return values because the fallback chain below is a stack of
+        // closures, and threading a label through each one obscures what it does.
+        let served_by = std::cell::Cell::new("raw");
+        let degraded = std::cell::RefCell::new(None::<String>);
         // Run the on-device model with the same prompt + per-app formatting.
         let run_local = || -> Option<anyhow::Result<String>> {
             ensure_local();
@@ -791,6 +819,7 @@ mod imp {
                     w.cleanup(&messages, whimpr_core::cleanup::max_tokens_for(raw))
                 })
             })
+            .inspect(|_| served_by.set("local"))
         };
         // A cloud attempt that produces no text falls back to the on-device model
         // rather than to raw. Two different failures land here and both must survive
@@ -806,14 +835,19 @@ mod imp {
             }
             Some(Err(e)) => {
                 eprintln!("[whimpr] cloud cleanup failed ({e}) — retrying on the local model");
+                *degraded.borrow_mut() = Some(format!("cloud_error: {e}"));
                 run_local()
             }
-            None => run_local(),
+            None => {
+                *degraded.borrow_mut() = Some("cloud_no_key".to_string());
+                run_local()
+            }
         };
         let run_cloud = || {
             OPENAI
                 .get()
                 .and_then(|m| m.lock().unwrap().as_ref().map(|p| p.cleanup(raw, &ctx)))
+                .inspect(|_| served_by.set("cloud"))
         };
         // Selected provider; Local mode uses the worker directly.
         let result: Option<anyhow::Result<String>> = match settings.cleanup_mode {
@@ -830,6 +864,7 @@ mod imp {
                         "[whimpr] no local cleanup model — using the cloud endpoint, which is \
                          configured"
                     );
+                    *degraded.borrow_mut() = Some("no_local_model".to_string());
                 }
                 cloud
             }),
@@ -846,24 +881,40 @@ mod imp {
                 let cleaned = whimpr_core::cleanup::de_dash(&cleaned);
                 // The gate sees the same vocab the prompt did, so the spellings the
                 // dictionary authorized don't read as the model inventing words.
-                if whimpr_core::cleanup::evaluate_gates(&raw_out, &cleaned, level, &ctx.vocab)
-                    .passed()
-                {
-                    cleaned
-                } else {
-                    eprintln!("[whimpr] cleanup gate rejected the edit — pasting raw");
-                    raw_out
+                match whimpr_core::cleanup::evaluate_gates(&raw_out, &cleaned, level, &ctx.vocab) {
+                    whimpr_core::cleanup::GateVerdict::Pass => {
+                        Cleaned { text: cleaned, engine: served_by.get(), degraded: degraded.take() }
+                    }
+                    // The reason is recorded, not just the fact: which gate fired is
+                    // the difference between "the model rewrote it" and "the model
+                    // answered the question instead of transcribing it".
+                    whimpr_core::cleanup::GateVerdict::Fail(reason) => {
+                        eprintln!("[whimpr] cleanup gate rejected the edit ({reason:?}) — pasting raw");
+                        Cleaned {
+                            text: raw_out,
+                            engine: "raw",
+                            degraded: Some(format!("gate_rejected: {reason:?}")),
+                        }
+                    }
                 }
             }
             Some(Err(e)) => {
                 eprintln!("[whimpr] cleanup failed ({e}) — pasting raw");
-                raw_out
+                Cleaned {
+                    text: raw_out,
+                    engine: "raw",
+                    degraded: Some(format!("cleanup_error: {e}")),
+                }
             }
             None => {
                 // In a cloud mode this means the cloud attempt already failed *and*
                 // the local worker is missing too — every engine is out.
                 eprintln!("[whimpr] no cleanup engine available — pasting raw");
-                raw_out
+                Cleaned {
+                    text: raw_out,
+                    engine: "raw",
+                    degraded: Some("no_engine".to_string()),
+                }
             }
         }
     }
@@ -1082,11 +1133,23 @@ mod imp {
                             .and_then(|m| m.lock().unwrap().clone())
                             .map(|c| c as Arc<dyn AsrEngine>)
                     };
+                    // The label travels with the choice. Deriving it later from
+                    // `asr_mode` would report the setting rather than what ran, and
+                    // the gap between those two is the only reason to record it.
+                    let mut asr_engine = "local";
+                    let mut asr_degraded: Option<String> = None;
                     let asr: Option<Arc<dyn AsrEngine>> = match current_settings().asr_mode {
-                        whimpr_core::AsrMode::Cloud => cloud_asr().or_else(|| {
-                            eprintln!("[whimpr] cloud ASR has no key — using the local model");
-                            local_asr()
-                        }),
+                        whimpr_core::AsrMode::Cloud => match cloud_asr() {
+                            Some(c) => {
+                                asr_engine = "cloud";
+                                Some(c)
+                            }
+                            None => {
+                                eprintln!("[whimpr] cloud ASR has no key — using the local model");
+                                asr_degraded = Some("asr_cloud_no_key".to_string());
+                                local_asr()
+                            }
+                        },
                         // Falling *forward* to the cloud, and only when there is no
                         // local model at all. A cloud-only install has none on disk,
                         // and `AsrMode` defaults to Local — so without this, an install
@@ -1096,16 +1159,21 @@ mod imp {
                         // Not a silent privacy change: it cannot fire on a machine that
                         // has a model, and reaching it at all requires a key the user
                         // entered themselves.
-                        whimpr_core::AsrMode::Local => local_asr().or_else(|| {
-                            let cloud = cloud_asr();
-                            if cloud.is_some() {
-                                eprintln!(
-                                    "[whimpr] no local speech model — using cloud ASR, which is \
-                                     configured"
-                                );
+                        whimpr_core::AsrMode::Local => match local_asr() {
+                            Some(l) => Some(l),
+                            None => {
+                                let cloud = cloud_asr();
+                                if cloud.is_some() {
+                                    eprintln!(
+                                        "[whimpr] no local speech model — using cloud ASR, which \
+                                         is configured"
+                                    );
+                                    asr_engine = "cloud";
+                                    asr_degraded = Some("no_local_asr_model".to_string());
+                                }
+                                cloud
                             }
-                            cloud
-                        }),
+                        },
                     };
                     let Some(asr) = asr else {
                         // Every engine is out. This is a *configuration* failure, not a
@@ -1168,7 +1236,8 @@ mod imp {
                             }
                             // Clean the transcript (cloud LLM if configured), then paste.
                             let t_clean = std::time::Instant::now();
-                            let text = clean_transcript(&raw);
+                            let cleaned = clean_transcript(&raw);
+                            let text = cleaned.text;
                             let cleanup_ms = t_clean.elapsed().as_millis() as u32;
                             eprintln!(
                                 "[whimpr] TIMING: asr {} ms + cleanup {} ms = {} ms for {:.1}s of audio",
@@ -1194,12 +1263,28 @@ mod imp {
                                 // keeping the raw transcript beside the cleaned text — the
                                 // difference between them is the only record of how you
                                 // actually speak, and cleanup's job is to delete it.
+                                // Both stages' reasons, joined: a dictation can degrade
+                                // twice over (no key, so local ASR; then the gates
+                                // reject the cleanup), and either one alone would be
+                                // a misleading account of what happened.
+                                let degraded = match (asr_degraded.clone(), cleaned.degraded.clone())
+                                {
+                                    (None, None) => None,
+                                    (Some(a), None) => Some(a),
+                                    (None, Some(c)) => Some(c),
+                                    (Some(a), Some(c)) => Some(format!("{a}; {c}")),
+                                };
                                 record_dictation(
                                     &text,
                                     &raw,
-                                    res.duration_secs(),
-                                    asr_ms as u32,
-                                    cleanup_ms,
+                                    Trace {
+                                        duration_secs: res.duration_secs(),
+                                        asr_ms: asr_ms as u32,
+                                        cleanup_ms,
+                                        asr_engine,
+                                        cleanup_engine: cleaned.engine,
+                                        degraded,
+                                    },
                                 );
                                 // Watch the field for a post-paste correction to learn (✨).
                                 // The raw transcript goes along so the mishear recorded

@@ -564,20 +564,35 @@ It prints the unprompted transcript, the prompted one, and which would be kept.
 
 ## The Hub window
 
-The Hub is the ordinary app window — settings, history, dictionary. Its red button
-**hides** it rather than closing it: `CloseRequested` is intercepted, the close is
-prevented, and the window is hidden. Letting the close through would destroy the
-window while the app kept running (the overlay holds the process open), and a
-destroyed window is unrecoverable — `get_webview_window("main")` returns `None`
-from then on, so the tray's *Open WhimprFlow* item and the Dock icon would both
-silently do nothing.
+**WhimprFlow is a menu-bar app, not a Dock app.** `set_activation_policy` is
+`Accessory`, which is the shape Amphetamine and Grammarly have: an icon in the menu
+bar, no Dock tile, no app menu. A dictation tool is reached by holding a key inside
+some *other* app, so a Dock tile is a permanent slot spent on an icon nobody clicks.
 
-Two paths bring it back, and both go through `show_hub`: the tray menu item, and
-`RunEvent::Reopen`, which is what a Dock click raises. `Reopen`'s
-`has_visible_windows` flag is deliberately ignored — the overlay is a window and
-counts as visible while the pill is up, so the flag says "true" with the Hub
-nowhere on screen. `show_hub` unminimizes before showing and shows before
-focusing, because `set_focus` is a no-op on a hidden or minimized window.
+Being an accessory has two consequences, and both are load-bearing rather than
+cosmetic:
+
+- **macOS will not foreground an accessory app on its own.** `show()` and
+  `set_focus()` alone put the Hub on screen *behind* whatever was in front, with its
+  text fields inert — which reads as a frozen window, not an unfocused one.
+  `activate_app` (`NSApplication::activate`) is what fixes that, and `show_hub`
+  calls it between showing and focusing.
+- **The tray's *Open WhimprFlow* is now the only way back to the Hub.** There is no
+  Dock icon to click, so the interception below went from tidy to essential.
+
+The Hub's red button **hides** it rather than closing it: `CloseRequested` is
+intercepted, the close is prevented, and the window is hidden. Letting the close
+through would destroy the window while the app kept running (the overlay holds the
+process open), and a destroyed window is unrecoverable — `get_webview_window("main")`
+returns `None` from then on, so *Open WhimprFlow* would silently do nothing and the
+app would be running with no way to reach it at all.
+
+`RunEvent::Reopen` is still handled — it costs nothing and covers a Dock tile
+returning — and it goes through the same `show_hub`. Its `has_visible_windows` flag
+is deliberately ignored: the overlay is a window and counts as visible while the pill
+is up, so the flag says "true" with the Hub nowhere on screen. `show_hub` unminimizes
+before showing and shows before focusing, because `set_focus` is a no-op on a hidden
+or minimized window.
 
 ### The tray's quick settings
 
@@ -698,6 +713,7 @@ no migrations.
 | `dictionary.json` | `DictionaryStore` — manual and ✨ auto-learned entries |
 | `stats.json` | `StatsStore` — one record per dictation, and the text |
 | `permissions.json` | written each launch, read by the installer (see *Permissions*) |
+| `logs/whimpr.log` | timestamped diagnostics, one previous file kept (see below) |
 | `models/` | the multi-GB weights, not committed (see *Models*) |
 
 Every store follows the same shape: `load` returns `Default` on a missing or
@@ -709,6 +725,28 @@ Two things deliberately live elsewhere. **API keys** go in the OS keychain (serv
 `com.whimpr.whimprflow`), never a file. **Audio** is never persisted at all: samples
 exist in memory from `StartCapture` until transcription and are then dropped.
 
+### Diagnostics reach a file, not nowhere
+
+Launched from `/Applications`, nothing listens on stderr — so every
+`eprintln!("[whimpr] …")` in this codebase, each written at the moment somebody was
+debugging the thing it describes, existed and was unreadable. Supporting a machine
+that is not this one meant guessing.
+
+`logfile::install()` runs first in `run()` and captures **file descriptor 2**,
+timestamping each line into `logs/whimpr.log`. Capturing the fd rather than replacing
+71 print sites is the point: it catches what is already written, the panic handler's
+backtrace, *and* the cleanup worker's own stderr, which it inherits. A macro would
+have to be threaded through two crates and a second binary and would still miss
+panics. When stderr is a terminal the lines are echoed there too, so `./dev.sh` still
+prints to the console.
+
+Two details that would otherwise be found the hard way: fd 2 keeps a duplicate of the
+pipe's write end for the life of the process, so the reader thread never sees EOF —
+if that thread ended, writes to stderr would block once the pipe filled and the app
+would hang, silently, inside whatever it logged next. And write errors are ignored, so
+a full disk cannot wedge a dictation. Rotation is one file at 2 MB, because this is a
+tail for diagnosis; the history worth keeping is the structured records below.
+
 ### History and transcripts
 
 `SessionRecord` keeps the cleaned text *and* the raw pre-cleanup transcript, because
@@ -718,6 +756,18 @@ fillers, stutters, self-corrections. The cleaned text alone cannot answer any of
 in Settings empties the text of every record while keeping the counts: words, WPM
 and streak are derived from the numeric fields, so the control erases what was said
 without resetting what was earned.
+
+Each record also carries which engine served each stage (`asr_engine`,
+`cleanup_engine` — `"local"`, `"cloud"`, or `"raw"`) and, when the intended path was
+not taken, a short reason (`degraded`: `"cloud_error: HTTP 429"`,
+`"gate_rejected: OverDeletion"`, `"no_local_model"`). The *setting* does not answer
+this: both stages fall back and fall forward, so the engine that ran is often not the
+one selected, and that gap is the whole point of recording it. Every degradation in
+this app is deliberately silent — surviving the failure is what falling back is for —
+so a run of raw pastes has no explanation unless the reason was written down as it
+happened. The label travels with the choice at the point it is made rather than being
+re-derived from settings afterwards, since re-deriving it would report the setting
+again and reproduce the bug.
 
 Each record also carries `asr_ms` and `cleanup_ms`. Both stages block the paste and
 each costs wildly differently depending on which engine it is set to, so "dictation

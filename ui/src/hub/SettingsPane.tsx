@@ -6,6 +6,7 @@ import {
   clearTranscripts,
   modelLabel,
   openKeyboardSettings,
+  revealLogs,
   requestAccessibility,
   requestInputMonitoring,
   requestMicrophone,
@@ -428,6 +429,7 @@ function PermRow({
   onClick,
   actionLabel = "Grant",
   okLabel = "Granted",
+  neutral = false,
 }: {
   ok: boolean;
   label: string;
@@ -436,11 +438,22 @@ function PermRow({
   /** Not every row is a permission grant — the Fn key row opens a settings pane. */
   actionLabel?: string;
   okLabel?: string;
+  /**
+   * The row is an action, not a state. Drops the status dot: the diagnostics log is
+   * neither granted nor missing, and a red dot beside it would report a problem
+   * that does not exist on a perfectly healthy install.
+   */
+  neutral?: boolean;
 }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
       <div style={{ display: "flex", alignItems: "center", fontSize: 13 }}>
-        <Dot ok={ok} />
+        {/* Occupies exactly the dot's box (9px + 8px margin) so labels stay aligned. */}
+        {neutral ? (
+          <span style={{ display: "inline-block", width: 9, marginRight: 8, flex: "0 0 auto" }} />
+        ) : (
+          <Dot ok={ok} />
+        )}
         <span style={{ color: theme.textBody }}>
           <b>{label}</b> <span style={{ color: theme.textMuted }}>— {detail}</span>
         </span>
@@ -635,6 +648,16 @@ export function SettingsPane({
               openKeyboardSettings();
               setTimeout(refresh, 1500);
             }}
+          />
+          {/* Not a permission either, but this is where someone looks when the app
+              is misbehaving — and the log is the only place that says why. */}
+          <PermRow
+            ok={false}
+            neutral
+            label="Diagnostics log"
+            detail="every decision the app made, timestamped — open this if something's wrong"
+            actionLabel="Reveal"
+            onClick={() => revealLogs()}
           />
         </div>
       </Card>

@@ -181,6 +181,9 @@ on the desktop", and it reads like a broken app rather than a missing permission
 
 Hold **Fn**, speak, let go. Cleaned text lands at the cursor.
 
+WhimprFlow has no Dock icon — it is a menu-bar app. Its icon sits up by the clock and
+battery, and that is where you open the Hub from.
+
 Prefer not to hold a key? Settings → Dictation Key offers press-to-start /
 press-to-stop, and a double-tap-to-start mode that leaves a lone Fn press to macOS so
 Fn+Delete and Fn+arrows keep working.
@@ -203,6 +206,18 @@ not exist" on a machine that has it set — that is a false negative, not the an
 tries every input device and format rather than only the system default, so a headset
 that has switched to its call profile falls back to the built-in mic. On an older
 build, update.
+
+**Nothing explains what went wrong.** There is a log, and it is the first thing to
+read. Everything the app decided — which engine served a dictation, why one fell back,
+why a paste came out raw — is in it with a timestamp:
+
+```bash
+tail -50 ~/Library/Application\ Support/WhimprFlow/logs/whimpr.log
+```
+
+Settings → Permissions has a button that reveals it in Finder, for sending it on. Per-
+dictation usage (which engine, how long each stage took, and why it degraded) is
+recorded in `stats.json` beside it.
 
 **"WhimprFlow is damaged and can't be opened."** The download was truncated. Run the
 command again; the checksum check exists to catch this before install.

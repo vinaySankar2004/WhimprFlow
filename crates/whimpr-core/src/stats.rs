@@ -57,6 +57,28 @@ pub struct SessionRecord {
     pub asr_ms: u32,
     #[serde(default)]
     pub cleanup_ms: u32,
+    /// Which engine actually served each stage: `"local"`, `"cloud"`, or — for
+    /// cleanup only — `"raw"`, meaning nothing cleaned it.
+    ///
+    /// The *setting* is not the answer. Both stages fall back and fall forward, so on
+    /// any given dictation the engine that ran may not be the one selected, and that
+    /// difference is the interesting part: it is how "cleanup feels worse today"
+    /// turns into "the cloud 429'd at 11:14 and the local model has been serving
+    /// since". Empty on records written before these fields.
+    #[serde(default)]
+    pub asr_engine: String,
+    #[serde(default)]
+    pub cleanup_engine: String,
+    /// Why this dictation did not take the intended path, as a short stable key with
+    /// optional detail (`"cloud_error: HTTP 429"`, `"gate_rejected: OverDeletion"`,
+    /// `"no_local_model"`). `None` when the selected engines served it.
+    ///
+    /// This is the field worth having. Every degradation in this app is deliberately
+    /// silent — the point of falling back is that the dictation survives — so without
+    /// writing the reason down at the time, a run of raw pastes has no explanation
+    /// after the fact.
+    #[serde(default)]
+    pub degraded: Option<String>,
 }
 
 /// A history row for the Hub Home list (newest first). Trimmed view of a record.
@@ -199,6 +221,9 @@ impl StatsStore {
             app,
             asr_ms: 0,
             cleanup_ms: 0,
+            asr_engine: String::new(),
+            cleanup_engine: String::new(),
+            degraded: None,
         });
     }
 
@@ -459,5 +484,41 @@ mod tests {
         assert_eq!(s.sessions[0].text, "hello there");
         assert_eq!(s.sessions[0].raw, "");
         assert_eq!(s.summary(0, NOW).total_words, 5);
+        // The usage fields added later must also default rather than fail the parse.
+        // Without `#[serde(default)]` on each, one unknown shape takes the whole
+        // stats log down and `load` silently returns an empty store — every word
+        // ever dictated, gone, with no error anywhere.
+        assert_eq!(s.sessions[0].asr_engine, "");
+        assert_eq!(s.sessions[0].cleanup_engine, "");
+        assert_eq!(s.sessions[0].degraded, None);
+        assert_eq!(s.sessions[0].asr_ms, 0);
+    }
+
+    /// A degraded dictation round-trips with its reason, because the reason is the
+    /// only record of why a paste came out raw — the app is silent about it by design.
+    #[test]
+    fn usage_attribution_round_trips() {
+        let mut s = StatsStore::default();
+        s.push(SessionRecord {
+            ts_unix: NOW,
+            words: 4,
+            duration_ms: 2_000,
+            chars: 20,
+            text: "the demo went well".into(),
+            raw: "um the demo went well".into(),
+            app: None,
+            asr_ms: 430,
+            cleanup_ms: 1_900,
+            asr_engine: "cloud".into(),
+            cleanup_engine: "local".into(),
+            degraded: Some("cloud_error: HTTP 429".into()),
+        });
+        let json = serde_json::to_string(&s).unwrap();
+        let back: StatsStore = serde_json::from_str(&json).unwrap();
+        let r = &back.sessions[0];
+        assert_eq!(r.asr_engine, "cloud");
+        assert_eq!(r.cleanup_engine, "local");
+        assert_eq!(r.degraded.as_deref(), Some("cloud_error: HTTP 429"));
+        assert_eq!((r.asr_ms, r.cleanup_ms), (430, 1_900));
     }
 }
