@@ -168,6 +168,29 @@ These are not hypotheticals; each one bit during development.
   as: Geeta)` in the prompt. Rewording the vocabulary block does not move it; that was
   measured. `apply_listed_mishears` enacts them after cleanup instead — do not fold it
   back into the prompt.
+- **Fluency cleanup is always on, and the comma is what makes it safe.** Filler removal
+  is not a level and must never become a setting — levels pick register, not whether
+  the speech comes out. Over 289 real dictations the model removes "um"/"uh" 100% of
+  the time and "like"/"you know"/"basically" about 45%: those have a second sense, so
+  it weighs each and keeps it. Rule 1 and both level modifiers used to *ask* for that
+  ("only when clearly not meaning-bearing", "when unsure, leave the text as spoken",
+  "keep casual phrasing exactly as spoken"); they now say the opposite, which took a
+  real 70-word dictation from 4 surviving "you know"s to 2 and no further.
+  `strip_parenthetical_fillers` closes the rest, deleting only a filler the model
+  itself set off with commas. **Do not relax it to bare word matching.** The comma is
+  the model's own finding that the phrase was an aside, and the only thing putting "I
+  like it" and "you know the answer" out of reach; bare occurrences outrun delimited
+  ones about seven to one, so a bare version does seven times the damage, not the work.
+  Correction cues stay out — "actually" carries contrast even parenthetically.
+- **Auto-learn needs a length floor once case is flattened.** The ~70-word `COMMON`
+  list is hand-written and cannot be complete, and at the Messaging level the Titlecase
+  requirement is off, so it was the only guard left. `git` got learned from `get` —
+  three letters, distance 0.33, not on the list — and since `apply_listed_mishears` is
+  deterministic, every "get" the user then spoke came out "git", with the prompt's
+  leave-ordinary-words-alone guard bypassed entirely. Hence ≥5 characters for the
+  *learned* spelling when `caps_are_informative` is false. Do not put the floor on the
+  mishear too: "Alec" for "Malik" is a real four-letter mishear. Extending `COMMON`
+  instead is whack-a-mole — the next collision is another ordinary word you did not list.
 - **The Messaging register is enforced after the model, not by it.** Asked for
   lowercase and no trailing full stops, the real model delivers about half — "thanks
   manvi" came back bare, "…before it lapses." kept its period. `messaging_style` is

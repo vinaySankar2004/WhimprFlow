@@ -264,6 +264,96 @@ pub fn de_dash(text: &str) -> String {
     out
 }
 
+/// Fillers the model set off with commas but did not delete. Lowercase, and matched
+/// whole-word only.
+///
+/// Deliberately excludes "actually", "literally", "right" and the self-correction
+/// cues. Those carry contrast or emphasis even parenthetically ("it's not blue,
+/// actually, it's green"), and "actually" is load-bearing in rule 3 of the prompt —
+/// a deterministic pass must not start second-guessing a correction.
+const PARENTHETICAL_FILLERS: &[&str] = &["you know", "i mean", "like", "basically"];
+
+/// Delete a filler the model itself marked as a parenthetical aside — `", you know,"`
+/// becomes `","`.
+///
+/// Rule 1 of the prompt says to delete these, and measured across 289 real dictations
+/// it only happened about half the time: "um" and "uh" came out 100% of the time,
+/// while "like" managed 48%, "you know" 50% and "basically" 38%. The difference is
+/// that "um" has no other sense to weigh and these do, so the model spends judgment
+/// on each one and lands on keep. De-hedging rule 1, rewriting both level modifiers
+/// and adding a demonstration together took a 70-word real dictation from 4 surviving
+/// "you know" to 2; wording alone does not close it.
+///
+/// The comma is what makes the rest deterministic, and it is the model's own work: to
+/// write `", you know,"` it had to decide the phrase was a parenthetical aside rather
+/// than part of the sentence. That judgment — the hard, context-sensitive half — is
+/// already made and recorded in the punctuation. All this does is enact it, exactly as
+/// [`de_dash`] and [`messaging_style`] enact the other rules the model half-delivers.
+///
+/// The delimiting is also the entire safety argument, so do not relax it to bare
+/// matching. "I like it" and "you know the answer" cannot be comma-wrapped, so they
+/// cannot be reached; a bare-word version would gut both, and measured on the same
+/// history, bare occurrences outnumber delimited ones roughly seven to one — which is
+/// the scale of the damage, not the scale of the opportunity.
+///
+/// Runs before the gate, like [`de_dash`], so the gate judges what actually gets
+/// pasted. Never applied to a raw paste: `Raw` mode and level `None` mean verbatim.
+pub fn strip_parenthetical_fillers(text: &str) -> String {
+    // Matched case-insensitively against the original rather than a lowercased copy:
+    // lowercasing is not length-preserving in Unicode, and indexing one string with
+    // the other's byte offsets would slice a multi-byte character in half.
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    'outer: while i < text.len() {
+        // Only a comma can open a match, so this is cheap on ordinary text.
+        if bytes[i] == b',' {
+            let after = i + 1;
+            let ws = after + (text[after..].len() - text[after..].trim_start().len());
+            for f in PARENTHETICAL_FILLERS {
+                let Some(cand) = text.get(ws..ws + f.len()) else { continue };
+                if !cand.eq_ignore_ascii_case(f) {
+                    continue;
+                }
+                let rest = &text[ws + f.len()..];
+                let trimmed = rest.trim_start();
+                // A word character after it means this was never the whole filler —
+                // ", liked the design" must not match on "like".
+                if trimmed.len() == rest.len()
+                    && rest.chars().next().is_some_and(char::is_alphanumeric)
+                {
+                    continue;
+                }
+                // The closing comma is what proves it was an aside. A period or
+                // question mark closes the sentence around it just as well, and
+                // "…, you know." is the same parenthetical.
+                let closer = trimmed.chars().next();
+                if !trimmed.is_empty() && !matches!(closer, Some(',' | '.' | '!' | '?')) {
+                    continue;
+                }
+                // "…, like, 30 people showed up" is an approximation, not an aside:
+                // deleting it turns "about 30" into exactly 30, which is a change of
+                // fact rather than of style. Punctuated the same way; only the number
+                // after it tells them apart.
+                if trimmed.starts_with(',')
+                    && trimmed[1..].trim_start().starts_with(|c: char| c.is_ascii_digit())
+                {
+                    continue;
+                }
+                // Drop the opening comma along with the filler and keep whatever
+                // closes it, so ", you know," leaves one "," and ", you know."
+                // leaves one ".".
+                i = text.len() - trimmed.len();
+                continue 'outer;
+            }
+        }
+        let ch = text[i..].chars().next().expect("char boundary");
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 /// Shape cleanup output into the register [`CleanupLevel::Messaging`] promises:
 /// all lowercase, and no full stop at the end of a line.
 ///
@@ -608,6 +698,86 @@ mod tests {
     fn de_dash_leaves_plain_text_and_hyphens_alone() {
         let s = "a well-known issue with the 9-5 schedule.";
         assert_eq!(de_dash(s), s);
+    }
+
+    /// The measured survivors, verbatim from a real dictation the model punctuated
+    /// but did not clean.
+    #[test]
+    fn strips_the_fillers_the_model_set_off_with_commas() {
+        assert_eq!(
+            strip_parenthetical_fillers("I'll just say it, you know, and it works."),
+            "I'll just say it, and it works."
+        );
+        assert_eq!(
+            strip_parenthetical_fillers("a proper feature, you know, that sort of thing"),
+            "a proper feature, that sort of thing"
+        );
+        // A sentence-ending aside: the period closes it just as a comma would.
+        assert_eq!(
+            strip_parenthetical_fillers("it just works, you know."),
+            "it just works."
+        );
+    }
+
+    /// The whole safety argument is the delimiting. These are the words the bare-word
+    /// version of this function would destroy, and they must be untouchable.
+    #[test]
+    fn never_touches_a_filler_word_carrying_meaning() {
+        for s in [
+            "I like the new design a lot better.",
+            "you know the answer already",
+            "I mean it when I say this is the best one.",
+            "it's basically done, so let's ship it",
+            "she liked it, like the whole thing",  // ", like the" — no closing comma
+            "tell me what you think, I mean really think",
+        ] {
+            assert_eq!(strip_parenthetical_fillers(s), s, "must not edit: {s:?}");
+        }
+    }
+
+    /// A word starting with a filler is not the filler: ", liked the design" must
+    /// survive a "like" entry intact.
+    #[test]
+    fn does_not_match_a_longer_word_by_its_prefix() {
+        let s = "the part I remember, liked or not, was the ending";
+        assert_eq!(strip_parenthetical_fillers(s), s);
+    }
+
+    /// An aside and an approximation are punctuated identically; the number is the
+    /// only thing separating them, and deleting this one changes a fact.
+    #[test]
+    fn keeps_an_approximation_before_a_number() {
+        let s = "she said it, like, 30 times";
+        assert_eq!(strip_parenthetical_fillers(s), s);
+        // The same shape with a word after it is an ordinary aside and still goes.
+        assert_eq!(
+            strip_parenthetical_fillers("she said it, like, ages ago"),
+            "she said it, ages ago"
+        );
+    }
+
+    /// Correction cues are deliberately out of scope — they carry contrast even
+    /// parenthetically, and "actually" is load-bearing in rule 3 of the prompt.
+    #[test]
+    fn leaves_correction_cues_to_the_model() {
+        let s = "it's not blue, actually, it's green";
+        assert_eq!(strip_parenthetical_fillers(s), s);
+    }
+
+    /// Two asides in one sentence, and the scan must not lose its place between them.
+    #[test]
+    fn strips_more_than_one_aside() {
+        assert_eq!(
+            strip_parenthetical_fillers("so, you know, we shipped it, I mean, finally."),
+            "so, we shipped it, finally."
+        );
+    }
+
+    /// Byte offsets must survive text the lowercasing trick would have corrupted.
+    #[test]
+    fn is_safe_on_multi_byte_text() {
+        let s = "café details, you know, matter — İstanbul too";
+        assert_eq!(strip_parenthetical_fillers(s), "café details, matter — İstanbul too");
     }
 
     #[test]

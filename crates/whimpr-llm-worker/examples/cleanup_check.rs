@@ -8,7 +8,7 @@
 //!     -> post_process -> de_dash -> gates::evaluate -> the text that gets pasted
 //!
 //! Every case here is a real failure mode, and most were taken from actual
-//! dictations in `stats.json` rather than invented. Three properties matter, and
+//! dictations in `stats.json` rather than invented. Four properties matter, and
 //! each one is a separate `Want` because they fail independently:
 //!
 //! 1. **`Cleans`** — the fillers named in the case are gone and the content words
@@ -25,6 +25,14 @@
 //!    does not scale with the input does not fail loudly, it truncates the paste
 //!    mid-sentence, and the gates read a missing tail as a pass because dropping
 //!    the last tenth of a message is nowhere near the over-deletion threshold.
+//! 4. **`Preserves`** — a self-correction cue appears without a self-correction
+//!    behind it, and nothing may be deleted. Every cue in rule 3 is also an
+//!    ordinary word ("can you *wait* for me", "*I mean* it when I say"), and the
+//!    over-trigger is the one failure that leaves a paste looking perfect: fluent,
+//!    grammatical, and missing the half of the sentence before the cue. The gates
+//!    are no help — a fluent shorter sentence is not over-deletion and invents no
+//!    words — so a prompt anchor is the only thing standing between this and the
+//!    cursor.
 //!
 //! Sampling is greedy, so re-running a case returns the same tokens; variance lives
 //! in the phrasing, which is why the cases vary length and register instead of
@@ -40,7 +48,7 @@ use std::process::{Command, Stdio};
 
 use whimpr_core::cleanup::{
     build_messages, de_dash, evaluate_gates, max_tokens_for, messaging_style, post_process,
-    pre_normalize_layout, CleanupContext, CleanupLevel, GateVerdict,
+    pre_normalize_layout, strip_parenthetical_fillers, CleanupContext, CleanupLevel, GateVerdict,
 };
 
 /// What a case is trying to prove.
@@ -53,6 +61,9 @@ enum Want {
     Transcribes,
     /// A long dictation must arrive whole — `kept` includes words from the very end.
     Keeps,
+    /// A correction cue appears but no correction was made. Nothing may be dropped:
+    /// `kept` lists the words that vanish if the cue is matched as a keyword.
+    Preserves,
 }
 
 struct Case {
@@ -90,6 +101,20 @@ const CASES: &[Case] = &[
         said: "the total comes to fifty dollars scratch that sixty dollars",
         gone: &["scratch", "fifty"],
         kept: &["sixty", "total"],
+        known_limit: None,
+    },
+    Case {
+        // Real dictation, pasted almost untouched by the 20B cloud model: every
+        // "like" and "you know" survived to the cursor. Measured over 289 stored
+        // dictations, that is the norm rather than the exception — "um" and "uh"
+        // are removed 100% of the time, while "like" is removed 48%, "you know"
+        // 50%, "basically" 38%. The soft fillers are the ones people actually say,
+        // so a coin flip on them is what "cleanup doesn't really clean" means.
+        name: "real: soft fillers at speaking density",
+        want: Want::Cleans,
+        said: "so look at the way sometimes you know when i'm saying something i'll be like oh sorry i didn't do this like i'll just like i'll say it you know and it manages to get it so correct how like you know it'll just clean up the sentence in that way and i want that to be a proper feature you know that sort of like inherently part of it",
+        gone: &["you know"],
+        kept: &["sometimes", "sentence", "feature"],
         known_limit: None,
     },
     Case {
@@ -169,6 +194,49 @@ const CASES: &[Case] = &[
         kept: &["land", "pick"],
         known_limit: None,
     },
+    // ---- Preserves: a correction cue that is not a correction ----
+    //
+    // Rule 3 of the system prompt lists the cue words that resolve a spoken
+    // self-correction. Every one of them is also an ordinary English word, and the
+    // failure they invite is invisible in a diff: the paste is fluent, grammatical,
+    // and missing the first half of what the speaker said. There is one anchor
+    // against this today ("i actually really liked the new design") and it covers
+    // a single cue in a single sense, so these measure the rest.
+    Case {
+        // Real dictation, and the case that prompted the group: the speaker is
+        // *describing* a self-correction rather than making one. "sorry" is a listed
+        // cue, so a model matching on the cue word treats everything before it as
+        // the abandoned wording and deletes the whole setup.
+        name: "a quoted correction cue is not a correction",
+        want: Want::Preserves,
+        said: "sometimes when i'm dictating i'll be like oh sorry i didn't mean that and it just fixes the sentence for me",
+        gone: &[],
+        kept: &["dictating", "sorry", "mean", "fixes", "sentence"],
+        known_limit: None,
+    },
+    Case {
+        // "wait" is a listed cue and an ordinary verb. Matching the word deletes
+        // everything before it, leaving a fluent half-sentence that reads as
+        // something the speaker might plausibly have said — the worst shape of
+        // wrong, because nothing about the paste looks damaged.
+        name: "an ordinary verb that is also a cue word",
+        want: Want::Preserves,
+        said: "can you wait for me at the entrance and then we'll go in together",
+        gone: &[],
+        kept: &["can", "wait", "entrance", "together"],
+        known_limit: None,
+    },
+    Case {
+        // "I mean" is listed twice over — as a filler in rule 1 and as a correction
+        // cue in rule 3 — and here it is the sentence's main verb carrying its
+        // emphasis. Both readings destroy it, so this is the sharpest of the three.
+        name: "a cue phrase carrying the sentence's meaning",
+        want: Want::Preserves,
+        said: "i mean it when i say this is the best version we have shipped so far",
+        gone: &[],
+        kept: &["mean", "say", "best", "version", "shipped"],
+        known_limit: None,
+    },
 ];
 
 /// Openers that mean the model answered or acknowledged instead of transcribing.
@@ -243,9 +311,17 @@ fn main() -> anyhow::Result<()> {
         }
 
         let pasted_lc = out.pasted.to_lowercase();
+        let said_lc = case.said.to_lowercase();
         for g in case.gone {
-            if contains_word(&pasted_lc, g) {
-                problems.push(format!("{g:?} should have been removed"));
+            // Count rather than test presence. Filler removal is not pass/fail — a
+            // prompt change that takes "you know" from 4 survivors to 1 is real
+            // progress that a boolean reports as an unchanged FAIL, which is how a
+            // working lever gets abandoned for looking inert.
+            let (before, after) = (count_word(&said_lc, g), count_word(&pasted_lc, g));
+            if after > 0 {
+                problems.push(format!(
+                    "{g:?} should have been removed ({after} of {before} survived)"
+                ));
             }
         }
         for k in case.kept {
@@ -283,6 +359,10 @@ fn main() -> anyhow::Result<()> {
                 for p in &problems {
                     println!("   FAIL — {p}");
                 }
+                // The elided paste above is where the evidence is, and the elision
+                // cuts out the middle — which is exactly where a surviving filler
+                // tends to be. On a failure, print the whole thing.
+                println!("   full paste: {}", out.pasted.replace('\n', " ⏎ "));
                 println!();
                 failed += 1;
             }
@@ -348,9 +428,9 @@ fn run(
     if let Some(err) = resp.get("error").and_then(|e| e.as_str()) {
         anyhow::bail!("worker error: {err}");
     }
-    let cleaned = de_dash(&post_process(
+    let cleaned = strip_parenthetical_fillers(&de_dash(&post_process(
         resp.get("text").and_then(|t| t.as_str()).unwrap_or_default().trim(),
-    ));
+    )));
 
     // No dictionary is in play in this harness, so the gates correctly see no vocab.
     let (gated, rejected) = match evaluate_gates(&raw_out, &cleaned, level, &[]) {
@@ -361,9 +441,27 @@ fn run(
     Ok(Outcome { pasted, rejected, reply: cleaned })
 }
 
+/// How many whole-word occurrences of `needle` are in `haystack_lc`.
+fn count_word(haystack_lc: &str, needle: &str) -> usize {
+    let mut n = 0;
+    let mut rest = haystack_lc;
+    let mut base = 0;
+    while let Some(off) = word_index(rest, needle) {
+        n += 1;
+        base += off + 1;
+        rest = &haystack_lc[base..];
+    }
+    n
+}
+
 /// Whole-word (or whole-phrase) containment, so "like" does not match "unlikely"
 /// and a filler that survived inside another word is not reported as removed.
 fn contains_word(haystack_lc: &str, needle: &str) -> bool {
+    word_index(haystack_lc, needle).is_some()
+}
+
+/// Byte offset of the first whole-word occurrence of `needle`.
+fn word_index(haystack_lc: &str, needle: &str) -> Option<usize> {
     let n = needle.to_lowercase();
     let mut from = 0;
     while let Some(idx) = haystack_lc[from..].find(&n) {
@@ -376,11 +474,11 @@ fn contains_word(haystack_lc: &str, needle: &str) -> bool {
                 .is_some_and(char::is_alphanumeric);
         let after_ok = !haystack_lc[end..].chars().next().is_some_and(char::is_alphanumeric);
         if before_ok && after_ok {
-            return true;
+            return Some(start);
         }
         from = start + 1;
     }
-    false
+    None
 }
 
 fn elide(s: &str, max: usize) -> String {

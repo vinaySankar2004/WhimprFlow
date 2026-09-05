@@ -286,7 +286,23 @@ pub fn detect_correction(
     let (mishear, correct) = changed_word(&ins, &aft)?;
 
     let alpha = |w: &str| w.chars().all(|c| c.is_alphabetic());
+    // Three characters is enough when Titlecase vouches for the correction being a
+    // name. Where case has been flattened it vouches for nothing, and a three-letter
+    // lowercase pair is far likelier to be two ordinary English words than a name and
+    // its mishear. This is what let `git` be learned from `get` — a 3-letter,
+    // distance-0.33 pair that `COMMON` happened not to list — after which
+    // `apply_listed_mishears` rewrote every "get" the user dictated, deterministically
+    // and with no way for the prompt's "leave ordinary words alone" guard to intervene.
+    // Five keeps every real entry (Manvi, Malik, Geetha, Abishek, ChargeBee).
+    //
+    // The floor is on `correct` alone — that is the word being adopted as the spelling
+    // authority, and the only one `apply_listed_mishears` ever writes. What it replaces
+    // can be as short as ASR made it: "Alec" for "Malik" is a real four-letter mishear,
+    // and a floor on both sides throws that entry away for nothing.
     if mishear.chars().count() < 3 || correct.chars().count() < 3 {
+        return None;
+    }
+    if !caps_are_informative && correct.chars().count() < 5 {
         return None;
     }
     if !alpha(&mishear) || !alpha(&correct) {
@@ -430,5 +446,36 @@ mod tests {
     #[test]
     fn flattened_case_still_refuses_common_word_edits() {
         assert_eq!(detect_correction("i left there bag", "i left their bag", false), None);
+    }
+
+    /// The regression this length floor exists for. `git`/`get` was learned from a
+    /// real Messaging dictation, and because `apply_listed_mishears` is deterministic
+    /// it then rewrote every "get" the user spoke — "they git put into some default
+    /// org" — with nothing in the prompt able to stop it. Three letters, distance
+    /// 0.33, and `COMMON` did not happen to list "get": every guard missed it.
+    #[test]
+    fn flattened_case_refuses_a_short_lowercase_pair() {
+        assert_eq!(detect_correction("they get put into", "they git put into", false), None);
+        // Titlecase still vouches for a genuinely short name, so Light is unaffected.
+        assert_eq!(
+            detect_correction("ask ana about it", "ask Ann about it", true),
+            Some(("ana".to_string(), "Ann".to_string()))
+        );
+    }
+
+    /// The floor must not cost a real entry. These are the names actually in use.
+    #[test]
+    fn flattened_case_still_learns_real_names() {
+        for (mishear, correct) in
+            [("monvi", "manvi"), ("alec", "malik"), ("geeta", "geetha"), ("charge", "chargebee")]
+        {
+            let before = format!("email {mishear} today");
+            let after = format!("email {correct} today");
+            assert_eq!(
+                detect_correction(&before, &after, false),
+                Some((mishear.to_string(), correct.to_string())),
+                "must still learn {correct:?}"
+            );
+        }
     }
 }

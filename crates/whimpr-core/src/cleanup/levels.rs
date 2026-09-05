@@ -46,18 +46,23 @@ impl CleanupLevel {
         match self {
             CleanupLevel::None => "",
             CleanupLevel::Messaging => {
-                "REGISTER: this is a casual chat message, written the way the speaker types. \
-                 Write EVERYTHING in lowercase, including the first word of a sentence, the \
-                 word \"i\", and every name, place, brand, and acronym. Do not capitalize \
-                 anything, ever, even where it would be correct. Punctuate only where the \
-                 meaning needs it: keep question marks, drop the period at the end of a \
-                 message or a line, and use commas sparingly. Fix clearly broken grammar, but \
-                 keep contractions, slang, and casual phrasing exactly as spoken (\"gonna\" \
-                 stays \"gonna\"). Apply the allowed edits minimally and add nothing."
+                "REGISTER: this is a casual chat message. Write everything in lowercase, \
+                 including the first word, the word \"i\", and every name and acronym. \
+                 Punctuate only where the meaning needs it: keep question marks, drop the \
+                 period ending a line, use commas sparingly.\n\
+                 Casual means casual WORD CHOICE — keep contractions and slang exactly as \
+                 spoken (\"gonna\" stays \"gonna\"), fix only clearly broken grammar, add \
+                 nothing. It does NOT mean leaving the speech in. Fillers, hesitations and \
+                 stutters come out here in full, exactly as at every other level: a chat \
+                 message is still written, not transcribed. \"like\", \"you know\", \"I mean\" \
+                 and \"basically\" are the ones that survive if you let them."
             }
             CleanupLevel::Light => {
-                "Be conservative: apply the allowed edits minimally. When unsure whether to \
-                 edit, leave the text as spoken."
+                "Be conservative about word choice, meaning and tone: apply the allowed edits \
+                 minimally, and when unsure whether to rephrase something, leave it as spoken. \
+                 That conservatism does NOT extend to fillers, hesitations and stutters — \
+                 remove those in full. Leaving them in is not the cautious choice, it is the \
+                 failure the reader sees."
             }
         }
     }

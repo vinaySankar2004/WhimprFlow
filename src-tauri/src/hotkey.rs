@@ -879,6 +879,10 @@ mod imp {
                 // The prompt forbids em and en dashes; this is what makes it true. It
                 // runs before the gate so what the gate judges is what gets pasted.
                 let cleaned = whimpr_core::cleanup::de_dash(&cleaned);
+                // Rule 1 asks for filler removal and the model delivers about half of
+                // it. This deletes the ones it set off with commas — its own judgment
+                // that they were asides — for the same reason, and before the gate.
+                let cleaned = whimpr_core::cleanup::strip_parenthetical_fillers(&cleaned);
                 // The gate sees the same vocab the prompt did, so the spellings the
                 // dictionary authorized don't read as the model inventing words.
                 match whimpr_core::cleanup::evaluate_gates(&raw_out, &cleaned, level, &ctx.vocab) {

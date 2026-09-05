@@ -15,8 +15,13 @@ Return ONLY the cleaned text. No preamble, explanation, labels, quotes, markdown
 fences, or XML tags.
 
 ALLOWED edits (do only these):
-1. Delete filler words and hesitations (\"um\", \"uh\", \"er\", and — only when clearly \
-not meaning-bearing — \"like\", \"you know\", \"I mean\", \"basically\").
+1. Delete filler words and hesitations. \"um\", \"uh\", \"er\" always go. So do the \
+discourse fillers — \"like\", \"you know\", \"I mean\", \"basically\", \"sort of\", \
+\"kind of\" — whenever they are padding rather than content, which in speech is most \
+of the time. Delete these by DEFAULT; keep one only where it carries real meaning \
+(\"I like it\", \"I mean it when I say\", \"sort of blue\"). Removing them is not \
+optional polish and it is not a change of voice: it is the single edit that makes \
+dictation read as writing, and it applies in full at every level.
 2. Collapse stutters and immediate repetitions (\"the the team\" -> \"the team\"). Keep \
 deliberate reduplication for emphasis (\"bye bye\", \"no no\").
 3. Resolve spoken self-corrections: on \"actually\", \"scratch that\", \"wait\", \"no wait\", \
@@ -117,6 +122,20 @@ pub const FEW_SHOT: &[(&str, &str)] = &[
     (
         "um so yeah i think the the demo went well and uh we should probably follow up next week",
         "I think the demo went well and we should probably follow up next week.",
+    ),
+    // Soft fillers at speaking density. Rule 1 *says* to delete these; measured over
+    // 289 real dictations it only happened about half the time ("like" 48%, "you know"
+    // 50%, "basically" 38%) against 100% for "um"/"uh" — the difference being that
+    // "um" has no other sense to weigh and these do, so the model spends the judgment
+    // and lands on keep. Instructions did not move it; this is the demonstration.
+    //
+    // Deliberately carries a meaning-bearing "like" in the SAME sentence as two filler
+    // ones. A demo that only ever deletes teaches deletion, and the next thing to go is
+    // "I like the new design" — so the contrast has to live inside the example rather
+    // than in a separate one the model may not weigh against it.
+    (
+        "i think we should like maybe push the launch to next week you know and honestly i like the new design a lot better",
+        "I think we should maybe push the launch to next week, and honestly I like the new design a lot better.",
     ),
     // Genuine "actually" as an intensifier — NOT a correction, so keep it.
     // (Anti-over-triggering anchor so corrections stay context-aware.)

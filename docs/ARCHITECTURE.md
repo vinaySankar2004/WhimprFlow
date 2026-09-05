@@ -205,6 +205,33 @@ produced text the speaker did not say, so they are gone — but `CleanupLevel` s
 aliases `"medium"` and `"high"` onto Light, because an unrecognized value fails the
 whole `Settings` parse and silently resets every other setting with it.
 
+**Fluency cleanup is not a level.** Removing fillers, stutters and abandoned
+self-corrections lives in the shared prompt, so it happens identically at Light and
+Messaging. The levels pick register and how freely word choice may change, never
+whether the speech comes out. There is no setting for it and there should not be one.
+
+Delivering it is the hard part. Measured across 289 stored dictations, "um" and "uh"
+came out 100% of the time against "like" 48%, "you know" 50%, "basically" 38%: "um" has
+no second sense to weigh and the others do, so the model spends judgment on each and
+lands on keep. The prompt was pushing it there — rule 1 hedged ("only when clearly not
+meaning-bearing"), Light said "when unsure, leave the text as spoken", Messaging said
+"keep casual phrasing exactly as spoken", which reads as *keep the fillers*. All three
+now say the opposite, and Messaging's lowercase paragraph is cut back since
+`force_lowercase` already guarantees it in code and those words were crowding out the
+part that is not enforced. On a real 70-word dictation that moved surviving "you know"s
+from 4 to 2 — real, and not enough.
+
+`cleanup::strip_parenthetical_fillers` closes the rest: it deletes a filler the model
+set off with commas, so `", you know,"` becomes `","`. The comma is the model's own
+finding that the phrase was an aside rather than part of the sentence, so the
+context-sensitive half is already done and this only enacts it — the same bargain as
+`de_dash` and `messaging_style`. That delimiting is the entire safety argument: "I like
+it" and "you know the answer" cannot be comma-wrapped, so they cannot be reached. **Do
+not relax it to bare matching** — bare occurrences outrun delimited ones about seven to
+one, which measures the damage, not the prize. `", like, 30 times"` is skipped too;
+that is an approximation, and deleting it changes a fact. Correction cues stay out
+entirely: "actually" carries contrast even parenthetically and is load-bearing in rule 3.
+
 **The register rules are enforced, not requested.** The prompt bans em and en dashes
 at every level (the loudest tell that a line was machine-written, and this text goes
 out as the speaker's own) and asks Messaging for lowercase with no trailing full
@@ -220,8 +247,8 @@ emits unspaced is a clause break. Real dictations came out as `says-I`, `link-ca
 and a dash with a digit on each side (a range, "9-5") stay hyphens. The cost is that a
 genuine "well—known" becomes "well, known"; that is the rarer mistake by a wide margin.
 
-Order is load-bearing. `de_dash` runs before the gate, so the gate judges what will
-actually be pasted. `messaging_style` runs *after* the dictionary, which writes the
+Order is load-bearing. `de_dash` and `strip_parenthetical_fillers` run before the gate,
+so the gate judges what will actually be pasted. `messaging_style` runs *after* the dictionary, which writes the
 authoritative — capitalized — spelling, and would otherwise leave a corrected name as
 the one capital in the message. It spares `?`, `!` and `...` (they carry tone), a
 final dot belonging to its word ("a.m."), and URL-ish tokens, whose paths are
@@ -231,7 +258,7 @@ against the real model.
 
 `cleanup_check` is to cleanup what `dictionary_check` is to the dictionary: it drives
 the same production chain — `pre_normalize_layout`, `build_messages`, the real worker,
-`post_process`, `de_dash`, the gates — and asserts on the text that would reach the
+`post_process`, `de_dash`, `strip_parenthetical_fillers`, the gates — and asserts on the text that would reach the
 cursor. When the gates reject, it prints the model's own reply, because `pasted` is by
 then the untouched transcript and says nothing about what went wrong. Most cases are
 real dictations lifted from `stats.json`, and every one reports its timing and token
@@ -503,8 +530,9 @@ moved on and the diff is no longer the clean swap auto-learn will accept.
 
 `detect_correction` is deliberately hard to satisfy — exactly one word out and one in,
 both ≥3 characters and alphabetic, neither on a ~70-word common list, the new one
-Titlecase, and normalized distance in (0, 0.6]. A false positive poisons the dictionary
-into mis-correcting you forever, so the bar is set where a miss is the cheaper mistake.
+Titlecase (and ≥5 characters where case has been flattened), and normalized distance in
+(0, 0.6]. A false positive poisons the dictionary into mis-correcting you forever, so
+the bar is set where a miss is the cheaper mistake.
 
 Two rules that look like extra strictness and are the opposite:
 
@@ -519,6 +547,15 @@ Two rules that look like extra strictness and are the opposite:
   paste there and the user types the fix in lowercase too, so demanding a capital made
   the one register that level exists for the one that never learned. Case is evidence
   only where case survived; the common list and distance bound carry it otherwise.
+- **With case flattened, the learned spelling must be ≥5 characters.** The common list
+  is hand-written and cannot be complete, and with Titlecase gone it was the only thing
+  left standing between a short lowercase pair and the dictionary. `git` was learned
+  from `get` — three letters, distance 0.33, absent from the list — and because
+  `apply_listed_mishears` is deterministic it then rewrote every "get" the user spoke
+  ("they git put into some default org"), with no way for the prompt's leave-ordinary-
+  words-alone guard to intervene. Five clears every real entry. The floor is on the
+  *learned* spelling only: what it replaces can be as short as recognition made it
+  ("Alec" for "Malik"), and a floor on both sides throws that entry away for nothing.
 
 What gets recorded as the mishear is **what recognition wrote**, not what auto-learn
 observed. The observed form comes from the *pasted* text, which is post-cleanup, so it
