@@ -131,6 +131,12 @@ final class DictationController {
                 .fromOpaque(observer).takeUnretainedValue()
             Task { @MainActor in await controller.finishRecording() }
         }
+        Handoff.observe(.cancel, observer: observer) { _, observer, _, _, _ in
+            guard let observer else { return }
+            let controller = Unmanaged<DictationController>
+                .fromOpaque(observer).takeUnretainedValue()
+            Task { @MainActor in controller.cancelRecording() }
+        }
     }
 
     // MARK: - The loop

@@ -32,6 +32,21 @@ struct DictateView: View {
                     StatusLine(phase: dictation.phase, isBlocked: dictation.blocker != nil)
                         .contentColumn(maxWidth: 420)
 
+                    // Only while recording. Throwing the audio away costs nothing;
+                    // finishing spends a recognition call and a cleanup call on a
+                    // dictation the speaker has already given up on.
+                    if dictation.isRecording {
+                        Button(role: .destructive) {
+                            dictation.cancelRecording()
+                        } label: {
+                            Label("Discard", systemImage: "xmark")
+                                .font(.subheadline)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(Theme.textSecondary)
+                        .transition(.opacity)
+                    }
+
                     message
                         .contentColumn()
                         .padding(.horizontal, 20)

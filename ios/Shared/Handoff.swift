@@ -35,6 +35,12 @@ enum Handoff {
         case start = "com.whimpr.whimprflow.dictate.start"
         /// Keyboard → app: the user tapped the mic key again; stop and transcribe.
         case stop = "com.whimpr.whimprflow.dictate.stop"
+        /// Keyboard → app: throw the recording away without transcribing it.
+        ///
+        /// Distinct from `stop` rather than a flag beside it, because the two differ
+        /// in what they cost: `stop` spends a recognition call and a cleanup call on
+        /// audio the user has already decided against.
+        case cancel = "com.whimpr.whimprflow.dictate.cancel"
         /// App → keyboard: a new result is in the container.
         case result = "com.whimpr.whimprflow.dictate.result"
         /// App → keyboard: `state` changed (recording, transcribing, failed).

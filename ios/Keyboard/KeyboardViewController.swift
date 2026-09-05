@@ -26,6 +26,7 @@ import UIKit
 final class KeyboardViewController: UIInputViewController {
     private var micButton: UIButton!
     private var micLabel: UILabel!
+    private var discardButton: UIButton!
     private var waveform: WaveformView!
     private var lastInsertedResultID = 0
     private var isDictating = false
@@ -33,6 +34,15 @@ final class KeyboardViewController: UIInputViewController {
     /// A keyboard has no intrinsic height, and the stock one is around this on a
     /// phone. Tall enough for the mic target plus one row of keys.
     private let keyboardHeight: CGFloat = 258
+
+    /// Held so it is installed exactly once, and at a priority that yields.
+    private var heightConstraint: NSLayoutConstraint?
+
+    /// What `overrideUserInterfaceStyle` was last set to, so it is only written when
+    /// it actually changes — assigning it re-resolves every dynamic colour and
+    /// re-renders the whole keyboard, which is visible as a flash if done on each
+    /// appearance.
+    private var appliedStyle: UIUserInterfaceStyle?
 
     // MARK: - Lifecycle
 
@@ -58,6 +68,27 @@ final class KeyboardViewController: UIInputViewController {
         refresh()
     }
 
+    /// Install the height here rather than in `viewDidLoad`, and at priority 999.
+    ///
+    /// Both details are what stop the keyboard flickering when you switch away and
+    /// back. iOS installs its own `UIView-Encapsulated-Layout-Height` at required
+    /// priority while the keyboard transitions; a second *required* height constraint
+    /// is unsatisfiable alongside it, so autolayout breaks one of the two and the
+    /// keyboard visibly jumps to the wrong height for a frame before settling. At 999
+    /// ours simply yields for the duration of the animation and wins again once the
+    /// system's temporary constraint is gone.
+    ///
+    /// In `viewDidLoad` the view has no size yet, so the constraint is installed
+    /// against a zero-height view and the first layout pass animates up from nothing.
+    override func updateViewConstraints() {
+        super.updateViewConstraints()
+        guard view.bounds.width > 0, heightConstraint == nil else { return }
+        let constraint = view.heightAnchor.constraint(equalToConstant: keyboardHeight)
+        constraint.priority = UILayoutPriority(999)
+        constraint.isActive = true
+        heightConstraint = constraint
+    }
+
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         // The display link keeps firing on a keyboard the user has switched away from
@@ -75,7 +106,13 @@ final class KeyboardViewController: UIInputViewController {
     /// container. `.unspecified` for System, so it tracks the device rather than being
     /// frozen at whatever it was when the keyboard was built.
     private func applyAppearance() {
-        overrideUserInterfaceStyle = Settings.storedAppearance.interfaceStyle
+        let style = Settings.storedAppearance.interfaceStyle
+        // Only on an actual change. Writing this unconditionally on every appearance
+        // re-resolves every dynamic colour and re-renders the keyboard, which is one
+        // of the flashes seen when switching back to it.
+        guard style != appliedStyle else { return }
+        appliedStyle = style
+        overrideUserInterfaceStyle = style
         view.backgroundColor = Palette.background
     }
 
@@ -110,6 +147,28 @@ final class KeyboardViewController: UIInputViewController {
         micLabel.translatesAutoresizingMaskIntoConstraints = false
         micButton.addSubview(micLabel)
 
+        // Discard. Only while recording, and its own control rather than a gesture on
+        // the panel: stopping and throwing away are both one tap, and the difference
+        // between them is a recognition call plus a cleanup call on audio the user has
+        // already decided against.
+        discardButton = UIButton(type: .system)
+        discardButton.setImage(
+            UIImage(
+                systemName: "xmark",
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+            ),
+            for: .normal
+        )
+        discardButton.tintColor = Palette.textSecondary
+        discardButton.backgroundColor = Palette.control
+        discardButton.layer.cornerRadius = 16
+        discardButton.layer.cornerCurve = .continuous
+        discardButton.accessibilityLabel = "Discard dictation"
+        discardButton.isHidden = true
+        discardButton.translatesAutoresizingMaskIntoConstraints = false
+        discardButton.addTarget(self, action: #selector(discardTapped), for: .touchUpInside)
+        micButton.addSubview(discardButton)
+
         // The bottom row, in the stock keyboard's proportions: the two glyph keys
         // narrow at the edges, return a little wider, and space taking everything
         // that is left. Equal widths made every key look like a modifier and the
@@ -132,8 +191,7 @@ final class KeyboardViewController: UIInputViewController {
         view.addSubview(row)
 
         NSLayoutConstraint.activate([
-            view.heightAnchor.constraint(equalToConstant: keyboardHeight),
-
+            // The height is not here — see `updateViewConstraints`.
             micButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
             micButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6),
             micButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -6),
@@ -146,6 +204,11 @@ final class KeyboardViewController: UIInputViewController {
             micLabel.leadingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: 12),
             micLabel.trailingAnchor.constraint(equalTo: micButton.trailingAnchor, constant: -12),
             micLabel.bottomAnchor.constraint(equalTo: micButton.bottomAnchor, constant: -10),
+
+            discardButton.topAnchor.constraint(equalTo: micButton.topAnchor, constant: 10),
+            discardButton.trailingAnchor.constraint(equalTo: micButton.trailingAnchor, constant: -10),
+            discardButton.widthAnchor.constraint(equalToConstant: 32),
+            discardButton.heightAnchor.constraint(equalToConstant: 32),
 
             row.topAnchor.constraint(equalTo: micButton.bottomAnchor, constant: 8),
             row.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6),
@@ -222,6 +285,11 @@ final class KeyboardViewController: UIInputViewController {
         handleInputModeList(from: gesture.view ?? view, with: UIEvent())
     }
 
+    @objc private func discardTapped() {
+        guard Handoff.isReachable else { return }
+        Handoff.post(.cancel)
+    }
+
     @objc private func deleteTapped() { textDocumentProxy.deleteBackward() }
     @objc private func spaceTapped() { textDocumentProxy.insertText(" ") }
     @objc private func returnTapped() { textDocumentProxy.insertText("\n") }
@@ -274,15 +342,19 @@ final class KeyboardViewController: UIInputViewController {
             setMic(symbol: nil, label: "Listening — tap to finish")
             waveform.isHidden = false
             waveform.start()
+            discardButton.isHidden = false
         case .transcribing:
+            discardButton.isHidden = true
             waveform.stop()
             waveform.isHidden = true
             setMic(symbol: "waveform", label: "Transcribing…")
         case .failed:
+            discardButton.isHidden = true
             waveform.stop()
             waveform.isHidden = true
             setMic(symbol: "exclamationmark.triangle", label: "Dictation failed — open WhimprFlow")
         case .idle:
+            discardButton.isHidden = true
             waveform.stop()
             waveform.isHidden = true
             setMic(
