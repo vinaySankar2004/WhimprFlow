@@ -30,7 +30,15 @@ export interface Settings {
   // It is what speaking insights are computed from — fillers and self-corrections
   // only exist before cleanup deletes them.
   store_raw_transcripts: boolean;
+  // Hub appearance. The overlay pill stays dark in every mode — it is drawn over
+  // other people's windows, not inside one whose background was chosen here.
+  appearance: Appearance;
 }
+
+// Imported for use in `Settings` below and re-exported so callers get it from the
+// same module as the rest of the settings types.
+import type { Appearance } from "./theme";
+export type { Appearance };
 
 export type LocalModelState = "loading" | "ready" | "missing";
 
@@ -132,6 +140,7 @@ export const DEFAULT_SETTINGS: Settings = {
   openai_base_url: "https://api.groq.com/openai/v1",
   sound_on_start: true,
   store_raw_transcripts: true,
+  appearance: "system",
 };
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {

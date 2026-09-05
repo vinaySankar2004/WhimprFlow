@@ -135,6 +135,25 @@ emoji picker.
 | `whimpr-sidecar` | The sidecar binary for that protocol. Also **not currently used**. |
 | `src-tauri` | The app: tray, Hub window, overlay pill, hotkey tap, paste, auto-learn. The macOS-native parts live in `hotkey.rs` (CGEventTap), `paste.rs`, `autolearn.rs`, `appctx.rs`, `fnkey.rs`. |
 | `ui/` | React + TypeScript. Two Vite entry points: `index.html` (Hub) and `overlay.html` (pill). |
+
+### Appearance
+
+The Hub follows `settings.appearance` — System, Light or Dark — and `ui/src/hub/theme.ts`
+is where both palettes live. `theme.pageBg` and its siblings are `var(--…)` references
+rather than values, so switching a mode is one attribute on `<html>` and none of the
+~180 call sites change; a component cannot opt out of the theme by forgetting to read
+a hook. "System" removes the attribute instead of resolving the preference, leaving a
+`prefers-color-scheme` query in charge so the Hub keeps following the Mac as it
+changes, and so the first paint is correct before React mounts.
+
+The consequence to remember: `var()` is substituted in CSS declarations but **not** in
+SVG presentation attributes or in a canvas context. Colours needed there must go
+through `style={{ … }}`.
+
+**The overlay pill stays dark in every mode.** It is drawn over whichever app is
+frontmost, so it is not inside a window whose background the user chose; a light pill
+on someone's dark editor reads as a rendering fault. Same reasoning on iOS, where the
+keyboard *does* follow the setting because it is a keyboard, not an overlay.
 | `ios/` | The iOS/iPadOS app and keyboard extension. Cloud-only, links `whimpr-core` through `whimpr-ffi`. See [ios/README.md](../ios/README.md). |
 
 ### The second shell

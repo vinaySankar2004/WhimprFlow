@@ -7,6 +7,7 @@ import { Home } from "./Home";
 import { Insights } from "./Insights";
 import { DictionaryPane } from "./DictionaryPane";
 import { SettingsPane, modeLabel } from "./SettingsPane";
+import { applyAppearance } from "./theme";
 import { Help } from "./Help";
 import {
   getSettings,
@@ -43,6 +44,12 @@ export function App() {
       unlisten?.();
     };
   }, []);
+
+  // Covers all three ways the value arrives: the initial load, a change made in
+  // this window, and one made elsewhere that came in over the settings event.
+  useEffect(() => {
+    applyAppearance(settings.appearance);
+  }, [settings.appearance]);
 
   const update = (s: Settings) => {
     setLocalSettings(s);

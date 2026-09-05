@@ -73,6 +73,22 @@ pub const GROQ_ASR_MODEL: &str = "whisper-large-v3-turbo";
 /// which binding a press of the dictation key is reported as, so `Toggle` and
 /// `DoubleTap` both reuse the exact same locked-session path that double-tap-to-lock
 /// already drives.
+/// Which appearance the Hub uses.
+///
+/// The Hub only — the overlay pill keeps its own dark palette in every mode. It is a
+/// small floating thing drawn over whatever app is frontmost, so it is not part of a
+/// window whose background the user chose; a light pill would sit on other people's
+/// dark apps and read as a rendering fault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Appearance {
+    /// Follow the system's light/dark setting, and keep following it when it changes.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerMode {
@@ -122,6 +138,10 @@ pub struct Settings {
     /// "Clear transcripts" action does that).
     #[serde(default = "default_true")]
     pub store_raw_transcripts: bool,
+    /// Hub appearance. `#[serde(default)]` keeps every settings.json written before
+    /// this field existed loading with the rest of its values intact.
+    #[serde(default)]
+    pub appearance: Appearance,
 }
 
 fn default_true() -> bool {
@@ -157,6 +177,7 @@ impl Default for Settings {
             openai_base_url: GROQ_BASE_URL.to_string(),
             sound_on_start: true,
             store_raw_transcripts: true,
+            appearance: Appearance::default(),
         }
     }
 }

@@ -537,6 +537,26 @@ export function SettingsPane({
       </Card>
 
       <Card style={{ marginBottom: 16 }}>
+        <SectionTitle sub="System follows your Mac's light or dark setting as it changes.">
+          Appearance
+        </SectionTitle>
+        <Segmented
+          options={[
+            { value: "system", label: "System" },
+            { value: "light", label: "Light" },
+            { value: "dark", label: "Dark" },
+          ]}
+          value={settings.appearance}
+          onChange={(v) => onChange({ ...settings, appearance: v as Settings["appearance"] })}
+        />
+        <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 10 }}>
+          This is the Hub only. The dictation pill keeps its dark look in every mode:
+          it floats over whichever app you are dictating into, so a light pill would sit
+          on other people's dark windows and look like a glitch.
+        </div>
+      </Card>
+
+      <Card style={{ marginBottom: 16 }}>
         <SectionTitle sub="How the Fn key starts and stops a dictation.">Dictation Key</SectionTitle>
         <ChoiceList
           options={TRIGGERS}

@@ -16,11 +16,14 @@ function Gauge({ value, max }: { value: number; max: number }) {
   return (
     <div style={{ position: "relative", width: 160, height: 88, margin: "0 auto" }}>
       <svg width="160" height="88" viewBox="0 0 160 88">
-        <path d={d} fill="none" stroke={theme.track} strokeWidth="12" strokeLinecap="round" />
+        {/* `style`, not a `stroke` attribute: the theme is CSS variables, and
+            var() is substituted in declarations but not in SVG presentation
+            attributes — there it would resolve to nothing and the arc vanish. */}
+        <path d={d} fill="none" style={{ stroke: theme.track }} strokeWidth="12" strokeLinecap="round" />
         <path
           d={d}
           fill="none"
-          stroke={theme.accent}
+          style={{ stroke: theme.accent }}
           strokeWidth="12"
           strokeLinecap="round"
           strokeDasharray={len}

@@ -23,7 +23,8 @@ pub use cleanup::{CleanupContext, CleanupLevel, CleanupProvider, ProviderId, Voc
 pub use dictionary::{DictSource, DictionaryEntry, DictionaryStore};
 pub use pipeline::{Engine, Finished, Prepared};
 pub use settings::{
-    AsrMode, CleanupMode, Settings, TriggerMode, GROQ_ASR_MODEL, GROQ_ASR_URL, GROQ_BASE_URL,
+    Appearance, AsrMode, CleanupMode, Settings, TriggerMode, GROQ_ASR_MODEL, GROQ_ASR_URL,
+    GROQ_BASE_URL,
     GROQ_MODEL,
 };
 pub use stats::{HistoryItem, HistoryPage, HistoryQuery, SessionRecord, StatsStore, StatsSummary};
