@@ -291,7 +291,13 @@ mod imp {
     /// Log one completed dictation to the stats store (words, speaking time, text,
     /// target app) and persist it. Powers both the Hub stats and the history list.
     /// `raw` is the pre-cleanup transcript, stored unless the user opted out.
-    pub fn record_dictation(text: &str, raw: &str, duration_secs: f32) {
+    pub fn record_dictation(
+        text: &str,
+        raw: &str,
+        duration_secs: f32,
+        asr_ms: u32,
+        cleanup_ms: u32,
+    ) {
         let words = whimpr_core::stats::count_words(text);
         if words == 0 {
             return;
@@ -304,9 +310,17 @@ mod imp {
         };
         if let Some(m) = STATS.get() {
             let mut store = m.lock().unwrap();
-            let duration_ms = (duration_secs.max(0.0) * 1000.0) as u32;
-            let chars = text.chars().count() as u32;
-            store.record(words, duration_ms, chars, unix_now(), text.to_string(), raw, app);
+            store.push(whimpr_core::SessionRecord {
+                ts_unix: unix_now(),
+                words,
+                duration_ms: (duration_secs.max(0.0) * 1000.0) as u32,
+                chars: text.chars().count() as u32,
+                text: text.to_string(),
+                raw,
+                app,
+                asr_ms,
+                cleanup_ms,
+            });
             let _ = store.save(&stats_path());
         }
     }
@@ -603,7 +617,7 @@ mod imp {
                     // so the on-device model actually produces newlines/lists and
                     // resolves self-corrections instead of just being told to.
                     let messages = whimpr_core::cleanup::build_messages(raw, &ctx);
-                    w.cleanup(&messages)
+                    w.cleanup(&messages, whimpr_core::cleanup::max_tokens_for(raw))
                 })
             })
         };
@@ -906,10 +920,11 @@ mod imp {
                             // Clean the transcript (cloud LLM if configured), then paste.
                             let t_clean = std::time::Instant::now();
                             let text = clean_transcript(&raw);
+                            let cleanup_ms = t_clean.elapsed().as_millis() as u32;
                             eprintln!(
                                 "[whimpr] TIMING: asr {} ms + cleanup {} ms = {} ms for {:.1}s of audio",
                                 asr_ms,
-                                t_clean.elapsed().as_millis(),
+                                cleanup_ms,
                                 t_asr.elapsed().as_millis(),
                                 res.duration_secs()
                             );
@@ -930,7 +945,13 @@ mod imp {
                                 // keeping the raw transcript beside the cleaned text — the
                                 // difference between them is the only record of how you
                                 // actually speak, and cleanup's job is to delete it.
-                                record_dictation(&text, &raw, res.duration_secs());
+                                record_dictation(
+                                    &text,
+                                    &raw,
+                                    res.duration_secs(),
+                                    asr_ms as u32,
+                                    cleanup_ms,
+                                );
                                 // Watch the field for a post-paste correction to learn (✨).
                                 // The raw transcript goes along so the mishear recorded
                                 // is what recognition wrote, not what cleanup wrote.

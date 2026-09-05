@@ -90,6 +90,38 @@ pub fn wrap_transcript(raw: &str) -> String {
     format!("<USER_MESSAGE>\n{raw}\n</USER_MESSAGE>")
 }
 
+/// Smallest completion budget any request gets, and the ceiling no request exceeds.
+///
+/// The floor covers a short dictation plus a reasoning model's hidden tokens. The
+/// ceiling exists because a runaway generation costs seconds of a blocked paste,
+/// and no honest cleanup of a push-to-talk utterance needs more.
+const MIN_COMPLETION_TOKENS: u32 = 768;
+const MAX_COMPLETION_TOKENS: u32 = 4096;
+
+/// The completion budget for cleaning `raw`, in tokens. Shared by every provider
+/// for the same reason the prompt is: a budget that differs per provider means the
+/// same dictation comes back whole from one and cut in half from the other.
+///
+/// **This must scale with the input.** A fixed budget is not a safety limit, it is
+/// a silent truncation: cleanup returns the same words the speaker said, so a long
+/// dictation needs a proportionally long completion, and when it runs out the text
+/// simply stops mid-sentence and gets pasted that way. The gates cannot save you —
+/// losing the last 12% of a message is far under the 55% over-deletion threshold,
+/// so it reads as a pass. Measured: a 380-word dictation under the old fixed 512
+/// came back ending on the word "Essentially", 45 words short, with nothing logged.
+///
+/// Budgeted at roughly twice the input's token estimate, because a reasoning model
+/// spends part of the same allowance thinking before it writes anything (on Groq,
+/// `gpt-oss`'s reasoning tokens count against `max_tokens`), and because list and
+/// paragraph formatting makes the output legitimately longer than the input.
+pub fn max_tokens_for(raw: &str) -> u32 {
+    // ~4 chars per token for ordinary English prose; deliberately an underestimate
+    // of tokens-per-char is the wrong way to be wrong here, so round up.
+    let est_input = (raw.chars().count() as u32).div_ceil(3);
+    (est_input * 2)
+        .clamp(MIN_COMPLETION_TOKENS, MAX_COMPLETION_TOKENS)
+}
+
 /// Build the full ordered message list for a cleanup request: the system prompt,
 /// the few-shot demonstration turns (so small models actually produce newlines,
 /// lists, paragraph breaks, and resolved self-corrections instead of just being
@@ -174,10 +206,19 @@ pub fn post_process(text: &str) -> String {
 ///
 /// The prompt already forbids them, but a prompt is a preference and this is a
 /// rule: a dash used as punctuation is the single loudest tell that a line was
-/// machine-written, and this text goes out as the speaker's own. A spaced dash
-/// becomes the comma it was standing in for; an unspaced one ("9–5", "well–known")
-/// is a range or a compound and becomes a plain hyphen. A dash opening a line is a
-/// bullet, so it stays a hyphen too.
+/// machine-written, and this text goes out as the speaker's own. A dash opening a
+/// line is a bullet and stays a hyphen; a dash between two digits is a range
+/// ("9–5") and stays a hyphen; **everything else is punctuation and becomes the
+/// comma it was standing in for**, whether or not it had spaces around it.
+///
+/// Spacing used to decide that, on the theory that an unspaced dash is a compound
+/// word. It is not — a compound is written with a plain hyphen, and what a model
+/// actually emits unspaced is a clause break. Measured on real dictations: "my mom
+/// says—I probably going to", "share the link—can you download it", "I don't want
+/// all the features—I just want the product to be good" all became `says-I`,
+/// `link-can`, `features-I`, which reads worse than the dash did. The cost of the
+/// new rule is that a genuine "well—known" becomes "well, known"; that is the
+/// rarer mistake by a wide margin, and the digit carve-out keeps ranges intact.
 ///
 /// Never applied to a raw paste — `Raw` mode and level `None` mean *verbatim*, and
 /// a dash the speaker's transcript already had is not ours to edit.
@@ -201,9 +242,13 @@ pub fn de_dash(text: &str) -> String {
         let before = out.trim_end_matches(' ').chars().last();
         // Line-opening dash: a bullet, not punctuation.
         let opens_line = matches!(before, None | Some('\n'));
+        // A number on each side, with nothing between: a range, not punctuation.
+        let is_range = !spaced
+            && before.is_some_and(|b| b.is_ascii_digit())
+            && chars.get(j).is_some_and(char::is_ascii_digit);
         // Whatever spacing ran into the dash is part of it, so redo it from scratch.
         out.truncate(out.trim_end_matches(' ').len());
-        if !spaced || opens_line {
+        if opens_line || is_range {
             out.push('-');
             if spaced {
                 out.push(' ');
@@ -494,10 +539,55 @@ mod tests {
     }
 
     #[test]
-    fn de_dash_keeps_an_unspaced_dash_as_a_hyphen() {
-        // A range or a compound, not punctuation.
+    fn de_dash_keeps_a_digit_range_as_a_hyphen() {
+        // A number on each side is a range, not punctuation.
         assert_eq!(de_dash("open 9\u{2013}5 on weekdays"), "open 9-5 on weekdays");
-        assert_eq!(de_dash("a well\u{2014}known issue"), "a well-known issue");
+        assert_eq!(de_dash("sections 10\u{2014}12 apply"), "sections 10-12 apply");
+    }
+
+    /// The regression this rule was rewritten for. An unspaced dash between two
+    /// words used to be assumed a compound and left as a hyphen, which glued two
+    /// clauses together: these three came out of real dictations as `says-I`,
+    /// `link-can` and `features-I`. Between words a dash is punctuation, spaced
+    /// or not.
+    #[test]
+    fn de_dash_turns_an_unspaced_dash_between_words_into_a_comma() {
+        assert_eq!(
+            de_dash("my mom says\u{2014}I am going to share it"),
+            "my mom says, I am going to share it"
+        );
+        assert_eq!(
+            de_dash("share the link\u{2014}can you download it"),
+            "share the link, can you download it"
+        );
+        // The cost of the rule, kept visible on purpose: a genuine compound written
+        // with an em dash instead of a hyphen reads as a clause break. Far rarer
+        // than the case above, and the dash is wrong there in the first place.
+        assert_eq!(de_dash("a well\u{2014}known issue"), "a well, known issue");
+    }
+
+    #[test]
+    fn max_tokens_scales_with_the_dictation_and_never_truncates_a_long_one() {
+        // Short utterance: the floor, which is generous enough for a reasoning
+        // model's hidden tokens on top of a one-line answer.
+        assert_eq!(max_tokens_for("hey manvi"), 768);
+        // The measured regression: ~1,900 characters of dictation came back cut off
+        // at 512 tokens. The budget must comfortably exceed the input's own length.
+        let long = "word ".repeat(380); // ~1,900 chars, 380 words
+        let budget = max_tokens_for(&long);
+        assert!(
+            budget > 1_200,
+            "a 380-word dictation needs well over 512 tokens, got {budget}"
+        );
+        // And it is bounded: a blocked paste must not wait on a runaway generation.
+        assert_eq!(max_tokens_for(&"word ".repeat(5_000)), 4096);
+    }
+
+    #[test]
+    fn max_tokens_is_monotonic_in_input_length() {
+        let short = max_tokens_for(&"word ".repeat(200));
+        let long = max_tokens_for(&"word ".repeat(400));
+        assert!(long > short, "{short} -> {long}");
     }
 
     #[test]

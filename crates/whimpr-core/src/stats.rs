@@ -45,6 +45,18 @@ pub struct SessionRecord {
     /// Bundle id of the app the text was inserted into, if known.
     #[serde(default)]
     pub app: Option<String>,
+    /// Milliseconds spent in recognition, and in cleanup, for this dictation.
+    ///
+    /// Recorded because "dictation feels slow" is otherwise unattributable after the
+    /// fact, and the intuitive culprit — the cleanup model — is often the cheaper
+    /// half. Both stages block the paste and they are wildly different costs
+    /// depending on which engine each is set to, so the only way to know where the
+    /// wait went is to have written it down at the time. Zero on records that
+    /// predate the fields.
+    #[serde(default)]
+    pub asr_ms: u32,
+    #[serde(default)]
+    pub cleanup_ms: u32,
 }
 
 /// A history row for the Hub Home list (newest first). Trimmed view of a record.
@@ -153,6 +165,20 @@ impl StatsStore {
     /// Append one completed dictation. `raw` is the pre-cleanup transcript; pass an
     /// empty string when transcript storage is off.
     #[allow(clippy::too_many_arguments)]
+    /// Append a fully-built record. The shell uses this; `record` below is the
+    /// shorthand the tests are written against. New fields go on the struct and
+    /// stay off this signature — a `record` that grew a positional argument per
+    /// field is how a caller ends up silently passing `cleanup_ms` as `asr_ms`.
+    pub fn push(&mut self, record: SessionRecord) {
+        self.sessions.push(record);
+    }
+
+    /// Test-only shorthand for [`push`](Self::push), kept because the stats tests
+    /// are written against it and read better for it. Not available to the shell:
+    /// a positional argument per field is precisely how a caller ends up passing
+    /// `cleanup_ms` where `asr_ms` was meant, which is why `push` takes the struct.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub fn record(
         &mut self,
         words: u32,
@@ -163,7 +189,17 @@ impl StatsStore {
         raw: String,
         app: Option<String>,
     ) {
-        self.sessions.push(SessionRecord { ts_unix, words, duration_ms, chars, text, raw, app });
+        self.push(SessionRecord {
+            ts_unix,
+            words,
+            duration_ms,
+            chars,
+            text,
+            raw,
+            app,
+            asr_ms: 0,
+            cleanup_ms: 0,
+        });
     }
 
     /// Drop the stored text of every dictation, keeping the counts. The stats — words,

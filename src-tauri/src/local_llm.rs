@@ -27,11 +27,18 @@ impl LocalWorker {
 
     /// Send one cleanup request (system prompt + few-shot turns + transcript) and
     /// read the response (blocks until the line comes).
+    ///
+    /// `max_tokens` comes from [`whimpr_core::cleanup::max_tokens_for`], the same
+    /// function the cloud provider uses. It has to be the same function: a budget
+    /// that differs per provider means the same long dictation comes back whole
+    /// from one engine and cut off mid-sentence from the other, which is the
+    /// hardest kind of bug to believe.
     pub fn cleanup(
         &mut self,
         messages: &[whimpr_core::cleanup::CleanupMsg],
+        max_tokens: u32,
     ) -> anyhow::Result<String> {
-        let req = serde_json::json!({ "messages": messages, "max_tokens": 400 });
+        let req = serde_json::json!({ "messages": messages, "max_tokens": max_tokens });
         let mut line = serde_json::to_string(&req)?;
         line.push('\n');
         self.stdin.write_all(line.as_bytes())?;

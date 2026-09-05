@@ -37,8 +37,11 @@ struct Request {
     #[serde(default = "default_max")]
     max_tokens: i32,
 }
+/// Only reached by a request that omits the field — the app always sends one, sized
+/// to the dictation by `whimpr_core::cleanup::max_tokens_for`. Matches that
+/// function's floor so a hand-written request behaves like a real one.
 fn default_max() -> i32 {
-    400
+    768
 }
 
 #[derive(Serialize)]
@@ -105,13 +108,20 @@ fn generate(backend: &LlamaBackend, model: &LlamaModel, req: &Request) -> anyhow
     }
     prompt.push_str("<|im_start|>assistant\n");
 
-    let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(4096));
-    let mut ctx = model.new_context(backend, ctx_params)?;
-
     let tokens = model.str_to_token(&prompt, AddBos::Always)?;
     let n_prompt = tokens.len() as i32;
 
-    let mut batch = LlamaBatch::new(4096, 1);
+    // Size the context to this request rather than pinning it at 4096. The prompt is
+    // a fixed ~1.5k tokens of system prompt and few-shot turns plus the dictation,
+    // and the completion budget now scales with the dictation — so a long utterance
+    // can want more than 4096 between them. Too small a context does not error, it
+    // quietly evicts the beginning of the prompt, which loses the instructions and
+    // the demonstrations while still returning fluent-looking text.
+    let n_ctx = (n_prompt + req.max_tokens + 64).clamp(4096, 16_384) as u32;
+    let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx));
+    let mut ctx = model.new_context(backend, ctx_params)?;
+
+    let mut batch = LlamaBatch::new(n_ctx as usize, 1);
     let last = tokens.len() - 1;
     for (i, tok) in tokens.iter().enumerate() {
         batch.add(*tok, i as i32, &[0], i == last)?;

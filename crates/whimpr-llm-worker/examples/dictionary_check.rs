@@ -332,7 +332,11 @@ fn run(
         .into_iter()
         .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
         .collect();
-    let req = serde_json::json!({ "messages": messages, "max_tokens": 400 });
+    // The same budget the app sends, so the harness exercises the production path.
+    let req = serde_json::json!({
+        "messages": messages,
+        "max_tokens": whimpr_core::cleanup::max_tokens_for(raw),
+    });
 
     writeln!(stdin, "{req}")?;
     stdin.flush()?;
