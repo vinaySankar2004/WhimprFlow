@@ -31,13 +31,6 @@ final class KeyboardViewController: UIInputViewController {
     private var lastInsertedResultID = 0
     private var isDictating = false
 
-    /// A keyboard has no intrinsic height, and the stock one is around this on a
-    /// phone. Tall enough for the mic target plus one row of keys.
-    private let keyboardHeight: CGFloat = 258
-
-    /// Held so it is installed exactly once, and at a priority that yields.
-    private var heightConstraint: NSLayoutConstraint?
-
     /// What `overrideUserInterfaceStyle` was last set to, so it is only written when
     /// it actually changes — assigning it re-resolves every dynamic colour and
     /// re-renders the whole keyboard, which is visible as a flash if done on each
@@ -83,27 +76,16 @@ final class KeyboardViewController: UIInputViewController {
         refresh()
     }
 
-    /// Install the height here rather than in `viewDidLoad`, and at priority 999.
-    ///
-    /// Both details are what stop the keyboard flickering when you switch away and
-    /// back. iOS installs its own `UIView-Encapsulated-Layout-Height` at required
-    /// priority while the keyboard transitions; a second *required* height constraint
-    /// is unsatisfiable alongside it, so autolayout breaks one of the two and the
-    /// keyboard visibly jumps to the wrong height for a frame before settling. At 999
-    /// ours simply yields for the duration of the animation and wins again once the
-    /// system's temporary constraint is gone.
-    ///
-    /// In `viewDidLoad` the view has no size yet, so the constraint is installed
-    /// against a zero-height view and the first layout pass animates up from nothing.
-    override func updateViewConstraints() {
-        super.updateViewConstraints()
-        guard view.bounds.width > 0, heightConstraint == nil else { return }
-        let constraint = view.heightAnchor.constraint(equalToConstant: keyboardHeight)
-        constraint.priority = UILayoutPriority(999)
-        constraint.isActive = true
-        heightConstraint = constraint
-    }
-
+    // No height constraint, on purpose.
+    //
+    // Every keyboard switch animates the keyboard frame to the incoming keyboard's
+    // height. A keyboard that declares its own height therefore moves the top edge on
+    // every switch in both directions — which is the "flicker up top" — and if the
+    // constraint lands after the first layout, the keyboard also appears at the system
+    // height and then jumps, on every relaunch of the extension. Taking the height iOS
+    // gives every keyboard means the edge never moves. The layout below is flexible:
+    // the mic panel absorbs whatever is left after the key row.
+    //
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         // The display link keeps firing on a keyboard the user has switched away from
@@ -210,7 +192,6 @@ final class KeyboardViewController: UIInputViewController {
         view.addSubview(row)
 
         NSLayoutConstraint.activate([
-            // The height is not here — see `updateViewConstraints`.
             micButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
             micButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6),
             micButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -6),
