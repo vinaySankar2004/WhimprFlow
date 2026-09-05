@@ -116,6 +116,38 @@ DMG="$(/usr/bin/find "$TARGET_DIR/release/bundle/dmg" -name "*.dmg" -print -quit
 
 [ -d "$APP" ] || { echo "No WhimprFlow.app was produced." >&2; exit 1; }
 
+# `tauri build` does not bundle the worker — there is no externalBin — so this has to
+# put it there, exactly as install-macos.sh does for a local install. An app without it
+# launches, records and transcribes perfectly and then pastes RAW, uncleaned text, with
+# nothing in the UI to say why. On a cloud-cleanup install nothing is missed at all,
+# which is what makes the gap survive testing: it only shows up for the local-model
+# users, and it looks like cleanup being broken rather than absent.
+#
+# Before notarization, not after: the notarized ticket covers what was submitted, and
+# adding a binary to a stapled bundle invalidates the signature it was granted for.
+WORKER="$TARGET_DIR/release/whimpr-llm-worker"
+if [ ! -x "$WORKER" ]; then
+  echo "==> Building the local LLM worker"
+  BUILD_WORKER=(cargo build --release -p whimpr-llm-worker)
+  [ -n "$TARGET" ] && BUILD_WORKER+=(--target "$TARGET")
+  (cd "$REPO_ROOT" && "${BUILD_WORKER[@]}")
+fi
+[ -x "$WORKER" ] || { echo "No whimpr-llm-worker binary at $WORKER" >&2; exit 1; }
+
+echo "==> Adding the LLM worker to the bundle"
+cp "$WORKER" "$APP/Contents/MacOS/whimpr-llm-worker"
+# ditto preserves xattrs into the zip, so anything clinging to the build travels to
+# whoever downloads it.
+xattr -cr "$APP" 2>/dev/null || true
+# Nested code first: signing the outer bundle seals what is inside it, so the reverse
+# order invalidates the signature the moment it is made.
+codesign --force --sign "$IDENTITY" --options runtime --timestamp \
+  --entitlements "$REPO_ROOT/src-tauri/Entitlements.plist" \
+  "$APP/Contents/MacOS/whimpr-llm-worker"
+codesign --force --sign "$IDENTITY" --options runtime --timestamp \
+  --entitlements "$REPO_ROOT/src-tauri/Entitlements.plist" "$APP"
+codesign --verify --deep --strict "$APP"
+
 if [ "$NOTARIZE" = "1" ]; then
   # The app first. Submitting it on its own means its ticket exists before the
   # dmg is ever assessed, and a stapled app keeps working with no network.
