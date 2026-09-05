@@ -68,7 +68,12 @@ export function modeLabel(mode: CleanupMode): string {
 }
 
 const LEVELS: { value: CleanupLevel; label: string; hint: string }[] = [
-  { value: "none", label: "None", hint: "Transcribe exactly what you said, including mistakes." },
+  // Labelled "Verbatim", not "None". Third in a group with Light and Messaging, "None"
+  // reads as the bottom of a cleanup scale — as though filler removal were a dial you
+  // could turn down. It is not one: fluency cleanup is unconditional at every level
+  // that runs the model, and this option is a different axis entirely, the raw
+  // transcript with nothing applied. The stored value stays "none".
+  { value: "none", label: "Verbatim", hint: "Transcribe exactly what you said, including mistakes." },
   // Kept to roughly the length of the other two hints: the card wraps past about
   // 80 characters, and a two-line row among one-line rows reads as a mistake.
   {

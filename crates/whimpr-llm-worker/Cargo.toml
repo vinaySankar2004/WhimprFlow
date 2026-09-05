@@ -25,6 +25,13 @@ encoding_rs = "0.8"
 # itself stays dependency-light.
 [dev-dependencies]
 whimpr-core = { path = "../whimpr-core" }
+# `cleanup_check --cloud` drives the same cloud provider the app uses, rather than a
+# second hand-rolled HTTP call that could drift from it, and reads the key from the
+# same Keychain entry so there is nothing to paste or export. `apple-native` is
+# required here for the same reason it is in src-tauri: without it keyring 3
+# substitutes an in-memory mock and the lookup silently finds nothing.
+whimpr-cleanup = { path = "../whimpr-cleanup" }
+keyring = { version = "3", features = ["apple-native"] }
 
 [dependencies.llama-cpp-2]
 version = "0.1"

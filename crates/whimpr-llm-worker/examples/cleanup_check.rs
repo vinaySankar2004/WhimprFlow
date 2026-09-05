@@ -34,17 +34,31 @@
 //!    words — so a prompt anchor is the only thing standing between this and the
 //!    cursor.
 //!
-//! Sampling is greedy, so re-running a case returns the same tokens; variance lives
-//! in the phrasing, which is why the cases vary length and register instead of
-//! repeating. Cases are scored individually — this is a measuring instrument for
-//! prompt changes, so a run prints what every case did even when it passes.
+//! **The two engines differ in how repeatable they are, and it changes how a result
+//! should be read.** The local worker samples greedily: re-running a case returns the
+//! same tokens, so one run is a verdict. `--cloud` goes through the app's own provider
+//! at its own `temperature: 0.2`, deliberately not overridden — a harness run at a
+//! temperature nobody uses measures nothing — so cloud output varies between runs.
+//! Read a single cloud failure on a borderline case as a reason to run it again, not
+//! as a regression, and never tune the prompt against one sample; that is how a day
+//! goes on chasing sampling noise. Repeated failures, and failures that match how the
+//! case failed before a change, are the signal.
+//!
+//! Cases are scored individually — this is a measuring instrument for prompt changes,
+//! so a run prints what every case did even when it passes.
 //!
 //! Usage (model path optional; defaults to the installed one):
 //!   cargo run -p whimpr-llm-worker --example cleanup_check --release [-- <model.gguf>]
 //!   cargo run -p whimpr-llm-worker --example cleanup_check --release -- --messaging
+//!   cargo run -p whimpr-llm-worker --example cleanup_check --release -- --cloud
+//!
+//! `--cloud` needs no setup: the endpoint comes from the app's `settings.json` and the
+//! key from the app's own Keychain entry, so it measures the configuration actually in
+//! use. `GROQ_API_KEY` / `OPENAI_API_KEY` override it for a one-off run.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use whimpr_core::cleanup::{
     build_messages, de_dash, evaluate_gates, max_tokens_for, messaging_style, post_process,
@@ -230,11 +244,27 @@ const CASES: &[Case] = &[
         // "I mean" is listed twice over — as a filler in rule 1 and as a correction
         // cue in rule 3 — and here it is the sentence's main verb carrying its
         // emphasis. Both readings destroy it, so this is the sharpest of the three.
+        // The 20B returned "This is the best version we have shipped so far.": fluent,
+        // grammatical, half the sentence gone, and past every gate.
         name: "a cue phrase carrying the sentence's meaning",
         want: Want::Preserves,
         said: "i mean it when i say this is the best version we have shipped so far",
         gone: &[],
         kept: &["mean", "say", "best", "version", "shipped"],
+        known_limit: None,
+    },
+    Case {
+        // Held out on purpose. FEW_SHOT demonstrates "I mean" as a main verb in the
+        // "I mean it when I say" frame, which is the frame the case above uses — so
+        // that case can no longer tell a generalized rule from a memorized answer.
+        // This is the same principle in a different construction, with "mean" trailing
+        // as an idiom rather than leading, and nothing demonstrates it. Keep it that
+        // way: the moment it gets its own demo it stops being evidence of anything.
+        name: "a cue phrase in a construction nothing demonstrates",
+        want: Want::Preserves,
+        said: "you have to read the second paragraph twice to get what i mean",
+        gone: &[],
+        kept: &["second", "paragraph", "twice", "mean"],
         known_limit: None,
     },
 ];
@@ -256,24 +286,21 @@ fn main() -> anyhow::Result<()> {
     } else {
         CleanupLevel::Light
     };
-    let model = args
-        .into_iter()
-        .find(|a| !a.starts_with("--"))
-        .unwrap_or_else(default_model);
-    if !std::path::Path::new(&model).exists() {
-        anyhow::bail!("model not found: {model}");
-    }
-    let worker = worker_binary();
-    println!("worker: {worker}\nmodel:  {model}\nlevel:  {level:?}\n");
-
-    let mut child = Command::new(&worker)
-        .arg(&model)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let mut stdin = child.stdin.take().expect("stdin");
-    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+    let cloud = args.iter().any(|a| a == "--cloud");
+    let mut engine = if cloud {
+        Engine::cloud()?
+    } else {
+        let model = args
+            .iter()
+            .find(|a| !a.starts_with("--"))
+            .cloned()
+            .unwrap_or_else(default_model);
+        if !std::path::Path::new(&model).exists() {
+            anyhow::bail!("model not found: {model}");
+        }
+        Engine::local(&model)?
+    };
+    println!("{}\nlevel:  {level:?}\n", engine.describe());
 
     let mut passed = 0usize;
     let mut failed = 0usize;
@@ -286,7 +313,7 @@ fn main() -> anyhow::Result<()> {
         println!("   said:      {} ({words} words)", elide(case.said, 150));
 
         let started = std::time::Instant::now();
-        let out = run(&mut stdin, &mut stdout, case.said, level)?;
+        let out = run(&mut engine, case.said, level)?;
         let ms = started.elapsed().as_millis();
 
         println!("   pasted:    {}", elide(&out.pasted, 150));
@@ -341,6 +368,15 @@ fn main() -> anyhow::Result<()> {
                 println!("   PASS\n");
                 passed += 1;
             }
+            // A `known_limit` is a claim about the small LOCAL model, so only a local
+            // run can find one stale. On cloud these are expected to pass — the 20B is
+            // the reason the note says "4B" — and reporting that as a stale note would
+            // fail every cloud run and pressure someone into deleting a note that is
+            // still true of the engine it describes.
+            (true, Some(note)) if cloud => {
+                println!("   PASS — a local-model known limit, expected to pass here ({note}).\n");
+                passed += 1;
+            }
             (true, Some(note)) => {
                 // News, not a pass to shrug at: the note claims this cannot work.
                 println!("   PASS — and it was marked a known limit ({note}).");
@@ -369,13 +405,16 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    drop(stdin);
-    let _ = child.wait();
-
     println!(
         "{passed} passed, {failed} failed, {known} known limits{}",
         if stale > 0 { format!(", {stale} STALE NOTES") } else { String::new() }
     );
+    if cloud && known > 0 {
+        println!(
+            "note: known limits describe the local 4B, so this run neither enforces nor \
+             retires them. Re-check them with a local run."
+        );
+    }
     // Known limits do not fail the run — see `Case::known_limit`. A stale note does,
     // because a suite that lies about what the model cannot do is worse than no suite.
     if failed > 0 || stale > 0 {
@@ -396,41 +435,184 @@ struct Outcome {
     reply: String,
 }
 
-/// One cleanup round-trip through the worker, with the same pre- and
+/// Which model answers the cases.
+///
+/// The harness exists to measure prompt changes, and a prompt reaches whichever engine
+/// the user has selected — so it has to be able to ask the one they actually run. Both
+/// arms go through `build_messages`, so the two see byte-identical instructions and a
+/// difference in the output is a difference in the model.
+enum Engine {
+    /// The local worker process, spoken to over stdio.
+    Local {
+        child: std::process::Child,
+        stdin: std::process::ChildStdin,
+        stdout: BufReader<std::process::ChildStdout>,
+        model: String,
+        worker: String,
+    },
+    /// The same `OpenAiProvider` the app uses, pointed at the same endpoint by the
+    /// same `settings.json`. Deliberately not a second HTTP call of its own: a
+    /// hand-rolled one would drift from the app's, and then the instrument would be
+    /// measuring something nobody runs.
+    Cloud {
+        provider: whimpr_cleanup::OpenAiProvider,
+        model: String,
+        url: String,
+    },
+}
+
+impl Engine {
+    fn local(model: &str) -> anyhow::Result<Self> {
+        let worker = worker_binary();
+        let mut child = Command::new(&worker)
+            .arg(model)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = BufReader::new(child.stdout.take().expect("stdout"));
+        Ok(Engine::Local {
+            child,
+            stdin,
+            stdout,
+            model: model.to_string(),
+            worker,
+        })
+    }
+
+    /// Read the endpoint from the app's own `settings.json` and the key from the app's
+    /// own Keychain entry, so `--cloud` measures the configuration in use rather than
+    /// one restated on the command line and free to disagree with it. `GROQ_API_KEY`
+    /// and `OPENAI_API_KEY` are honoured first, exactly as `hotkey::read_openai_key`
+    /// does, for a run against a key that is not the stored one.
+    fn cloud() -> anyhow::Result<Self> {
+        let settings: serde_json::Value = std::fs::read_to_string(support_dir().join("settings.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let model = settings["openai_model"].as_str().unwrap_or("openai/gpt-oss-20b").to_string();
+        let url = settings["openai_base_url"]
+            .as_str()
+            .unwrap_or("https://api.groq.com/openai/v1")
+            .to_string();
+        let key = ["GROQ_API_KEY", "OPENAI_API_KEY"]
+            .iter()
+            .find_map(|v| std::env::var(v).ok())
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+            .or_else(|| {
+                keyring::Entry::new("com.whimpr.whimprflow", "openai_api_key")
+                    .ok()
+                    .and_then(|e| e.get_password().ok())
+                    .map(|k| k.trim().to_string())
+                    .filter(|k| !k.is_empty())
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no cloud key: nothing in the Keychain (com.whimpr.whimprflow / \
+                     openai_api_key) and no GROQ_API_KEY or OPENAI_API_KEY set. Save one in \
+                     the Hub, or export it for this run."
+                )
+            })?;
+        let provider =
+            whimpr_cleanup::OpenAiProvider::with_base_url(key, model.clone(), Some(url.clone()));
+        Ok(Engine::Cloud { provider, model, url })
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Engine::Local { worker, model, .. } => format!("worker: {worker}\nmodel:  {model}"),
+            Engine::Cloud { model, url, .. } => format!("engine: cloud {url}\nmodel:  {model}"),
+        }
+    }
+
+    /// The model's raw reply, before any of the app's post-processing.
+    fn reply(&mut self, raw_norm: &str, ctx: &CleanupContext) -> anyhow::Result<String> {
+        match self {
+            Engine::Local { stdin, stdout, .. } => {
+                let messages: Vec<serde_json::Value> = build_messages(raw_norm, ctx)
+                    .into_iter()
+                    .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+                    .collect();
+                let req = serde_json::json!({
+                    "messages": messages,
+                    "max_tokens": max_tokens_for(raw_norm),
+                });
+                writeln!(stdin, "{req}")?;
+                stdin.flush()?;
+                let mut line = String::new();
+                stdout.read_line(&mut line)?;
+                let resp: serde_json::Value = serde_json::from_str(&line)?;
+                if let Some(err) = resp.get("error").and_then(|e| e.as_str()) {
+                    anyhow::bail!("worker error: {err}");
+                }
+                Ok(resp.get("text").and_then(|t| t.as_str()).unwrap_or_default().trim().to_string())
+            }
+            // The provider assembles the messages itself, from the same
+            // `build_messages`, and applies the same scaled token budget.
+            //
+            // Retries on 429 rather than failing the run. Every case carries the whole
+            // system prompt and few-shot block — about 1,600 prompt tokens — so the
+            // suite costs roughly 19k tokens against Groq's free 8,000-per-minute
+            // ceiling and *will* hit it partway through. Nothing is wrong when it does,
+            // and a harness that dies two thirds of the way in stops being run. The
+            // app's own answer to a 429 is different and stays different: it falls
+            // back to the local model, because a person waiting on a paste cannot.
+            Engine::Cloud { provider, .. } => {
+                use whimpr_core::cleanup::CleanupProvider;
+                let mut waited = 0.0f32;
+                loop {
+                    match provider.cleanup(raw_norm, ctx) {
+                        Ok(t) => return Ok(t.trim().to_string()),
+                        Err(e) => {
+                            let msg = e.to_string();
+                            // Groq names the wait it wants; honour it rather than
+                            // guessing, and give up once the waiting is absurd.
+                            if !msg.contains("429") || waited > 90.0 {
+                                return Err(e);
+                            }
+                            let secs = retry_after_secs(&msg).unwrap_or(12.0);
+                            println!("   rate limited, waiting {secs:.0}s");
+                            std::thread::sleep(Duration::from_secs_f32(secs + 0.5));
+                            waited += secs;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        if let Engine::Local { child, .. } = self {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Seconds out of a rate-limit message's "Please try again in 9.6825s".
+fn retry_after_secs(msg: &str) -> Option<f32> {
+    let tail = msg.split("try again in ").nth(1)?;
+    tail.split('s').next()?.trim().parse().ok()
+}
+
+/// One cleanup round-trip through the selected engine, with the same pre- and
 /// post-processing the app applies — so `pasted` is what would reach the cursor.
-fn run(
-    stdin: &mut std::process::ChildStdin,
-    stdout: &mut BufReader<std::process::ChildStdout>,
-    said: &str,
-    level: CleanupLevel,
-) -> anyhow::Result<Outcome> {
+fn run(engine: &mut Engine, said: &str, level: CleanupLevel) -> anyhow::Result<Outcome> {
     // The app normalizes spoken layout cues before the model sees them, and gates
     // against the restored form. Skipping either here would test a chain the app
     // does not run.
     let raw_norm = pre_normalize_layout(said);
     let raw_out = post_process(&raw_norm);
     let ctx = CleanupContext { level, ..Default::default() };
-    let messages: Vec<serde_json::Value> = build_messages(&raw_norm, &ctx)
-        .into_iter()
-        .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
-        .collect();
-    let req = serde_json::json!({
-        "messages": messages,
-        "max_tokens": max_tokens_for(&raw_norm),
-    });
-
-    writeln!(stdin, "{req}")?;
-    stdin.flush()?;
-
-    let mut line = String::new();
-    stdout.read_line(&mut line)?;
-    let resp: serde_json::Value = serde_json::from_str(&line)?;
-    if let Some(err) = resp.get("error").and_then(|e| e.as_str()) {
-        anyhow::bail!("worker error: {err}");
-    }
-    let cleaned = strip_parenthetical_fillers(&de_dash(&post_process(
-        resp.get("text").and_then(|t| t.as_str()).unwrap_or_default().trim(),
-    )));
+    let reply = engine.reply(&raw_norm, &ctx)?;
+    // The app's post-model chain, in the app's order. `strip_parenthetical_fillers`
+    // belongs before the gate for the same reason `de_dash` does: the gate has to
+    // judge the text that actually gets pasted.
+    let cleaned = strip_parenthetical_fillers(&de_dash(&post_process(&reply)));
 
     // No dictionary is in play in this harness, so the gates correctly see no vocab.
     let (gated, rejected) = match evaluate_gates(&raw_out, &cleaned, level, &[]) {

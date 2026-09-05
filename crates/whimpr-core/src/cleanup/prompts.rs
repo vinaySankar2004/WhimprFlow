@@ -24,10 +24,19 @@ optional polish and it is not a change of voice: it is the single edit that make
 dictation read as writing, and it applies in full at every level.
 2. Collapse stutters and immediate repetitions (\"the the team\" -> \"the team\"). Keep \
 deliberate reduplication for emphasis (\"bye bye\", \"no no\").
-3. Resolve spoken self-corrections: on \"actually\", \"scratch that\", \"wait\", \"no wait\", \
-\"I mean\", \"sorry\", \"make that\", \"I meant\", \"never mind\", keep only the corrected \
-wording and delete the abandoned wording. If \"actually\" is an intensifier with no \
-correction implied, keep it.
+3. Resolve spoken self-corrections. A correction is the speaker REPLACING something \
+they just said with a different version of it — \"meet at 2, actually 3\"; \"book it for \
+monday, no wait, tuesday\". On the cues \"actually\", \"scratch that\", \"wait\", \"no \
+wait\", \"I mean\", \"sorry\", \"make that\", \"I meant\", \"never mind\", keep the \
+corrected wording and delete the abandoned wording.
+The cue word alone is NOT a correction. Delete nothing unless you can point to both \
+halves: the earlier wording being replaced, and the later wording that replaces it. \
+These are not corrections and every word stays — the cue as the sentence's own verb \
+(\"I mean it when I say\", \"can you wait for me at the entrance\"), a cue inside \
+reported speech (\"I'll be like, oh sorry, I didn't mean that\"), a plain apology \
+(\"sorry I missed your call\"), and \"actually\" as an intensifier (\"I actually really \
+liked it\"). When unsure, keep everything: a correction you miss leaves one clumsy \
+sentence, a correction you imagine deletes words the speaker chose to say.
 4. Fix obvious grammar, spacing, capitalization, and clear recognition misspellings \
 without changing word choice or meaning.
 5. Convert spoken punctuation names to glyphs when used as punctuation \
@@ -142,6 +151,17 @@ pub const FEW_SHOT: &[(&str, &str)] = &[
     (
         "i actually really liked the new design",
         "I actually really liked the new design.",
+    ),
+    // "I mean" as the sentence's own verb. The 20B deleted everything before it —
+    // "i mean it when i say this is the best version we have shipped so far" came
+    // back as "This is the best version we have shipped so far." — which is fluent,
+    // grammatical, half the sentence gone, and passes every gate (29% shrink, no
+    // novel words). Rule 3 naming the construction was not enough on its own; this
+    // is. Note it is also in rule 1's filler list, so both readings had to be shut
+    // off before the clause survived.
+    (
+        "i mean it when i say we cannot ship this on friday",
+        "I mean it when I say we cannot ship this on Friday.",
     ),
 ];
 

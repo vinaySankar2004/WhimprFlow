@@ -194,7 +194,11 @@ the app still announcing LOCAL. Badge and card now both name the live engine.
 
 Three levels: None, Messaging, Light (default).
 
-- **None** bypasses the model; the raw transcript is pasted.
+- **None** bypasses the model; the raw transcript is pasted. Shown as **Verbatim**:
+  third in a group with Light and Messaging, "None" reads as the bottom of a cleanup
+  scale, as though filler removal were a dial you could turn down. It is not one, and
+  this is a different axis — raw transcript, nothing applied. The stored value and the
+  menu id stay `"none"`.
 - **Messaging** edits no harder than Light, in a different register: all lowercase
   including names, punctuation only where the meaning needs it. For chat apps, where
   the user's own typing has no capitals.
@@ -220,6 +224,18 @@ now say the opposite, and Messaging's lowercase paragraph is cut back since
 `force_lowercase` already guarantees it in code and those words were crowding out the
 part that is not enforced. On a real 70-word dictation that moved surviving "you know"s
 from 4 to 2 — real, and not enough.
+
+**Self-correction resolution is stated as a test, not a keyword list.** Rule 3 asks the
+model to point to both halves — the wording being replaced and the wording replacing it
+— and to delete nothing when it cannot. Naming the cue words alone was not enough on
+the 20B, which read the "oh sorry" inside reported speech as a correction and returned
+"I'll be I didn't mean that", and read "I mean it when I say…" as one and deleted the
+whole first clause. **No gate catches that**: a fluent shorter sentence is 29% shrink
+with no novel words, so it passes and reaches the cursor. The principle fixed the first;
+the second needed a demonstration, since "I mean" is also in rule 1's filler list and
+being told twice did not move it. `cleanup_check` holds a probe in a construction
+nothing demonstrates, so a pass still distinguishes a generalized rule from a memorized
+answer — do not give that case a demo of its own.
 
 `cleanup::strip_parenthetical_fillers` closes the rest: it deletes a filler the model
 set off with commas, so `", you know,"` becomes `","`. The comma is the model's own
@@ -272,7 +288,31 @@ since a suite that lies about what the model cannot do is worse than no suite.
 ```bash
 cargo run -p whimpr-llm-worker --example cleanup_check --release
 cargo run -p whimpr-llm-worker --example cleanup_check --release -- --messaging
+cargo run -p whimpr-llm-worker --example cleanup_check --release -- --cloud
 ```
+
+**`--cloud` measures the engine the user actually selected**, through the app's own
+`OpenAiProvider` — not a second HTTP call of its own, which would drift and leave the
+instrument measuring something nobody runs. The endpoint comes from `settings.json` and
+the key from the app's Keychain entry, so there is nothing to export; `GROQ_API_KEY` /
+`OPENAI_API_KEY` override for a one-off. It exists because the two models fail
+differently and a green local run says nothing about a cloud install: the 4B answers
+dictation that is a request, and the 20B does not but over-triggers on correction cues
+where the 4B does not.
+
+Two things follow from that difference. `known_limit` notes describe the 4B, so a cloud
+run neither enforces nor retires them — otherwise every cloud run fails as a stale note
+and someone deletes a note still true of the engine it names. And the local worker
+samples greedily while the cloud path runs at the app's own `temperature: 0.2`
+(deliberately not overridden — a run at a temperature nobody uses measures nothing), so
+cloud results vary between runs. A single cloud failure on a borderline case is a
+reason to run it again, not a regression. Measured: the quoted-cue case failed on one
+run and passed on the next with no change in between.
+
+The suite costs ~19k prompt tokens against Groq's free 8k-per-minute ceiling, so it
+*will* be rate limited partway through and waits out the delay the API names. The app's
+answer to a 429 is different and stays different — it falls back to the local model,
+because someone waiting on a paste cannot wait 12 seconds.
 
 **Gates are the safety net.** An LLM asked to tidy a transcript will sometimes
 rewrite it. `cleanup::gates::evaluate` rejects the output and pastes the raw

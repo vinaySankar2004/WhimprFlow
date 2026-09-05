@@ -4978,9 +4978,11 @@ version = "0.1.6"
 dependencies = [
  "anyhow",
  "encoding_rs",
+ "keyring",
  "llama-cpp-2",
  "serde",
  "serde_json",
+ "whimpr-cleanup",
  "whimpr-core",
 ]
 

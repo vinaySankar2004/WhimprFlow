@@ -182,6 +182,17 @@ These are not hypotheticals; each one bit during development.
   like it" and "you know the answer" out of reach; bare occurrences outrun delimited
   ones about seven to one, so a bare version does seven times the damage, not the work.
   Correction cues stay out — "actually" carries contrast even parenthetically.
+- **A green local `cleanup_check` says nothing about a cloud install.** The two models
+  fail in opposite directions: the 4B answers dictation that is a request, and the 20B
+  does not but over-triggers on correction cues where the 4B does not — it returned
+  "This is the best version we have shipped so far." for "i mean it when i say this is
+  the best version we have shipped so far", which no gate can catch (29% shrink, no
+  novel words) and which would have been pasted. Run `--cloud` for anything touching
+  the prompt. It needs no setup: the endpoint comes from `settings.json`, the key from
+  the app's Keychain entry. Also: cloud runs at the app's `temperature: 0.2`, so they
+  are **not** repeatable — a single borderline failure is a reason to re-run, not a
+  regression, and tuning the prompt against one sample is chasing noise. Measured: the
+  quoted-cue case failed once and passed on the next run with nothing changed.
 - **Auto-learn needs a length floor once case is flattened.** The ~70-word `COMMON`
   list is hand-written and cannot be complete, and at the Messaging level the Titlecase
   requirement is off, so it was the only guard left. `git` got learned from `get` —

@@ -718,7 +718,9 @@ pub fn run() {
             .collect::<tauri::Result<_>>()?;
 
             let level_items: Vec<(CleanupLevel, CheckMenuItem<Wry>)> = [
-                (CleanupLevel::None, "none", "None"),
+                // "Verbatim", not "None" — see the note in the Hub's LEVELS list. The
+                // menu id and the stored value stay "none".
+                (CleanupLevel::None, "none", "Verbatim"),
                 (CleanupLevel::Messaging, "messaging", "Messaging"),
                 (CleanupLevel::Light, "light", "Light"),
             ]
