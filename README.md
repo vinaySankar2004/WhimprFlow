@@ -55,8 +55,9 @@ this whole job to Claude Code. To build it yourself instead, see **Build** below
   follows you across Spaces, including other apps' full-screen ones. ■ stops and pastes,
   ✕ or **Esc** discards — and cancelling still works while it's transcribing, before
   anything is pasted. Esc is watched only while a dictation is live, never otherwise.
-- **Hold or toggle** — hold Fn while you speak, or switch to press-to-start /
-  press-to-stop under Settings → Dictation Key.
+- **Three ways to trigger it** — hold Fn while you speak; or press once to start and
+  again to stop; or double-tap to start, which leaves a lone Fn press to macOS so
+  Fn+Delete and Fn+arrows keep working. Settings → Dictation Key.
 - **Personal dictionary + auto-learn** — teach it names and jargon. A mis-hearing you
   list is applied verbatim, not left to the cleanup model's judgement, so it lands even
   when the mis-heard spelling looks like a perfectly good name. A post-paste
@@ -113,7 +114,8 @@ them in `~/Library/Application Support/WhimprFlow/models/`:
   repair.
 - **Cleanup** — a Qwen GGUF, e.g. `qwen3-4b-instruct-2507-q4_k_m.gguf`
 
-No local cleanup model? Set Cleanup Engine to **Cloud** in Settings. It ships pointed
+No local cleanup model? Cloud cleanup is used automatically when there is a key and no
+model on disk, and Settings → Cleanup Engine makes it explicit. It ships pointed
 at [Groq](https://console.groq.com) — free, and the fastest option, which matters
 because cleanup runs before the paste. The **OpenRouter** and **OpenAI** presets fill
 in their own base URL and model; any other OpenAI-compatible API works by hand.

@@ -45,22 +45,46 @@ warning at 19.
 |---|---|---|
 | `Hold` (default) | starts a push-to-talk session | finalizes (or, under the 200 ms minimum, arms double-tap-to-lock) |
 | `Toggle` | starts a locked session, or ends the one running | ignored |
+| `DoubleTap` | ends the session running, else nothing | second tap of a pair starts a locked session; otherwise nothing |
 
-This lives entirely in the shell. `hotkey.rs` reports a press as the
-`PushToTalk` binding in hold mode and the `HandsFree` binding in toggle mode; the
-state machine already knew both, so `Toggle` reuses the exact locked-session path
+This lives entirely in the shell. `hotkey.rs` reports a press as the `PushToTalk`
+binding in hold mode and the `HandsFree` binding in the other two; the state machine
+already knew both, so `Toggle` and `DoubleTap` reuse the exact locked-session path
 that double-tap-to-lock drives, and the reducer has no idea a setting exists. The
-mode is mirrored into an atomic (`TOGGLE_TRIGGER`) rather than read from
-`SETTINGS`, because the tap callback must not allocate or block.
+mode is mirrored into an atomic (`TRIGGER_MODE`) rather than read from `SETTINGS`,
+because the tap callback must not allocate or block.
 
-The key release is always reported, in both modes. It is a no-op in every state
-toggle mode can produce, and sending it unconditionally means flipping the
+The key release is always reported in hold and toggle mode. It is a no-op in every
+state toggle mode can produce, and sending it unconditionally means flipping the
 setting mid-press still ends a hold-mode session instead of leaving it recording
 until the cap.
 
 Hold mode keeps its own hands-free path: tap Fn (under 200 ms), then press again
 within 350 ms, and the session locks until the next press. Toggle mode has no
 minimum hold — a press of any length starts recording.
+
+### `DoubleTap` exists to give the Fn key back
+
+In the other two modes the dictation key is spent: every press means dictation, so
+`Fn`+`Delete` (forward delete), `Fn`+arrows and `Fn`+`F1`–`F12` either start a session
+or get shadowed by one. `DoubleTap` makes a lone press and a hold do **nothing at
+all**, so those combinations behave the way macOS intends, and dictation costs a
+deliberate gesture instead.
+
+Two details are load-bearing, and `state::trigger` holds them as a pure function so
+they can be tested rather than reasoned about inside a CGEventTap callback:
+
+- **Starting is decided on the key's release, not its press.** Only then is the press
+  length known, and a press of 200 ms or more is somebody using Fn as a modifier.
+- **A hold disarms.** Not merely "does not arm": otherwise `Fn`+`Delete` twice in
+  quick succession pairs into a double-tap and starts dictating over the document
+  being edited. That is the failure this mode was added to prevent, so it would be a
+  particularly bad one to introduce.
+
+A release past the 350 ms window re-arms rather than being discarded, so a hesitant
+double-tap takes one more press and not two. Stopping is still on the way *down*,
+where it feels immediate; a press during a live session is state rather than timing,
+so the shell answers it before consulting the classifier at all.
 
 ### Esc cancels, and the tap that sees it
 
@@ -578,8 +602,7 @@ among engines already configured is a different act and does change between mess
 cloud is several times faster, local keeps working on a plane or past a daily cap.
 Items name the place, not the vendor — "On this Mac", "Cloud", "None". The cloud entry
 follows `openai_base_url` wherever it points, so a "Groq" label would go stale the moment
-that field is edited. Both tray groups read the same way for the same reason: a tray menu
-is for flipping a setting you already understand, and the Hub is where it is explained.
+that field is edited.
 
 `show_menu_on_left_click(true)` is required. The default is right-click only, which
 presents as "the tray needs a double-click" — the first click does nothing visible,
@@ -757,18 +780,19 @@ ladder on paper, and the one to actually install: measured against the f16 build
 the same clips it was indistinguishable in accuracy — better, on the hardest surname —
 at the same speed, for **716 MB** resident instead of **1755 MB**.
 
-That gigabyte is paid around the clock: Whisper's weights live in a Metal buffer that
-stays fully resident for as long as the app runs. Neither model costs CPU when idle;
-the cost is memory, and it is continuous.
+That gigabyte is paid for as long as the model is loaded — the weights live in a Metal
+buffer and are never paged back. Neither model costs CPU when idle; the cost is memory.
+Which is why neither is loaded unless it is the selected engine (see *Where recognition
+runs*): on a machine set to cloud for both stages the two together measured **~2.87 GB**
+resident against **~105 MB** with them left unloaded.
 
-**`ps` is the wrong instrument here and will tell you the opposite of the truth.**
-Measured on a 16 GB M-series machine moments after launch, with no dictation yet
-performed: `whimpr-tauri` **48 MB** RSS and `whimpr-llm-worker` **647 MB** (the 4B
-cleanup model). Read literally that says Whisper is free and cleanup is the expensive
-one, and both halves are wrong. Whisper's Metal buffer does not appear in the calling
-process's RSS at all, and the worker reaches its number by *loading* the GGUF, not by
-cleaning anything up — the first cleanup has not run. Use Activity Monitor's memory
-figures, or measure the whole system, before concluding anything about either.
+**Measure after the models have loaded, not moments after launch.** An earlier reading
+here — `whimpr-tauri` at 48 MB with local ASR selected — was taken before the load
+finished and was written up as "Whisper's Metal buffer does not appear in RSS at all".
+It does: the same process measured **559 MB** with the model loaded and **105 MB**
+without, on the same machine. The worker likewise reaches its number by *loading* the
+GGUF and not by cleaning anything up, so a figure taken before the first dictation
+still says nothing about the cost of dictating.
 
 The cleanup model is still the one to scale down on a small machine, but the reason is
 accuracy, not footprint: a smaller Whisper mis-hears ordinary names, which is most of
@@ -780,8 +804,9 @@ Recognition latency on an M-series machine, 2.8 s of audio: ~185 ms to load at s
 `ggml-base.en.bin` transcribes in ~120 ms and mis-hears ordinary names ("Manvy" for
 "Manvi"), which is the trade the ladder exists to let you make.
 
-With no local GGUF, set the cleanup engine to Cloud — which ships pointed at Groq
-and takes any OpenAI-compatible API.
+With no local GGUF and a key stored, cloud cleanup is used without being asked for;
+Settings → Cleanup Engine makes it explicit. It ships pointed at Groq and takes any
+OpenAI-compatible API.
 
 ## Build and install
 

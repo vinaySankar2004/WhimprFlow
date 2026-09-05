@@ -20,7 +20,7 @@ odd parts are odd. Everything below is the working agreement on top of it.
 ```bash
 ./dev.sh                                  # Vite + app, hot reload
 ./scripts/install-macos.sh                # build + install to /Applications + verify permissions
-cargo test -p whimpr-core -p whimpr-ipc -p whimpr-audio -p whimpr-asr -p whimpr-tauri  # 126 tests, no models
+cargo test -p whimpr-core -p whimpr-ipc -p whimpr-audio -p whimpr-asr -p whimpr-tauri  # no models, no GPU
 cd ui && node_modules/.bin/tsc --noEmit   # typecheck the UI
 cargo run -p whimpr-audio --example mic_check --release   # devices, formats, does capture work now
 cargo run -p whimpr-llm-worker --example dictionary_check --release            # dictionary, end to end

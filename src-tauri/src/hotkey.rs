@@ -53,13 +53,13 @@ mod imp {
     use std::path::PathBuf;
     use super::DictEntryDto;
     use std::ptr::{null, null_mut};
-    use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicU8, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
     use serde::Serialize;
     use tauri::{AppHandle, Emitter};
-    use whimpr_core::state::{Action, BarState};
+    use whimpr_core::state::{Action, BarState, TapOutcome};
     use whimpr_core::{
         AsrEngine, CleanupContext, CleanupMode, CleanupProvider, Input, PipelineEvent, StateMachine,
         TriggerToken,
@@ -128,10 +128,25 @@ mod imp {
     static MACHINE: OnceLock<Mutex<StateMachine>> = OnceLock::new();
     static CLOCK: OnceLock<Instant> = OnceLock::new();
     static FN_IS_DOWN: AtomicBool = AtomicBool::new(false);
-    /// Mirror of `Settings::trigger_mode` for the tap callback. An atomic rather than
-    /// a read of SETTINGS because the callback must stay allocation-free and never
-    /// block: exceeding the hook's timeout gets the tap removed by macOS.
-    static TOGGLE_TRIGGER: AtomicBool = AtomicBool::new(false);
+    /// Mirror of `Settings::trigger_mode` for the tap callback, as the discriminants
+    /// in [`trigger_mode_code`]. An atomic rather than a read of SETTINGS because the
+    /// callback must stay allocation-free and never block: exceeding the hook's
+    /// timeout gets the tap removed by macOS.
+    static TRIGGER_MODE: AtomicU8 = AtomicU8::new(TRIGGER_HOLD);
+    const TRIGGER_HOLD: u8 = 0;
+    const TRIGGER_TOGGLE: u8 = 1;
+    const TRIGGER_DOUBLE_TAP: u8 = 2;
+    /// In `DoubleTap` mode, when the first tap of a possible pair was *released*, in
+    /// `CLOCK` milliseconds. Zero means no tap is pending.
+    ///
+    /// Measured from the release, and only for a press shorter than `HOLD_MIN_MS`,
+    /// because the whole reason this mode exists is to leave `Fn`+key combinations
+    /// alone — and holding Fn to press Delete is a long press. Keying off the *down*
+    /// instead would make two quick forward-deletes look exactly like a double-tap
+    /// and start dictating into whatever was being edited.
+    static PENDING_TAP_MS: AtomicU64 = AtomicU64::new(0);
+    /// When the current Fn press began, so its release can be classified.
+    static FN_DOWN_AT_MS: AtomicU64 = AtomicU64::new(0);
     static TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
     /// The Esc-to-cancel tap. Separate from the Fn tap, and deliberately so.
     ///
@@ -562,8 +577,37 @@ mod imp {
 
     /// Publish the trigger mode where the tap callback can read it cheaply.
     fn cache_trigger_mode(s: &whimpr_core::Settings) {
-        let toggle = matches!(s.trigger_mode, whimpr_core::TriggerMode::Toggle);
-        TOGGLE_TRIGGER.store(toggle, Ordering::SeqCst);
+        TRIGGER_MODE.store(trigger_mode_code(s.trigger_mode), Ordering::SeqCst);
+        // A mode change mid-gesture must not leave half a double-tap armed, waiting
+        // to fire on the next unrelated press.
+        PENDING_TAP_MS.store(0, Ordering::SeqCst);
+    }
+
+    /// Is a dictation running right now? Read from the Esc tap's own flag, which is
+    /// set for exactly the live states (`recording | locked | transcribing`) by
+    /// `emit_bar` — so this cannot drift from what the pill is showing.
+    ///
+    /// An atomic, deliberately: this is called from the tap callback, which must not
+    /// take the machine's lock. Blocking there long enough to exceed the hook timeout
+    /// gets the tap silently removed by macOS.
+    fn session_is_live() -> bool {
+        ESC_TAP_WANTED.load(Ordering::SeqCst)
+    }
+
+    fn trigger_mode_name(code: u8) -> &'static str {
+        match code {
+            TRIGGER_TOGGLE => "toggle",
+            TRIGGER_DOUBLE_TAP => "double-tap",
+            _ => "hold",
+        }
+    }
+
+    fn trigger_mode_code(mode: whimpr_core::TriggerMode) -> u8 {
+        match mode {
+            whimpr_core::TriggerMode::Hold => TRIGGER_HOLD,
+            whimpr_core::TriggerMode::Toggle => TRIGGER_TOGGLE,
+            whimpr_core::TriggerMode::DoubleTap => TRIGGER_DOUBLE_TAP,
+        }
     }
 
     /// (Re)build the cloud cleanup providers from the current keys + settings. Called
@@ -1238,23 +1282,68 @@ mod imp {
                 let down = (flags & FLAG_SECONDARY_FN) != 0;
                 let was_down = FN_IS_DOWN.swap(down, Ordering::SeqCst);
                 let at_ms = now_ms();
+                let mode = TRIGGER_MODE.load(Ordering::SeqCst);
                 if down && !was_down {
+                    FN_DOWN_AT_MS.store(at_ms, Ordering::SeqCst);
                     // In toggle mode the same key press is reported as the hands-free
                     // binding, which the machine already treats as "start a locked
                     // session, and end it on the next press". Nothing in the reducer
                     // needs to know a setting exists.
-                    let toggle = TOGGLE_TRIGGER.load(Ordering::SeqCst);
-                    let binding = if toggle {
-                        BindingId::HandsFree
-                    } else {
-                        BindingId::PushToTalk
+                    //
+                    // Double-tap mode reports nothing on the way *down* unless a
+                    // session is live, in which case this press is the stop. Starting
+                    // is decided on release, where a tap can be told from a hold.
+                    let binding = match mode {
+                        TRIGGER_TOGGLE => Some(BindingId::HandsFree),
+                        TRIGGER_DOUBLE_TAP if session_is_live() => Some(BindingId::HandsFree),
+                        TRIGGER_DOUBLE_TAP => None,
+                        _ => Some(BindingId::PushToTalk),
                     };
-                    eprintln!("[whimpr] Fn DOWN ({})", if toggle { "toggle" } else { "hold" });
+                    let Some(binding) = binding else {
+                        return event;
+                    };
+                    eprintln!("[whimpr] Fn DOWN ({})", trigger_mode_name(mode));
                     // Snapshot the paste target now, while the user's app is focused.
                     let target = crate::appctx::frontmost_bundle_id();
                     *TARGET_APP.get_or_init(|| Mutex::new(None)).lock().unwrap() = target;
                     handle_input(Input::Trigger(TriggerToken::Down { binding, at_ms }));
                 } else if !down && was_down {
+                    // Double-tap mode: this release either completes a pair and starts
+                    // a locked session, or becomes the pending first tap. A press long
+                    // enough to be a hold is somebody using Fn as a modifier — Fn+Delete,
+                    // Fn+arrow — so it arms nothing and clears anything armed.
+                    if mode == TRIGGER_DOUBLE_TAP {
+                        // A press during a live dictation was already handled as the
+                        // stop on the way down; its release means nothing.
+                        if session_is_live() {
+                            PENDING_TAP_MS.store(0, Ordering::SeqCst);
+                            return event;
+                        }
+                        let held = at_ms.saturating_sub(FN_DOWN_AT_MS.load(Ordering::SeqCst));
+                        let pending = PENDING_TAP_MS.swap(0, Ordering::SeqCst);
+                        match whimpr_core::state::classify_double_tap_release(
+                            held,
+                            (pending > 0).then_some(pending),
+                            at_ms,
+                        ) {
+                            TapOutcome::StartLocked => {
+                                eprintln!("[whimpr] Fn double-tap — starting a locked session");
+                                let target = crate::appctx::frontmost_bundle_id();
+                                *TARGET_APP.get_or_init(|| Mutex::new(None)).lock().unwrap() =
+                                    target;
+                                handle_input(Input::Trigger(TriggerToken::Down {
+                                    binding: BindingId::HandsFree,
+                                    at_ms,
+                                }));
+                            }
+                            // `swap` above already cleared it; re-arm with this release.
+                            TapOutcome::ArmFirstTap => {
+                                PENDING_TAP_MS.store(at_ms.max(1), Ordering::SeqCst)
+                            }
+                            TapOutcome::Ignore => {}
+                        }
+                        return event;
+                    }
                     eprintln!("[whimpr] Fn UP");
                     // Sent unconditionally: in toggle mode the session is Locked, and a
                     // push-to-talk release is a no-op in every state that can reach. That

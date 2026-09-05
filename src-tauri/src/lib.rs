@@ -641,6 +641,7 @@ pub fn run() {
             let trigger_items: Vec<(TriggerMode, CheckMenuItem<Wry>)> = [
                 (TriggerMode::Hold, "hold", "Hold to talk"),
                 (TriggerMode::Toggle, "toggle", "Press to start, press to stop"),
+                (TriggerMode::DoubleTap, "double_tap", "Double-tap to start, press to stop"),
             ]
             .into_iter()
             .map(|(mode, id, label)| {
@@ -732,6 +733,7 @@ pub fn run() {
                     "level:light" => set_level(app, CleanupLevel::Light),
                     "trigger:hold" => set_trigger(app, TriggerMode::Hold),
                     "trigger:toggle" => set_trigger(app, TriggerMode::Toggle),
+                    "trigger:double_tap" => set_trigger(app, TriggerMode::DoubleTap),
                     _ => {}
                 });
             if let Some(icon) = app.default_window_icon().cloned() {

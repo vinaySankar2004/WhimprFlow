@@ -10,7 +10,7 @@ export type AsrMode = "local" | "cloud";
 /** Rust aliases the retired "medium" and "high" onto "light" when loading. */
 export type CleanupLevel = "none" | "messaging" | "light";
 /** How the dictation key starts/stops a recording. */
-export type TriggerMode = "hold" | "toggle";
+export type TriggerMode = "hold" | "toggle" | "double_tap";
 
 export interface Settings {
   cleanup_mode: CleanupMode;

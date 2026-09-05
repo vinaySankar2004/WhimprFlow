@@ -102,6 +102,11 @@ const TRIGGERS: { value: TriggerMode; label: string; hint: string }[] = [
     label: "Press to start, press to stop",
     hint: "Tap Fn once to start listening, tap it again to finish. Nothing to hold down.",
   },
+  {
+    value: "double_tap",
+    label: "Double-tap to start, press to stop",
+    hint: "Leaves Fn free for the rest of macOS: Fn+Delete, Fn+arrows and a lone press all behave normally.",
+  },
 ];
 
 /**
@@ -523,7 +528,9 @@ export function SettingsPane({
         <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 10 }}>
           {settings.trigger_mode === "hold"
             ? "Tip: a quick double-tap of Fn also starts a hands-free session that keeps recording until you press Fn again."
-            : "Recording continues after you let go of Fn — press it again to stop. It also stops on its own at the 20-minute session cap."}
+            : settings.trigger_mode === "double_tap"
+              ? "Pick this if you use Fn as a modifier. A single press and a held Fn do nothing at all, so only a deliberate double-tap starts a dictation, and one press stops it."
+              : "Recording continues after you let go of Fn — press it again to stop. It also stops on its own at the 20-minute session cap."}
         </div>
       </Card>
 

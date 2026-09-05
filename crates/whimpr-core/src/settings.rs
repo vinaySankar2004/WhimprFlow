@@ -70,8 +70,9 @@ pub const GROQ_ASR_MODEL: &str = "whisper-large-v3-turbo";
 ///
 /// This is a *shell* concern, not a state-machine one: the machine already knows
 /// both a push-to-talk and a hands-free (locked) session. The setting only decides
-/// which binding a press of the dictation key is reported as, so `Toggle` reuses
-/// the exact same locked-session path that double-tap-to-lock already drives.
+/// which binding a press of the dictation key is reported as, so `Toggle` and
+/// `DoubleTap` both reuse the exact same locked-session path that double-tap-to-lock
+/// already drives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerMode {
@@ -83,6 +84,14 @@ pub enum TriggerMode {
     /// Press once to start listening, press again to stop. Key release is ignored,
     /// so the key can be let go while speaking.
     Toggle,
+    /// Double-tap to start, one press to stop — and a single press or a hold does
+    /// **nothing**.
+    ///
+    /// That last part is the whole point: in the other two modes the dictation key
+    /// is spent, so `Fn`+`Delete` (forward delete), `Fn`+arrows and the rest of
+    /// macOS's Fn combinations either start a dictation or are shadowed by one. Here
+    /// a lone press is left to the system, and dictation costs a deliberate gesture.
+    DoubleTap,
 }
 
 /// Persisted user configuration.
@@ -229,11 +238,16 @@ mod tests {
 
     #[test]
     fn trigger_mode_round_trips_as_snake_case() {
-        let s = Settings { trigger_mode: TriggerMode::Toggle, ..Default::default() };
-        let json = serde_json::to_string(&s).unwrap();
-        assert!(json.contains("\"trigger_mode\":\"toggle\""), "{json}");
-        let back: Settings = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.trigger_mode, TriggerMode::Toggle);
+        for (mode, wire) in [
+            (TriggerMode::Toggle, "toggle"),
+            (TriggerMode::DoubleTap, "double_tap"),
+            (TriggerMode::Hold, "hold"),
+        ] {
+            let s = Settings { trigger_mode: mode, ..Default::default() };
+            let json = serde_json::to_string(&s).unwrap();
+            assert!(json.contains(&format!("\"trigger_mode\":\"{wire}\"")), "{json}");
+            assert_eq!(serde_json::from_str::<Settings>(&json).unwrap().trigger_mode, mode);
+        }
     }
 
     /// The cloud mode ships pointed at Groq, not at OpenAI. Cleanup blocks the paste,

@@ -11,18 +11,35 @@ import type { TriggerMode } from "./api";
  */
 function tips(mode: TriggerMode): { emoji: string; title: string; body: string }[] {
   const hold = mode === "hold";
+  const doubleTap = mode === "double_tap";
+  const privacy =
+    " WhimprFlow transcribes on-device — nothing leaves your Mac unless you choose a cloud engine.";
+  const start = hold
+    ? {
+        title: "Hold to dictate",
+        body:
+          "Press and hold your dictation key (Fn by default), speak naturally, then release. Prefer not to hold a key down? Switch to press-to-start under Settings → Dictation Key." +
+          privacy,
+      }
+    : doubleTap
+      ? {
+          title: "Double-tap to dictate",
+          body:
+            "Double-tap your dictation key (Fn by default), speak naturally, then press it once to finish. A single press and a held key do nothing, which is what leaves Fn+Delete, Fn+arrows and the rest of macOS's Fn combinations working normally." +
+            privacy,
+        }
+      : {
+          title: "Press to start, press to stop",
+          body:
+            "Tap your dictation key (Fn by default) once to start listening, speak naturally, then tap it again to finish — there is nothing to hold down. Prefer holding the key instead? Switch back under Settings → Dictation Key." +
+            privacy,
+        };
   return [
-    {
-      emoji: "🎙️",
-      title: hold ? "Hold to dictate" : "Press to start, press to stop",
-      body: hold
-        ? "Press and hold your dictation key (Fn by default), speak naturally, then release. Prefer not to hold a key down? Switch to press-to-start under Settings → Dictation Key. WhimprFlow transcribes on-device — nothing leaves your Mac unless you choose a cloud cleanup engine."
-        : "Tap your dictation key (Fn by default) once to start listening, speak naturally, then tap it again to finish — there is nothing to hold down. Prefer holding the key instead? Switch back under Settings → Dictation Key. WhimprFlow transcribes on-device — nothing leaves your Mac unless you choose a cloud cleanup engine.",
-    },
+    { emoji: "🎙️", ...start },
     {
       emoji: "✨",
       title: "Cleanup happens where your cursor is",
-      body: `${hold ? "Release the key" : "Tap the key again"} and your cleaned-up text is typed straight into whatever app has focus — email, chat, notes, code. Choose how aggressive the cleanup is under Settings → Auto Cleanup.`,
+      body: `${hold ? "Release the key" : "Press the key again"} and your cleaned-up text is typed straight into whatever app has focus — email, chat, notes, code. Choose how aggressive the cleanup is under Settings → Auto Cleanup.`,
     },
     {
       emoji: "⏹️",

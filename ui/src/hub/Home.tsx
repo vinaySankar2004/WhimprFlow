@@ -15,9 +15,11 @@ import { dayKey, dayLabel, fmtCompact, fmtDuration, fmtNum, fmtTimeOfDay, wordsR
 
 const UNLOCK_WORDS = 500;
 
-/** "Hold your key" is wrong advice in toggle mode, so the copy follows the setting. */
+/** "Hold your key" is wrong advice in the other two modes, so the copy follows the
+ *  setting — and double-tap mode is the one where a single tap does nothing at all. */
 function startPhrase(mode: TriggerMode): string {
-  return mode === "hold" ? "Hold your key" : "Tap your key";
+  if (mode === "hold") return "Hold your key";
+  return mode === "double_tap" ? "Double-tap your key" : "Tap your key";
 }
 
 // ── Banner ───────────────────────────────────────────────────────────────────

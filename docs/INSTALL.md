@@ -153,8 +153,8 @@ The cleanup model is the one that scales down, not the ASR one, and that is not
 arbitrary. Dropping to a smaller *Whisper* model costs far more than it saves:
 `ggml-base.en.bin` mis-hears ordinary names, which is most of what a personal
 dictionary then exists to repair, while a smaller cleanup model only loses polish on
-text that is already right. Whisper's 716 MB is paid around the clock either way — its
-weights sit in a Metal buffer for as long as the app runs.
+text that is already right. Whisper's weights sit in a Metal buffer while local
+recognition is the selected engine, so on a cloud install they are not loaded at all.
 
 The 4B cleanup model is meaningfully better at spoken self-corrections and structure.
 On a 16 GB machine, take it.
@@ -181,7 +181,9 @@ on the desktop", and it reads like a broken app rather than a missing permission
 
 Hold **Fn**, speak, let go. Cleaned text lands at the cursor.
 
-Prefer not to hold a key? Settings → Dictation Key → press-to-start / press-to-stop.
+Prefer not to hold a key? Settings → Dictation Key offers press-to-start /
+press-to-stop, and a double-tap-to-start mode that leaves a lone Fn press to macOS so
+Fn+Delete and Fn+arrows keep working.
 
 While dictating: **■** stops and pastes, **✕** or **Esc** discards.
 
