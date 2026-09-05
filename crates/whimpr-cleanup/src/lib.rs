@@ -69,7 +69,15 @@ impl CleanupProvider for OpenAiProvider {
             .collect();
         let mut body = serde_json::json!({
             "model": self.model,
-            "temperature": 0.2,
+            // Greedy, matching the local worker. Cleanup is a mechanical rewrite with
+            // one right answer, so sampling buys nothing and costs two things: the same
+            // dictation can come back different twice, and `cleanup_check --cloud`
+            // stops being an instrument — a borderline case flips between runs and a
+            // prompt change gets credited or blamed for sampling noise. Measured at
+            // 0.2: the quoted-cue case failed one run and passed the next with nothing
+            // changed in between. Note this makes runs *repeatable*, not bit-identical
+            // — batching and kernel nondeterminism upstream are not ours to control.
+            "temperature": 0,
             // Scaled to the dictation, never fixed. See `max_tokens_for`: a fixed
             // ceiling does not fail, it truncates the paste mid-sentence.
             "max_tokens": max_tokens_for(raw),

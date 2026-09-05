@@ -131,9 +131,16 @@ fn default_true() -> bool {
 /// Groq's OpenAI-compatible API root. Free tier at the time of writing: 30 requests
 /// per minute, 1,000 per day, no card required.
 pub const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
-/// Groq's fastest production model (~1000 tok/s, 131k context). Cleanup blocks the
-/// paste, so speed is the selection criterion — the task itself is easy.
-pub const GROQ_MODEL: &str = "openai/gpt-oss-20b";
+/// Cleanup blocks the paste, so this used to be chosen purely on speed, on the theory
+/// that the task is easy. Measuring it against `cleanup_check --cloud` showed it is
+/// not: the 20b read the "oh sorry" inside reported speech as a self-correction and cut
+/// the clause out, and turned "i mean it when i say this is the best version we have
+/// shipped so far" into "This is the best version we have shipped so far." — fluent,
+/// grammatical, half the sentence gone, and past every gate. The 120b is free at
+/// *identical* rate limits on Groq (30 rpm, 1k/day, 8k tokens/min), so the accuracy
+/// costs nothing but latency, and measured cleanup latency had headroom: median 322 ms
+/// against a p90 of 1.75 s.
+pub const GROQ_MODEL: &str = "openai/gpt-oss-120b";
 
 impl Default for Settings {
     fn default() -> Self {

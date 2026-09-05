@@ -88,7 +88,18 @@ pub fn evaluate(
     // 3) Gross length changes. Thresholds are generous: self-corrections shorten
     // text and structural formatting (numbered lists, paragraph breaks, list
     // markers) lengthens it — both are legitimate, so only flag extreme changes.
-    let raw_len = raw.chars().count().max(1) as f32;
+    //
+    // Filler is discounted from the raw length first, so the gate measures what is
+    // left after the deletions rule 1 *authorized* rather than counting them as
+    // content loss. Same widening as the vocab carve-out below, and needed for the
+    // same reason: without it the gate punishes cleanup for doing its job. Measured
+    // on a real 70-word dictation at speaking density, cleanup that correctly removed
+    // every filler shrank the text 56% and was rejected at the 55% line, so the raw
+    // transcript — every filler intact — is what reached the cursor. Cleanup looked
+    // switched off precisely when it had worked best, and the better the model the
+    // more often it would happen.
+    let filler_chars = filler_mass(raw);
+    let raw_len = (raw.chars().count() as f32 - filler_chars).max(1.0);
     let clean_len = cleaned.chars().count() as f32;
     let shrink = (raw_len - clean_len) / raw_len;
     if shrink > 0.55 {
@@ -109,6 +120,48 @@ pub fn evaluate(
     }
 
     GateVerdict::Pass
+}
+
+/// The fillers rule 1 authorizes cleanup to delete, longest first so "you know" is
+/// matched before "know" could be. Kept here rather than shared with
+/// [`super::strip_parenthetical_fillers`]: that list is what a *deterministic* pass may
+/// safely remove and is deliberately narrow, while this one is what the *prompt*
+/// permits the model to remove — widening one must not silently widen the other.
+const AUTHORIZED_FILLERS: &[&str] = &[
+    "you know", "i mean", "sort of", "kind of", "basically", "like", "um", "uh", "er",
+];
+
+/// How many characters of `raw` are filler the prompt allows cleanup to delete.
+///
+/// Counted whole-word and case-insensitively, with the following space, since that is
+/// what disappears along with the word. An over-count would widen the deletion gate
+/// beyond what was authorized, so this deliberately never counts a filler inside
+/// another word ("unlikely" is not a "like").
+fn filler_mass(raw: &str) -> f32 {
+    let lower = raw.to_lowercase();
+    let bytes = lower.as_bytes();
+    let mut total = 0usize;
+    let mut i = 0;
+    'scan: while i < lower.len() {
+        if i == 0 || !bytes[i - 1].is_ascii_alphanumeric() {
+            for f in AUTHORIZED_FILLERS {
+                let end = i + f.len();
+                if lower.get(i..end) != Some(*f) {
+                    continue;
+                }
+                if lower[end..].chars().next().is_some_and(char::is_alphanumeric) {
+                    continue;
+                }
+                // The trailing space goes with the word.
+                let span = end - i + usize::from(lower[end..].starts_with(' '));
+                total += span;
+                i += span;
+                continue 'scan;
+            }
+        }
+        i += lower[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    total as f32
 }
 
 /// Tokens that must survive cleanup verbatim: URLs, emails, and *substantial*
@@ -245,6 +298,47 @@ mod tests {
             evaluate(raw, clean, CleanupLevel::Light, NO_VOCAB),
             GateVerdict::Fail(GateReason::OverDeletion { .. })
         ));
+    }
+
+    /// The measured regression. A real 70-word dictation at speaking density, cleaned
+    /// correctly by the 120b, shrank 56% on raw length and was rejected at the 55%
+    /// line — so the raw transcript with every filler intact is what got pasted.
+    /// Cleanup looked switched off exactly when it had worked best.
+    #[test]
+    fn removing_dense_filler_is_not_over_deletion() {
+        let raw = "so look at the way sometimes you know when i'm saying something i'll be \
+                   like oh sorry i didn't do this like i'll just like i'll say it you know \
+                   and it manages to get it so correct how like you know it'll just clean up \
+                   the sentence in that way";
+        let clean = "So look at the way sometimes when I'm saying something, I'll be like, \
+                     oh sorry I didn't do this, I'll just say it, and it manages to get it \
+                     so correct, how it'll just clean up the sentence in that way.";
+        assert!(
+            evaluate(raw, clean, CleanupLevel::Light, NO_VOCAB).passed(),
+            "filler removal must not read as content loss"
+        );
+    }
+
+    /// Discounting filler must not become a licence to drop content. The same
+    /// filler-dense input, genuinely gutted, is still caught.
+    #[test]
+    fn the_filler_discount_does_not_excuse_real_deletion() {
+        let raw = "so you know the quarterly report is basically due on friday and like \
+                   please review the budget section before the meeting";
+        let clean = "Report due Friday.";
+        assert!(matches!(
+            evaluate(raw, clean, CleanupLevel::Light, NO_VOCAB),
+            GateVerdict::Fail(GateReason::OverDeletion { .. })
+        ));
+    }
+
+    /// Whole-word only: a filler living inside another word is not filler, and
+    /// counting it would widen the gate past what rule 1 authorized.
+    #[test]
+    fn filler_mass_ignores_lookalike_words() {
+        assert_eq!(filler_mass("that is unlikely and likeable"), 0.0);
+        // "like " with its trailing space is 5 characters.
+        assert_eq!(filler_mass("it was like this"), 5.0);
     }
 
     #[test]

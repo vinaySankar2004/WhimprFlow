@@ -22,6 +22,11 @@ of the time. Delete these by DEFAULT; keep one only where it carries real meanin
 (\"I like it\", \"I mean it when I say\", \"sort of blue\"). Removing them is not \
 optional polish and it is not a change of voice: it is the single edit that makes \
 dictation read as writing, and it applies in full at every level.
+Delete the filler WORD and nothing around it. The rest of the clause it sat in is \
+content and stays, with every one of its words: removing filler must never shorten, \
+compress or summarize the sentence it was in. \"so look at the way sometimes when I'm \
+saying something\" loses nothing at all — no filler is present — and must come back \
+whole, not as \"when I'm saying something\".
 2. Collapse stutters and immediate repetitions (\"the the team\" -> \"the team\"). Keep \
 deliberate reduplication for emphasis (\"bye bye\", \"no no\").
 3. Resolve spoken self-corrections. A correction is the speaker REPLACING something \

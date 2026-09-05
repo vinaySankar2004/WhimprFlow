@@ -314,7 +314,10 @@ fn main() -> anyhow::Result<()> {
 
         let started = std::time::Instant::now();
         let out = run(&mut engine, case.said, level)?;
-        let ms = started.elapsed().as_millis();
+        // Model latency, not wall clock: the rate-limit sleep is the suite's own size
+        // showing up, and leaving it in would report a sub-second engine as a 15-second
+        // one — the number someone would then make a model decision on.
+        let ms = started.elapsed().saturating_sub(engine.last_wait()).as_millis();
 
         println!("   pasted:    {}", elide(&out.pasted, 150));
         println!(
@@ -458,6 +461,11 @@ enum Engine {
         provider: whimpr_cleanup::OpenAiProvider,
         model: String,
         url: String,
+        /// Time spent asleep waiting out a 429 during the last call. Reported timings
+        /// subtract it: the suite is rate limited by its own size, and counting a
+        /// 13-second sleep as model latency turns a sub-second engine into a
+        /// disqualifyingly slow one on paper.
+        waited: Duration,
     },
 }
 
@@ -491,7 +499,10 @@ impl Engine {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_else(|| serde_json::json!({}));
-        let model = settings["openai_model"].as_str().unwrap_or("openai/gpt-oss-20b").to_string();
+        let model = settings["openai_model"]
+            .as_str()
+            .unwrap_or(whimpr_core::settings::GROQ_MODEL)
+            .to_string();
         let url = settings["openai_base_url"]
             .as_str()
             .unwrap_or("https://api.groq.com/openai/v1")
@@ -517,7 +528,15 @@ impl Engine {
             })?;
         let provider =
             whimpr_cleanup::OpenAiProvider::with_base_url(key, model.clone(), Some(url.clone()));
-        Ok(Engine::Cloud { provider, model, url })
+        Ok(Engine::Cloud { provider, model, url, waited: Duration::ZERO })
+    }
+
+    /// How long the last call spent waiting out a rate limit rather than generating.
+    fn last_wait(&self) -> Duration {
+        match self {
+            Engine::Cloud { waited, .. } => *waited,
+            Engine::Local { .. } => Duration::ZERO,
+        }
     }
 
     fn describe(&self) -> String {
@@ -559,9 +578,9 @@ impl Engine {
             // and a harness that dies two thirds of the way in stops being run. The
             // app's own answer to a 429 is different and stays different: it falls
             // back to the local model, because a person waiting on a paste cannot.
-            Engine::Cloud { provider, .. } => {
+            Engine::Cloud { provider, waited, .. } => {
                 use whimpr_core::cleanup::CleanupProvider;
-                let mut waited = 0.0f32;
+                *waited = Duration::ZERO;
                 loop {
                     match provider.cleanup(raw_norm, ctx) {
                         Ok(t) => return Ok(t.trim().to_string()),
@@ -569,13 +588,13 @@ impl Engine {
                             let msg = e.to_string();
                             // Groq names the wait it wants; honour it rather than
                             // guessing, and give up once the waiting is absurd.
-                            if !msg.contains("429") || waited > 90.0 {
+                            if !msg.contains("429") || waited.as_secs() > 90 {
                                 return Err(e);
                             }
-                            let secs = retry_after_secs(&msg).unwrap_or(12.0);
+                            let secs = retry_after_secs(&msg).unwrap_or(12.0) + 0.5;
                             println!("   rate limited, waiting {secs:.0}s");
-                            std::thread::sleep(Duration::from_secs_f32(secs + 0.5));
-                            waited += secs;
+                            std::thread::sleep(Duration::from_secs_f32(secs));
+                            *waited += Duration::from_secs_f32(secs);
                         }
                     }
                 }

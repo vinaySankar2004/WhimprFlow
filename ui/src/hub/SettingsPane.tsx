@@ -40,7 +40,7 @@ const MODES: { value: CleanupMode; label: string; hint: string }[] = [
  * auto-routing `openrouter/free` rather than pinning a model that will vanish.
  */
 const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
-const GROQ_MODEL = "openai/gpt-oss-20b";
+const GROQ_MODEL = "openai/gpt-oss-120b";
 const ENDPOINTS: { label: string; baseUrl: string; model: string; hint: string }[] = [
   {
     label: "Groq",

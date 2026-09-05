@@ -217,7 +217,7 @@ if [ "$CLOUD" = "1" ]; then
   "asr_mode": "cloud",
   "cleanup_level": "light",
   "trigger_mode": "hold",
-  "openai_model": "openai/gpt-oss-20b",
+  "openai_model": "openai/gpt-oss-120b",
   "openai_base_url": "https://api.groq.com/openai/v1",
   "sound_on_start": true,
   "store_raw_transcripts": true

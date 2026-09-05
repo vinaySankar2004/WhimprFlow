@@ -228,7 +228,7 @@ from 4 to 2 — real, and not enough.
 **Self-correction resolution is stated as a test, not a keyword list.** Rule 3 asks the
 model to point to both halves — the wording being replaced and the wording replacing it
 — and to delete nothing when it cannot. Naming the cue words alone was not enough on
-the 20B, which read the "oh sorry" inside reported speech as a correction and returned
+the cloud model, which read the "oh sorry" inside reported speech as a correction and returned
 "I'll be I didn't mean that", and read "I mean it when I say…" as one and deleted the
 whole first clause. **No gate catches that**: a fluent shorter sentence is 29% shrink
 with no novel words, so it passes and reaches the cursor. The principle fixed the first;
@@ -297,17 +297,22 @@ instrument measuring something nobody runs. The endpoint comes from `settings.js
 the key from the app's Keychain entry, so there is nothing to export; `GROQ_API_KEY` /
 `OPENAI_API_KEY` override for a one-off. It exists because the two models fail
 differently and a green local run says nothing about a cloud install: the 4B answers
-dictation that is a request, and the 20B does not but over-triggers on correction cues
-where the 4B does not.
+dictation that is a request, and the cloud model does not but over-triggered on
+correction cues where the 4B does not.
 
-Two things follow from that difference. `known_limit` notes describe the 4B, so a cloud
-run neither enforces nor retires them — otherwise every cloud run fails as a stale note
-and someone deletes a note still true of the engine it names. And the local worker
-samples greedily while the cloud path runs at the app's own `temperature: 0.2`
-(deliberately not overridden — a run at a temperature nobody uses measures nothing), so
-cloud results vary between runs. A single cloud failure on a borderline case is a
-reason to run it again, not a regression. Measured: the quoted-cue case failed on one
-run and passed on the next with no change in between.
+`known_limit` notes describe the 4B, so a cloud run neither enforces nor retires them —
+otherwise every cloud run fails as a stale note and someone deletes a note still true
+of the engine it names.
+
+Both engines now sample greedily. The cloud path ran at `temperature: 0.2` and no
+longer does: cleanup is a mechanical rewrite with one right answer, so sampling bought
+nothing and cost two things — the same dictation could come back different twice, and
+the harness stopped being an instrument, with borderline cases flipping between runs
+and prompt changes credited or blamed for noise. Measured at 0.2, the quoted-cue case
+failed one run and passed the next with nothing changed between them. Greedy also puts
+the two providers on the same footing, which is the same reason they share one prompt.
+It makes runs repeatable, not bit-identical — batching and kernel nondeterminism
+upstream are not ours to control.
 
 The suite costs ~19k prompt tokens against Groq's free 8k-per-minute ceiling, so it
 *will* be rate limited partway through and waits out the delay the API names. The app's
@@ -320,7 +325,13 @@ transcript instead when it sees:
 
 - novelty ratio above the level's ceiling (output words that were never spoken)
 - a must-preserve token vanishing (number, URL, email, code-ish token)
-- over-deletion (shrank >55%)
+- over-deletion (shrank >55%, measured *after* discounting the filler rule 1 authorized
+  removing — otherwise the gate punishes cleanup for doing its job: a real 70-word
+  dictation at speaking density, cleaned correctly, shrank 56% and was rejected, so the
+  raw transcript with every filler intact is what reached the cursor. Cleanup looked
+  switched off precisely when it had worked best, and the better the model the more
+  often it happened. The discount is bounded to the authorized filler list and nothing
+  else, the same shape as the vocab carve-out on novelty.)
 - hallucination (grew beyond punctuation)
 - a banned pattern (added greeting/sign-off, or an assistant-style reply)
 
@@ -343,7 +354,7 @@ demonstrations of exactly this (the banana transcript itself, right answer besid
 in context), a reminder appended *after* the transcript, and reframing the tail as a
 completion cue. Both cases returned byte-identical replies every time — sampling is
 greedy, so that is the model's fixed answer, not variance. It is a 4B capability
-limit. What remains is a larger cleanup model (the cloud path's 20B, where this has
+limit. What remains is a larger cleanup model (the cloud path's 120b, where this has
 not been seen) or a deterministic post-step like `apply_listed_mishears`. The note in
 `cleanup/prompts.rs` records the dead end so the day is not spent twice.
 

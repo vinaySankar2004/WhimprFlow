@@ -182,6 +182,10 @@ These are not hypotheticals; each one bit during development.
   like it" and "you know the answer" out of reach; bare occurrences outrun delimited
   ones about seven to one, so a bare version does seven times the damage, not the work.
   Correction cues stay out — "actually" carries contrast even parenthetically.
+  The over-deletion gate discounts authorized filler from the raw length before
+  measuring, or it punishes cleanup for working: a real 70-word dictation cleaned
+  correctly by the 120b shrank 56%, tripped the 55% line, and got the raw pasted with
+  every filler intact. The better the model, the more often that fires.
 - **A green local `cleanup_check` says nothing about a cloud install.** The two models
   fail in opposite directions: the 4B answers dictation that is a request, and the 20B
   does not but over-triggers on correction cues where the 4B does not — it returned

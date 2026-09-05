@@ -105,6 +105,31 @@ fn architecture_quotes_real_model_filenames() {
     }
 }
 
+/// The cloud installer must write the cleanup model the code defaults to.
+///
+/// `setup-macos.sh` writes its own `settings.json` on a cloud install rather than
+/// leaving it to `Settings::default()`, so the model name exists twice — once as
+/// `GROQ_MODEL` and once as a string in a shell heredoc no compiler will ever read.
+/// They drifted: the constant moved to `gpt-oss-120b` and the script kept installing
+/// `20b`, which is invisible to every other test here and lands only on the people
+/// doing a fresh cloud install — exactly the ones who cannot tell that the model they
+/// got is not the model that was tuned for them.
+#[test]
+fn the_cloud_installer_writes_the_default_cleanup_model() {
+    let model = read("crates/whimpr-core/src/settings.rs")
+        .lines()
+        .find(|l| l.contains("const GROQ_MODEL"))
+        .and_then(|l| l.split('"').nth(1).map(str::to_string))
+        .expect("GROQ_MODEL is a quoted string literal");
+    let script = read("scripts/setup-macos.sh");
+    assert!(
+        script.contains(&format!("\"openai_model\": \"{model}\"")),
+        "scripts/setup-macos.sh does not write openai_model {model:?} (the GROQ_MODEL \
+         default). A fresh cloud install would get a different cleanup model than the \
+         one the prompt was measured against."
+    );
+}
+
 /// `pub const NAME: u64 = 12 * 34;` -> 408
 fn const_value(src: &str, name: &str) -> Option<u64> {
     let line = src.lines().find(|l| l.contains(&format!("const {name}")))?;
