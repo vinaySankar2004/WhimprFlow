@@ -278,12 +278,54 @@ fn build_overlay(app: &tauri::App) -> tauri::Result<WebviewWindow> {
 }
 
 fn build_hub(app: &tauri::App) -> tauri::Result<WebviewWindow> {
-    WebviewWindowBuilder::new(app, HUB_LABEL, WebviewUrl::App("index.html".into()))
+    let hub = WebviewWindowBuilder::new(app, HUB_LABEL, WebviewUrl::App("index.html".into()))
         .title("WhimprFlow")
         .inner_size(920.0, 640.0)
         .min_inner_size(720.0, 480.0)
         .visible(true)
-        .build()
+        .build()?;
+    hub_follows_the_active_space(&hub);
+    Ok(hub)
+}
+
+/// Let the Hub come to whichever Space is in front, instead of dragging the user
+/// back to the one it was opened on.
+///
+/// macOS binds a window to a Space on its first order-in and never migrates it. The
+/// overlay works around that with `CanJoinAllSpaces` (see `raise_overlay_level`);
+/// the Hub must not do that — a settings window pinned to every Space is wrong —
+/// so it gets `MoveToActiveSpace` instead, which brings it to the current Space
+/// when the app is activated.
+///
+/// Without it the symptom is bizarre and looks like nothing to do with Spaces:
+/// open the Hub once while Safari is frontmost, and from then on clicking *Open
+/// WhimprFlow* from the desktop **switches you to Safari** and shows the Hub there.
+/// Reported exactly that way — "it only shows up on my Safari page".
+fn hub_follows_the_active_space(w: &WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+
+        let Ok(ptr) = w.ns_window() else { return };
+        if ptr.is_null() {
+            return;
+        }
+        // SAFETY: main thread, and the pointer is the live NSWindow Tauri just made.
+        unsafe {
+            let ns: &NSWindow = &*(ptr as *const NSWindow);
+            // `FullScreenPrimary` is named explicitly rather than assumed. Tauri
+            // leaves the behavior at `Default` (0) — measured, it logs as such — and
+            // with Default AppKit infers full-screen capability for a resizable
+            // window. Setting any explicit behavior gives up that inference, so
+            // adding only `MoveToActiveSpace` risks quietly costing the green button.
+            ns.setCollectionBehavior(
+                ns.collectionBehavior()
+                    | NSWindowCollectionBehavior::MoveToActiveSpace
+                    | NSWindowCollectionBehavior::FullScreenPrimary,
+            );
+            eprintln!("[whimpr] hub collectionBehavior {:?}", ns.collectionBehavior());
+        }
+    }
 }
 
 /// Bring the Hub back — from the tray's Open item, or a Dock click.

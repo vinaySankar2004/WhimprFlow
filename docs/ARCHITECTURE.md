@@ -587,6 +587,18 @@ process open), and a destroyed window is unrecoverable — `get_webview_window("
 returns `None` from then on, so *Open WhimprFlow* would silently do nothing and the
 app would be running with no way to reach it at all.
 
+**The Hub follows the active Space.** macOS binds a window to the Space it was first
+ordered into and never migrates it, so a Hub opened once while Safari was frontmost
+stayed on Safari's Space — clicking *Open WhimprFlow* from the desktop switched you to
+Safari and showed it there, a symptom that reads as nothing to do with Spaces.
+`hub_follows_the_active_space` adds `MoveToActiveSpace`. This is the same root cause as
+the overlay's Space trap with the opposite fix: the overlay wants `CanJoinAllSpaces`
+because it belongs everywhere, the Hub wants `MoveToActiveSpace` because it belongs
+*here*, and the two flags are mutually exclusive. `FullScreenPrimary` is named
+alongside it because Tauri leaves the behavior at `Default`, where AppKit infers
+full-screen capability — setting any explicit behavior gives that inference up, so
+adding only the Spaces flag would quietly cost the green button.
+
 `RunEvent::Reopen` is still handled — it costs nothing and covers a Dock tile
 returning — and it goes through the same `show_hub`. Its `has_visible_windows` flag
 is deliberately ignored: the overlay is a window and counts as visible while the pill

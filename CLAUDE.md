@@ -76,6 +76,17 @@ These are not hypotheticals; each one bit during development.
   `visible(false)` and ordered in by `raise_overlay_level`. Flip it back to
   `visible(true)` and the pill works perfectly on the desktop and is absent from
   every full-screen app — which is where dictation actually happens.
+- **The Hub needs `MoveToActiveSpace`, and the overlay must NOT have it.** Same root
+  cause as the overlay's Space trap, opposite fix. A window is bound to the Space it
+  was first ordered into, so a Hub opened once while Safari was frontmost stays on
+  Safari's Space: clicking *Open WhimprFlow* from the desktop then **switches you to
+  Safari** and shows it there. It reads as nothing to do with Spaces. The overlay
+  wants `CanJoinAllSpaces` (it should be everywhere); the Hub wants
+  `MoveToActiveSpace` (it should be *here*), and the two flags are mutually
+  exclusive. Name `FullScreenPrimary` alongside it: Tauri leaves the behavior at
+  `Default`, where AppKit infers full-screen capability, and setting any explicit
+  behavior gives that inference up — so adding only the Spaces flag silently costs
+  the green button.
 - **"The pill only shows on the desktop" has several unrelated causes** — missing
   Accessibility (below), the panel hiding on deactivate, and the Space-assignment
   order above — and they are indistinguishable by reading the code, because all of
