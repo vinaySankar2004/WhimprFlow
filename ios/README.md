@@ -220,6 +220,10 @@ pair it has already seen, and the rejection arrives after the upload.
 
 ## Distribution
 
+**Step-by-step procedure: [DEPLOY.md](DEPLOY.md)** — registering the App IDs and the
+App Group, running on your own phone, and getting a build to someone else. The rest of
+this section is the shape of it.
+
 No App Store submission. The team is **VSTTF2AM22** — the paid team that holds the
 Developer ID and the notary profile, *not* 3V3J78V32Q, which owns the older Apple
 Development certs on this machine and fails with a misleading 403 about a missing
