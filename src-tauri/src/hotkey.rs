@@ -59,10 +59,10 @@ mod imp {
 
     use serde::Serialize;
     use tauri::{AppHandle, Emitter};
+    use whimpr_core::pipeline::{self, Engine, Finished};
     use whimpr_core::state::{Action, BarState, TapOutcome};
     use whimpr_core::{
-        AsrEngine, CleanupContext, CleanupMode, CleanupProvider, Input, PipelineEvent, StateMachine,
-        TriggerToken,
+        AsrEngine, CleanupMode, CleanupProvider, Input, PipelineEvent, StateMachine, TriggerToken,
     };
     use whimpr_ipc::BindingId;
 
@@ -732,80 +732,62 @@ mod imp {
     /// doing this earlier would let a corrected name arrive at the cursor as the one
     /// capitalized word in an all-lowercase message. It is skipped in `Raw` mode,
     /// where "paste exactly what you said" outranks a typing habit.
+    /// Gather the per-dictation inputs and run the cleanup pipeline over them.
+    ///
     /// The text that will be pasted, plus which engine produced it and why that was
-    /// not the engine the user selected.
+    /// not the engine the user selected, comes back as
+    /// [`whimpr_core::pipeline::Finished`].
     ///
     /// The attribution is not decoration. Every degradation in this app is
     /// deliberately silent — falling back is what keeps the dictation alive — so a
     /// run of raw or oddly-slow pastes has no explanation unless the reason was
     /// written down as it happened.
-    struct Cleaned {
-        text: String,
-        /// "cloud" | "local" | "raw"
-        engine: &'static str,
-        degraded: Option<String>,
-    }
-
-    fn clean_transcript(raw: &str) -> Cleaned {
+    ///
+    /// The *order* of the deterministic passes around the provider used to live
+    /// here. It moved into `whimpr_core::pipeline` when iOS became a second shell:
+    /// several steps in that sequence are load-bearing in ways that fail silently,
+    /// and two shells re-deriving it from the same prose is precisely how they
+    /// drift. This function now only supplies what the core cannot see for itself —
+    /// the settings, the dictionary, and the focused app.
+    fn clean_transcript(raw: &str) -> Finished {
         let settings = current_settings();
-        let mut out = run_cleanup(raw, &settings);
-        if let Some(dict) = DICTIONARY.get() {
-            let fixed = dict.lock().unwrap().apply_listed_mishears(&out.text);
-            if fixed != out.text {
-                eprintln!("[whimpr] DICTIONARY: \"{fixed}\"");
-            }
-            out.text = fixed;
-        }
-        if settings.cleanup_level.forces_lowercase()
-            && !matches!(settings.cleanup_mode, CleanupMode::Raw)
-        {
-            out.text = whimpr_core::cleanup::messaging_style(&out.text);
-        }
-        out
-    }
-
-    /// Clean a raw transcript per the current settings (mode + level), feeding in the
-    /// dictionary vocabulary relevant to this utterance. A cloud provider that is
-    /// unavailable or errors falls back to the local model; raw is the last resort,
-    /// used when cleanup is off, no engine at all is available, or the gates reject
-    /// the edit.
-    fn run_cleanup(raw: &str, settings: &whimpr_core::Settings) -> Cleaned {
-        let level = settings.cleanup_level;
-        if matches!(settings.cleanup_mode, CleanupMode::Raw) || level.bypasses_llm() {
-            // Raw by request, not by failure — so nothing is degraded here.
-            return Cleaned { text: raw.to_string(), engine: "raw", degraded: None };
-        }
-        // Turn explicit spoken layout cues ("new line", "new paragraph") into break
-        // markers up front — the model passes an opaque marker through reliably but
-        // mangles the literal cue words. The model sees `raw` (with markers); the gate
-        // and any raw fallback use `raw_out` (markers restored to real breaks) so we
-        // never paste a "[[NL]]" token or lose an explicit break.
-        let raw_norm = whimpr_core::cleanup::pre_normalize_layout(raw);
-        let raw = raw_norm.as_str();
-        let raw_out = whimpr_core::cleanup::post_process(&raw_norm);
-        // Selected again rather than handed down from `biased_retranscribe`: that pass
-        // filtered against the *unprompted* transcript, and by now the text may have
-        // been improved, layout markers inserted, or the prompted pass rejected. Each
-        // stage picking vocab for the text it is actually about to send is cheaper than
-        // reasoning about which earlier transcript the list came from.
-        let vocab = DICTIONARY
+        let raw_mode = matches!(settings.cleanup_mode, CleanupMode::Raw);
+        // Cloned, not held: the provider call below runs for seconds and the Hub
+        // reads the dictionary too, so borrowing the mutex across it would freeze
+        // the UI mid-dictation for the same reason `LOCAL` is never locked from a
+        // Tauri command.
+        let dict = DICTIONARY
             .get()
-            .map(|d| d.lock().unwrap().prefilter(raw, 15))
+            .map(|d| d.lock().unwrap().clone())
             .unwrap_or_default();
         let app_bundle_id = TARGET_APP.get().and_then(|m| m.lock().unwrap().clone());
         if let Some(app) = app_bundle_id.as_deref() {
             eprintln!("[whimpr] cleanup target app: {app}");
         }
-        let ctx = CleanupContext {
-            level,
-            vocab,
-            app_bundle_id,
-            ..Default::default()
-        };
+        let prep = pipeline::prepare(raw, settings.cleanup_level, &dict, app_bundle_id);
+        run_cleanup(&prep, &settings, &dict, raw_mode)
+    }
+
+    /// Run the selected cleanup provider over a [`pipeline::Prepared`], walking down
+    /// the fallback chain as engines come up unavailable.
+    ///
+    /// A cloud provider that is unavailable or errors falls back to the local model;
+    /// raw is the last resort, used when cleanup is off, no engine at all is
+    /// available, or the gates reject the edit.
+    fn run_cleanup(
+        prep: &pipeline::Prepared,
+        settings: &whimpr_core::Settings,
+        dict: &whimpr_core::DictionaryStore,
+        raw_mode: bool,
+    ) -> Finished {
+        if raw_mode || prep.level().bypasses_llm() {
+            // Raw by request, not by failure — so nothing is degraded here.
+            return pipeline::raw_only(prep, None, dict, raw_mode);
+        }
         // Which engine actually ran, and why it was not the selected one. `Cell`
         // rather than return values because the fallback chain below is a stack of
         // closures, and threading a label through each one obscures what it does.
-        let served_by = std::cell::Cell::new("raw");
+        let served_by = std::cell::Cell::new(Engine::Raw);
         let degraded = std::cell::RefCell::new(None::<String>);
         // Run the on-device model with the same prompt + per-app formatting.
         let run_local = || -> Option<anyhow::Result<String>> {
@@ -814,12 +796,13 @@ mod imp {
                 m.lock().unwrap().as_mut().map(|w| {
                     // System prompt + few-shot demonstration turns + the transcript,
                     // so the on-device model actually produces newlines/lists and
-                    // resolves self-corrections instead of just being told to.
-                    let messages = whimpr_core::cleanup::build_messages(raw, &ctx);
-                    w.cleanup(&messages, whimpr_core::cleanup::max_tokens_for(raw))
+                    // resolves self-corrections instead of just being told to. That
+                    // sequence and the token budget were both computed once, by
+                    // `pipeline::prepare`, so the two providers cannot drift.
+                    w.cleanup(&prep.messages, prep.max_tokens)
                 })
             })
-            .inspect(|_| served_by.set("local"))
+            .inspect(|_| served_by.set(Engine::Local))
         };
         // A cloud attempt that produces no text falls back to the on-device model
         // rather than to raw. Two different failures land here and both must survive
@@ -846,8 +829,13 @@ mod imp {
         let run_cloud = || {
             OPENAI
                 .get()
-                .and_then(|m| m.lock().unwrap().as_ref().map(|p| p.cleanup(raw, &ctx)))
-                .inspect(|_| served_by.set("cloud"))
+                .and_then(|m| {
+                    m.lock()
+                        .unwrap()
+                        .as_ref()
+                        .map(|p| p.cleanup(&prep.model_input, &prep.ctx))
+                })
+                .inspect(|_| served_by.set(Engine::Cloud))
         };
         // Selected provider; Local mode uses the worker directly.
         let result: Option<anyhow::Result<String>> = match settings.cleanup_mode {
@@ -872,53 +860,32 @@ mod imp {
         };
         match result {
             Some(Ok(cleaned)) => {
-                // Deterministic safety net: convert any leftover spoken layout cue the
-                // model missed into real line breaks, strip stray code fences, cap blank
-                // lines. Guarantees no "new line"/"new paragraph" word reaches the cursor.
-                let cleaned = whimpr_core::cleanup::post_process(&cleaned);
-                // The prompt forbids em and en dashes; this is what makes it true. It
-                // runs before the gate so what the gate judges is what gets pasted.
-                let cleaned = whimpr_core::cleanup::de_dash(&cleaned);
-                // Rule 1 asks for filler removal and the model delivers about half of
-                // it. This deletes the ones it set off with commas — its own judgment
-                // that they were asides — for the same reason, and before the gate.
-                let cleaned = whimpr_core::cleanup::strip_parenthetical_fillers(&cleaned);
-                // The gate sees the same vocab the prompt did, so the spellings the
-                // dictionary authorized don't read as the model inventing words.
-                match whimpr_core::cleanup::evaluate_gates(&raw_out, &cleaned, level, &ctx.vocab) {
-                    whimpr_core::cleanup::GateVerdict::Pass => {
-                        Cleaned { text: cleaned, engine: served_by.get(), degraded: degraded.take() }
-                    }
-                    // The reason is recorded, not just the fact: which gate fired is
-                    // the difference between "the model rewrote it" and "the model
-                    // answered the question instead of transcribing it".
-                    whimpr_core::cleanup::GateVerdict::Fail(reason) => {
-                        eprintln!("[whimpr] cleanup gate rejected the edit ({reason:?}) — pasting raw");
-                        Cleaned {
-                            text: raw_out,
-                            engine: "raw",
-                            degraded: Some(format!("gate_rejected: {reason:?}")),
-                        }
-                    }
+                // The deterministic passes, the gate, and the trailing dictionary and
+                // register passes, in the one order that is correct — see
+                // `whimpr_core::pipeline`.
+                let mut out = pipeline::finish(prep, &cleaned, served_by.get(), dict, raw_mode);
+                if matches!(out.engine, Engine::Raw) {
+                    eprintln!(
+                        "[whimpr] cleanup gate rejected the edit ({}) — pasting raw",
+                        out.degraded.as_deref().unwrap_or("gate_rejected")
+                    );
+                } else if out.degraded.is_none() {
+                    // The edit stood, but the engine that produced it may still not be
+                    // the selected one — a cloud key that 429'd and fell through to the
+                    // local model succeeds here, and that is worth recording.
+                    out.degraded = degraded.take();
                 }
+                out
             }
             Some(Err(e)) => {
                 eprintln!("[whimpr] cleanup failed ({e}) — pasting raw");
-                Cleaned {
-                    text: raw_out,
-                    engine: "raw",
-                    degraded: Some(format!("cleanup_error: {e}")),
-                }
+                pipeline::raw_only(prep, Some(format!("cleanup_error: {e}")), dict, raw_mode)
             }
             None => {
                 // In a cloud mode this means the cloud attempt already failed *and*
                 // the local worker is missing too — every engine is out.
                 eprintln!("[whimpr] no cleanup engine available — pasting raw");
-                Cleaned {
-                    text: raw_out,
-                    engine: "raw",
-                    degraded: Some("no_engine".to_string()),
-                }
+                pipeline::raw_only(prep, Some("no_engine".to_string()), dict, raw_mode)
             }
         }
     }
@@ -1286,7 +1253,7 @@ mod imp {
                                         asr_ms: asr_ms as u32,
                                         cleanup_ms,
                                         asr_engine,
-                                        cleanup_engine: cleaned.engine,
+                                        cleanup_engine: cleaned.engine.as_str(),
                                         degraded,
                                     },
                                 );

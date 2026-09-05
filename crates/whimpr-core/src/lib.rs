@@ -12,6 +12,7 @@
 pub mod asr;
 pub mod cleanup;
 pub mod dictionary;
+pub mod pipeline;
 pub mod settings;
 pub mod state;
 pub mod stats;
@@ -20,6 +21,7 @@ pub mod types;
 pub use asr::{AsrEngine, AsrEngineId, Transcript};
 pub use cleanup::{CleanupContext, CleanupLevel, CleanupProvider, ProviderId, VocabEntry};
 pub use dictionary::{DictSource, DictionaryEntry, DictionaryStore};
+pub use pipeline::{Engine, Finished, Prepared};
 pub use settings::{
     AsrMode, CleanupMode, Settings, TriggerMode, GROQ_ASR_MODEL, GROQ_ASR_URL, GROQ_BASE_URL,
     GROQ_MODEL,

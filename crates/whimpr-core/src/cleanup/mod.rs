@@ -77,9 +77,14 @@ pub trait CleanupProvider: Send + Sync {
 /// One chat turn in a cleanup request. `role` is "system", "user", or "assistant".
 /// Providers translate this into their own wire envelope (chat-completions JSON,
 /// or the local worker's ChatML).
+///
+/// `role` is an owned `String` rather than the `&'static str` the four construction
+/// sites below would allow, because [`crate::pipeline::Prepared`] carries these
+/// across an FFI boundary as JSON — and a borrowed `'static` field can serialize
+/// but cannot deserialize.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CleanupMsg {
-    pub role: &'static str,
+    pub role: String,
     pub content: String,
 }
 
@@ -130,14 +135,14 @@ pub fn max_tokens_for(raw: &str) -> u32 {
 pub fn build_messages(raw: &str, ctx: &CleanupContext) -> Vec<CleanupMsg> {
     let mut msgs = Vec::with_capacity(prompts::FEW_SHOT.len() * 2 + 2);
     msgs.push(CleanupMsg {
-        role: "system",
+        role: "system".to_string(),
         content: prompts::system_for(ctx.level, ctx.app_bundle_id.as_deref()),
     });
     for (input, output) in prompts::FEW_SHOT {
-        msgs.push(CleanupMsg { role: "user", content: wrap_transcript(input) });
-        msgs.push(CleanupMsg { role: "assistant", content: (*output).to_string() });
+        msgs.push(CleanupMsg { role: "user".to_string(), content: wrap_transcript(input) });
+        msgs.push(CleanupMsg { role: "assistant".to_string(), content: (*output).to_string() });
     }
-    msgs.push(CleanupMsg { role: "user", content: assemble_user_message(raw, ctx) });
+    msgs.push(CleanupMsg { role: "user".to_string(), content: assemble_user_message(raw, ctx) });
     msgs
 }
 
