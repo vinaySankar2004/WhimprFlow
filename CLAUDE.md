@@ -1,5 +1,12 @@
 # CLAUDE.md
 
+> **Were you asked to *install* WhimprFlow, not develop it?** Then this file is not
+> for you — it is the working agreement for changing the code, and following it will
+> send you building a Rust toolchain nobody needs. Read
+> **[docs/INSTALL.md](docs/INSTALL.md)** instead; it opens with a runbook written for
+> exactly that job. You do not need this repository, Rust, Node, Xcode or a build.
+> Everything below assumes you are here to modify the app.
+
 Local-first voice dictation: hold Fn, speak, release, clean text lands at the
 cursor. Rust + Tauri v2 core, React/TS webviews, Whisper on Metal for ASR, a
 llama.cpp worker for cleanup. **macOS only** — there are no `cfg` branches or

@@ -13,6 +13,7 @@ export type BarState =
 
 type StateEvent = { state: BarState };
 type WaveformEvent = { bars: number[] };
+type NoticeEvent = { text: string };
 
 async function tauriListen<T>(event: string, cb: (payload: T) => void): Promise<() => void> {
   try {
@@ -187,6 +188,10 @@ export function FlowBar() {
   // A locked hands-free session auto-stops at the cap. Without this the recording
   // just ends mid-sentence with no warning, which reads as a crash.
   const [nearCap, setNearCap] = useState(false);
+  // A specific reason for an error, when the backend has one. "Something's off" is
+  // fine for a one-off failure and useless for a misconfiguration, which recurs on
+  // every attempt until the person is told what to fix.
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     // listen() resolves asynchronously, so a cleanup that runs before it settles
@@ -202,7 +207,13 @@ export function FlowBar() {
         setState(p.state);
         // Any state change ends the session the warning was about.
         setNearCap(false);
+        // The notice arrives immediately BEFORE the error state it explains, so it
+        // is cleared on every other state rather than on all of them.
+        if (p.state !== "error") setNotice(null);
       }),
+    );
+    register(
+      tauriListen<NoticeEvent>("whimpr://flowbar/notice", (p) => setNotice(p.text)),
     );
     register(tauriListen<WaveformEvent>("whimpr://audio/waveform", (p) => setBars(p.bars)));
     register(tauriListen("whimpr://session-cap", () => setNearCap(true)));
@@ -220,7 +231,7 @@ export function FlowBar() {
     state === "transcribing"
       ? "Cleaning up…"
       : state === "error"
-        ? "Something's off"
+        ? (notice ?? "Something's off")
         : state === "cancelled"
           ? "Discarded"
           : "Done";
@@ -235,7 +246,11 @@ export function FlowBar() {
     ? { w: nearCap ? 322 : 260, h: 46 } // the caption needs its own room, not the waveform's
     : processing
       ? { w: 226, h: 38 }
-      : { w: 190, h: 38 };
+      : notice
+        ? // A reason is a sentence, not a word. At 190px it truncates to something
+          // shorter than "Something's off" and the whole point of it is lost.
+          { w: 340, h: 38 }
+        : { w: 190, h: 38 };
 
   return (
     <div

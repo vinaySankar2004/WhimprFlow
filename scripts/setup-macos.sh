@@ -22,7 +22,15 @@
 #
 # Bash 3.2 compatible on purpose — that is what /bin/bash is on a stock Mac.
 #
-# Usage: scripts/setup-macos.sh [--cleanup-model auto|small|large] [--no-launch]
+# `--cloud` installs with NO models at all: 14 MB instead of ~2.9 GB, and both
+# stages run on Groq. That is the right default for a Mac that is not the developer's
+# — a multi-gigabyte download is where a non-technical install actually stops, and
+# the free tier needs no card. It costs privacy, which is why it is a flag and not
+# the default: cloud ASR uploads the recording, cloud cleanup uploads the transcript.
+# It writes settings.json so the app comes up already pointed at the cloud, and the
+# app's own setup screen then asks for the key.
+#
+# Usage: scripts/setup-macos.sh [--cloud] [--cleanup-model auto|small|large] [--no-launch]
 set -euo pipefail
 
 REPO="vinaySankar2004/WhimprFlow"
@@ -32,9 +40,11 @@ MODELS="$SUPPORT/models"
 ASSET="WhimprFlow.app.zip"
 CLEANUP_CHOICE="auto"
 LAUNCH=1
+CLOUD=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --cloud) CLOUD=1; shift ;;
     --cleanup-model) CLEANUP_CHOICE="${2:?--cleanup-model needs auto|small|large}"; shift 2 ;;
     --no-launch) LAUNCH=0; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -181,10 +191,42 @@ fetch_model() {
        Run this script again; it will resume."
 }
 
-step "Fetching models into $MODELS"
-mkdir -p "$MODELS"
-fetch_model "$WHISPER_MODEL"
-fetch_model "$CLEANUP_MODEL"
+if [ "$CLOUD" = "1" ]; then
+  step "Skipping models (cloud install)"
+  echo "    Nothing to download. Both stages will run on Groq."
+  mkdir -p "$SUPPORT"
+
+  # Only when absent. On a re-run this file holds the user's own choices, and
+  # resetting someone's cleanup level and dictation key to install an update is a
+  # worse bug than not writing the file at all.
+  SETTINGS="$SUPPORT/settings.json"
+  if [ -f "$SETTINGS" ]; then
+    echo "    settings.json already exists — leaving it alone."
+  else
+    # Written rather than left to the app's defaults, which are Local for both
+    # stages. The app does fall forward to the cloud when it finds no model, so
+    # this is belt and braces — but it is also what makes the Hub show CLOUD
+    # instead of announcing an engine that is not there.
+    cat > "$SETTINGS" <<'JSON'
+{
+  "cleanup_mode": "open_ai",
+  "asr_mode": "cloud",
+  "cleanup_level": "light",
+  "trigger_mode": "hold",
+  "openai_model": "openai/gpt-oss-20b",
+  "openai_base_url": "https://api.groq.com/openai/v1",
+  "sound_on_start": true,
+  "store_raw_transcripts": true
+}
+JSON
+    echo "    Wrote settings.json — cloud speech recognition and cloud cleanup."
+  fi
+else
+  step "Fetching models into $MODELS"
+  mkdir -p "$MODELS"
+  fetch_model "$WHISPER_MODEL"
+  fetch_model "$CLEANUP_MODEL"
+fi
 
 # ---------------------------------------------------------------- the Fn key
 
@@ -242,6 +284,19 @@ else
   echo "Without it, holding Fn does nothing in every app except WhimprFlow"
   echo "itself, which looks like the app is broken rather than unpermitted."
   open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" || true
+fi
+if [ "$CLOUD" = "1" ]; then
+  echo
+  echo "AND, because this is a cloud install with no models on disk:"
+  echo "WhimprFlow needs a free Groq API key, or it has nothing to"
+  echo "transcribe with. Its setup screen asks for one and will not let"
+  echo "you past until it has it."
+  echo
+  echo "  1. Open https://console.groq.com  (sign in; no card needed)"
+  echo "  2. API Keys -> Create API Key, and copy it"
+  echo "  3. Paste it into the 'Groq API key' step in WhimprFlow"
+  echo
+  echo "It is stored in your macOS Keychain, never in a file."
 fi
 echo
 echo "Then: hold Fn, speak, let go. The text lands at your cursor."

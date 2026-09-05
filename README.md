@@ -14,16 +14,29 @@ lists and newlines) by a local LLM. Both stages are on-device by default; each c
 switched to the cloud independently, and neither is on unless you turn it on.
 
 **macOS 14+ (Apple Silicon).** One command installs it — no Rust, Node or Xcode
-needed, and no clone:
+needed, and no clone.
+
+**Nothing on this Mac** — 14 MB, seconds, both stages on Groq's free tier. Needs a
+free API key (no card), which the app asks for on first launch:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vinaySankar2004/WhimprFlow/main/scripts/setup-macos.sh | bash -s -- --cloud
+```
+
+**Everything on this Mac** — ~2.9 GB of models, nothing ever leaves the machine, no
+account:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vinaySankar2004/WhimprFlow/main/scripts/setup-macos.sh | bash
 ```
 
-That fetches the latest release, verifies it, downloads the two models, and tells you
-the one thing it can't do for you — granting Accessibility, which macOS lets no
-program grant itself. Full walkthrough and troubleshooting in
-[docs/INSTALL.md](docs/INSTALL.md). To build it yourself instead, see **Build** below.
+Either way it fetches the latest release, verifies it, and tells you the one thing it
+can't do for you — granting Accessibility, which macOS lets no program grant itself.
+Pick `--cloud` if a multi-gigabyte download is the thing that would stop you, and the
+plain command if you'd rather your voice never left the room; you can switch later
+without reinstalling. Full walkthrough and troubleshooting in
+[docs/INSTALL.md](docs/INSTALL.md) — which opens with a runbook if you'd rather hand
+this whole job to Claude Code. To build it yourself instead, see **Build** below.
 
 ## What's in it
 

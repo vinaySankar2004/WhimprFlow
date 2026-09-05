@@ -777,6 +777,33 @@ Developer ID certificate. That guard is deliberate: a build signed with a
 development certificate passes every local check and then will not open on
 anyone else's Mac.
 
+### Installing with no models at all
+
+`setup-macos.sh --cloud` downloads the 14 MB app and nothing else, and writes a
+`settings.json` with both stages pointed at Groq. It is the install for a Mac that did
+not build the app, because ~2.9 GB of models is where a setup like that actually
+stalls, and the free tier needs no card. The privacy cost is real and is why it is a
+flag rather than the default — cloud ASR uploads the recording, cloud cleanup uploads
+the transcript — so `docs/INSTALL.md` makes the agent running it *ask* rather than
+choose. It never overwrites an existing `settings.json`: re-running the script to
+update the app must not reset someone's cleanup level and dictation key.
+
+**The app also falls forward on its own**, and does not rely on that file. When
+`asr_mode`/`cleanup_mode` say Local but no model is on disk and a cloud engine is
+configured, the cloud engine is used — the mirror of the existing cloud-fails-to-local
+rule. Without it a cloud-only install whose `settings.json` was never written, or was
+reset by one unparseable field, is an app that transcribes with nothing and says
+nothing while a perfectly good key sits in the Keychain. It cannot fire on a machine
+that has a model, and reaching it requires a key the user entered themselves.
+
+Being left with no engine at all is the one state a cloud install can land in, so it
+is the one failure that names itself: `notify_error` puts the reason on the pill ("No
+API key. Open WhimprFlow to add one.") instead of the machine's silent `Failed` path,
+which is right for a stray Fn tap and useless for a misconfiguration that will recur
+on every attempt. The Hub's setup screen turns the key into a required step whenever
+`asr_model` is absent, with the field inline rather than a pointer to Settings — a
+required step that sends you elsewhere to do it is one people stop at.
+
 ## macOS only
 
 This is a macOS 14+ / Apple Silicon app and the code says so: no `cfg` branches,

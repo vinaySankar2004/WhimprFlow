@@ -217,6 +217,12 @@ mod imp {
         text: String,
     }
 
+    /// A specific reason to show on the error pill — see [`notify_error`].
+    #[derive(Clone, Serialize)]
+    struct NoticePayload {
+        text: String,
+    }
+
     /// The whisper ASR model to load: prefer the most accurate one present, in
     /// descending quality order, falling back to the small base model. Bigger
     /// English models mis-hear names/technical terms far less (and better ASR means
@@ -639,14 +645,29 @@ mod imp {
             }
             None => run_local(),
         };
+        let run_cloud = || {
+            OPENAI
+                .get()
+                .and_then(|m| m.lock().unwrap().as_ref().map(|p| p.cleanup(raw, &ctx)))
+        };
         // Selected provider; Local mode uses the worker directly.
         let result: Option<anyhow::Result<String>> = match settings.cleanup_mode {
-            CleanupMode::OpenAi => or_local(
-                OPENAI
-                    .get()
-                    .and_then(|m| m.lock().unwrap().as_ref().map(|p| p.cleanup(raw, &ctx))),
-            ),
-            CleanupMode::Local => run_local(),
+            CleanupMode::OpenAi => or_local(run_cloud()),
+            // The mirror of `or_local`, for the install that has no local model to
+            // fall back to. `CleanupMode` defaults to Local, so a cloud-only machine
+            // whose settings.json never got written would otherwise paste raw,
+            // filler-ridden text forever with a working key in the Keychain — and
+            // read as cleanup being broken rather than unconfigured.
+            CleanupMode::Local => run_local().or_else(|| {
+                let cloud = run_cloud();
+                if cloud.is_some() {
+                    eprintln!(
+                        "[whimpr] no local cleanup model — using the cloud endpoint, which is \
+                         configured"
+                    );
+                }
+                cloud
+            }),
             CleanupMode::Raw => None,
         };
         match result {
@@ -696,6 +717,32 @@ mod imp {
             BarState::Cancelled => "cancelled",
             BarState::Error => "error",
         }
+    }
+
+    /// Show the error pill carrying a specific reason, then clear it.
+    ///
+    /// The machine's own `Failed` path returns the pill to idle without a word,
+    /// which is right for an ordinary dud dictation (a stray Fn tap should not
+    /// flash a warning) and wrong for a misconfiguration, which will happen again
+    /// on every attempt until someone is told what it is. So this is a presentation
+    /// concern the shell owns, alongside the linger timings in `apply_action` — the
+    /// machine is still told the session failed, and still decides the state.
+    ///
+    /// The text has to survive being read on a 190px pill for under two seconds, so
+    /// it names the fix rather than the fault.
+    fn notify_error(app: &AppHandle, reason: &str) {
+        let _ = app.emit_to(
+            OVERLAY_LABEL,
+            "whimpr://flowbar/notice",
+            NoticePayload { text: reason.to_string() },
+        );
+        emit_bar(app, "error");
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            // Longer than the generic error's 1800 ms: this one has words to read.
+            std::thread::sleep(Duration::from_millis(3200));
+            emit_bar(&app2, "idle");
+        });
     }
 
     fn emit_bar(app: &AppHandle, state: &'static str) {
@@ -864,20 +911,57 @@ mod imp {
                     // makes: a missing key or a dead network costs you speed, never the
                     // dictation you just spoke.
                     let local_asr = || ASR.get().cloned().map(|a| a as Arc<dyn AsrEngine>);
-                    let asr: Option<Arc<dyn AsrEngine>> = match current_settings().asr_mode {
-                        whimpr_core::AsrMode::Cloud => CLOUD_ASR
+                    let cloud_asr = || {
+                        CLOUD_ASR
                             .get()
                             .and_then(|m| m.lock().unwrap().clone())
                             .map(|c| c as Arc<dyn AsrEngine>)
-                            .or_else(|| {
-                                eprintln!("[whimpr] cloud ASR has no key — using the local model");
-                                local_asr()
-                            }),
-                        whimpr_core::AsrMode::Local => local_asr(),
+                    };
+                    let asr: Option<Arc<dyn AsrEngine>> = match current_settings().asr_mode {
+                        whimpr_core::AsrMode::Cloud => cloud_asr().or_else(|| {
+                            eprintln!("[whimpr] cloud ASR has no key — using the local model");
+                            local_asr()
+                        }),
+                        // Falling *forward* to the cloud, and only when there is no
+                        // local model at all. A cloud-only install has none on disk,
+                        // and `AsrMode` defaults to Local — so without this, an install
+                        // whose settings.json did not get written (or got reset by an
+                        // unparseable field) is an app that transcribes with nothing and
+                        // says nothing, while a perfectly good key sits in the Keychain.
+                        // Not a silent privacy change: it cannot fire on a machine that
+                        // has a model, and reaching it at all requires a key the user
+                        // entered themselves.
+                        whimpr_core::AsrMode::Local => local_asr().or_else(|| {
+                            let cloud = cloud_asr();
+                            if cloud.is_some() {
+                                eprintln!(
+                                    "[whimpr] no local speech model — using cloud ASR, which is \
+                                     configured"
+                                );
+                            }
+                            cloud
+                        }),
                     };
                     let Some(asr) = asr else {
-                        eprintln!("[whimpr] ASR not ready (model still loading or missing)");
-                        finish();
+                        // Every engine is out. This is a *configuration* failure, not a
+                        // failed dictation, and it is the one an install can land in:
+                        // a cloud-only machine has no model on disk, so the moment the
+                        // key is missing or wrong there is nothing left to transcribe
+                        // with. Reporting it as an ordinary failure returns the pill to
+                        // idle and says nothing, which is indistinguishable from the Fn
+                        // key not being detected at all — the exact wrong thing to send
+                        // someone hunting for.
+                        let settings = current_settings();
+                        let reason = if matches!(settings.asr_mode, whimpr_core::AsrMode::Cloud) {
+                            "No API key. Open WhimprFlow to add one."
+                        } else if asr_model_name().is_some() {
+                            "Still loading the model. Try again in a moment."
+                        } else {
+                            "No speech model. Open WhimprFlow to set one up."
+                        };
+                        eprintln!("[whimpr] no ASR engine available: {reason}");
+                        notify_error(&app2, reason);
+                        handle_input(Input::Pipeline(PipelineEvent::Failed { session }));
                         return;
                     };
                     // Cancelled while the mic was stopping — don't burn seconds of GPU

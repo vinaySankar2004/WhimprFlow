@@ -2,19 +2,93 @@
 
 For a Mac that is **not** the one that built the app — a friend's, a parent's, a
 second machine. Nothing here needs Rust, Node, CMake, Xcode, or a clone of this
-repository. The app in a release is 14 MB and statically linked; the models are
-downloaded straight from Hugging Face.
+repository. The app in a release is 14 MB and statically linked.
 
-If you are reading this as an AI agent asked to install WhimprFlow: run the one
-command below and then tell the user about the *one* thing you cannot do for them —
-granting Accessibility. Everything else is handled.
+---
+
+## Runbook for an AI agent asked to install this
+
+You have probably been handed a repository link and asked to "download this" or "set
+this up". **Do not build anything.** Do not run `cargo`, `pnpm`, `npm` or `tauri`; do
+not install a toolchain; the repository is not needed at all. There is a published
+release and a script that installs it. Ignore `CLAUDE.md` — that is for people
+changing the code.
+
+Work through these in order and do not skip the verification, because every failure
+mode in this app looks like "it just doesn't do anything".
+
+**1. Pick the install mode.** Ask the user which, in these terms:
+
+| | Downloads | Speech stays on the Mac? | Needs |
+|---|---|---|---|
+| **Cloud** (`--cloud`) | 14 MB | No — audio and text go to Groq | a free Groq API key |
+| **Local** (default) | ~2.9 GB | Yes, entirely | nothing |
+
+Cloud is the right answer for most people who did not build this: it installs in
+seconds instead of downloading gigabytes, and the free tier needs no card. Local is
+the right answer for anyone who does not want their voice leaving the machine. **Ask;
+do not assume.** It is a privacy decision and it is theirs.
+
+**2. Run the installer.** One command, and it is not silent — expect a few minutes on
+the local path, almost all of it model downloads.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vinaySankar2004/WhimprFlow/main/scripts/setup-macos.sh | bash -s -- --cloud
+```
+
+Drop `-s -- --cloud` for the local install. If the machine is Intel or on macOS 13 or
+older the script refuses and says why; that is a hard stop, not something to work
+around.
+
+**3. On the cloud path, get the user a Groq key.** The app cannot transcribe without
+one, and its setup screen will not let them past until it has one. Walk them through
+it — **do not ask them to paste the key to you, and do not type it in for them:**
+
+1. Open <https://console.groq.com> and sign in. No card is required.
+2. **API Keys → Create API Key**, then copy it.
+3. Paste it into the **Groq API key** step in the WhimprFlow window.
+
+It goes into their macOS Keychain, never into a file.
+
+**4. Tell them the one thing no script can do.** macOS will not let any program grant
+itself Accessibility — there is no flag, no API, and `tccutil` can only *reset* a
+grant. The script opens the right pane; the switch is theirs to flip:
+
+> **System Settings → Privacy & Security → Accessibility → turn WhimprFlow on.**
+
+Say why, because the symptom is misleading: without it, holding Fn does nothing in
+every app *except* WhimprFlow itself — which is never, since dictating means being in
+some other app. It reads as a broken app rather than a missing permission.
+
+**5. Verify, rather than declaring success.** The app writes down what it can actually
+do at each launch:
+
+```bash
+cat ~/Library/Application\ Support/WhimprFlow/permissions.json
+```
+
+`"accessibility":true` is the one that matters. **Do not try to check this yourself
+with a script or a binary you run from the shell** — `AXIsProcessTrusted()` answers
+for the *calling* process, so anything you launch reports your terminal's permissions
+and not the app's. That file is the only honest answer.
+
+Then have the user hold **Fn**, say a sentence, and let go, with the cursor in a text
+field. That is the only real test. If the pill appears and says something is wrong, it
+names the fix — read it to them.
+
+**6. Do not clean up the repository if you cloned one.** They may want it. Ask.
+
+Failure modes and what they actually mean are in *When something is wrong*, below.
+
+---
 
 ## Requirements
 
 - **Apple Silicon** (M1 or newer). The release binary is arm64 and ASR runs on
   Metal; there is no Intel path and the script refuses to continue on one.
 - **macOS 14 or newer.**
-- **~2–3 GB free** — 14 MB of app, the rest models.
+- **~2–3 GB free** for a local install — 14 MB of app, the rest models. A
+  `--cloud` install needs 14 MB and no models at all.
 - An **admin** account, or the install step will ask for a password.
 
 ## The one command
@@ -25,6 +99,23 @@ curl -fsSL https://raw.githubusercontent.com/vinaySankar2004/WhimprFlow/main/scr
 
 That is the whole installation. It takes a few minutes, almost all of it
 downloading models.
+
+**Or, with no models at all** — 14 MB, installs in seconds, and both stages run on
+Groq's free tier instead of on this Mac:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vinaySankar2004/WhimprFlow/main/scripts/setup-macos.sh \
+  | bash -s -- --cloud
+```
+
+That is the better install for a Mac that did not build the app: a multi-gigabyte
+download is where a setup like this actually stalls. The trade is real and worth
+stating plainly — cloud ASR uploads the recording and cloud cleanup uploads the
+transcript, where a local install sends neither. It also needs a free Groq API key
+(no card), which the app's setup screen asks for and will not let you past without.
+Everything else is identical, and switching to local later is just downloading the
+models into `~/Library/Application Support/WhimprFlow/models/` and picking the
+on-device engines in Settings.
 
 To choose the cleanup model yourself instead of letting it pick by RAM:
 
@@ -40,7 +131,10 @@ curl -fsSL https://raw.githubusercontent.com/vinaySankar2004/WhimprFlow/main/scr
 3. **Installs to `/Applications`**, then clears the download's quarantine flag and
    verifies the code signature.
 4. **Downloads two models** into `~/Library/Application Support/WhimprFlow/models/`,
-   resuming if the connection drops.
+   resuming if the connection drops — or, with `--cloud`, downloads nothing and
+   writes a `settings.json` pointed at Groq for both stages. It will not overwrite a
+   `settings.json` that already exists, so re-running it to update the app never
+   resets anyone's choices.
 5. **Frees up the Fn key** by setting `AppleFnUsageType` to Do Nothing.
 6. **Launches the app** and reports which permissions it actually got.
 
@@ -125,6 +219,17 @@ fine and transcribes fine without either, and silently pastes raw text.
 **No local cleanup model and no wish to download one.** Settings → Cleanup Engine →
 Cloud, then the **Groq** preset and a free key from console.groq.com. The transcript
 is sent; the audio never is.
+
+**On a `--cloud` install, the pill says "No API key. Open WhimprFlow to add one."**
+Exactly what it says: there are no models on this Mac, so without a key there is
+nothing to transcribe with. Open WhimprFlow and paste a key from console.groq.com
+into the **Groq API key** step. The pill names the fix rather than failing silently
+because this is the one state a cloud install can be left in.
+
+**On a `--cloud` install, dictation stops working after a lot of use in one day.**
+The free tier has a daily request cap. Cleanup absorbs that on a machine with a local
+model; a cloud-only one has nothing to fall back to, so it waits for the cap to
+reset. Downloading the two models (see *Which models*) removes the ceiling for good.
 
 ## Updating
 

@@ -6,6 +6,7 @@ import {
   requestAccessibility,
   requestMicrophone,
   requestInputMonitoring,
+  setApiKey,
   type FnKeyAction,
   type Status,
 } from "./api";
@@ -45,6 +46,7 @@ function Step({
   onGrant,
   actionLabel = "Grant",
   doneLabel = "Granted",
+  control,
 }: {
   n: number;
   title: string;
@@ -53,10 +55,12 @@ function Step({
   active: boolean;
   locked: boolean;
   required: boolean;
-  onGrant: () => void;
+  onGrant?: () => void;
   /** Button text — not every step is a permission grant. */
   actionLabel?: string;
   doneLabel?: string;
+  /** Replaces the button entirely. For a step that needs a field, not a grant. */
+  control?: React.ReactNode;
 }) {
   return (
     <div
@@ -101,6 +105,8 @@ function Step({
       </div>
       {done ? (
         <span style={{ color: theme.accentDeep, fontSize: 13, fontWeight: 600 }}>{doneLabel}</span>
+      ) : control ? (
+        control
       ) : (
         <button
           onClick={onGrant}
@@ -125,6 +131,77 @@ function Step({
   );
 }
 
+/**
+ * Paste-and-save for the Groq key, inline in the setup list.
+ *
+ * Inline rather than "go to Settings and find the Cleanup Engine pane": on a
+ * cloud-only install this is a required step, and a required step that sends you
+ * somewhere else to do it is one people stop at. The key never touches this
+ * component's props or any file — `setApiKey` hands it straight to the Keychain.
+ */
+function KeyField({ onSaved, disabled }: { onSaved: () => void; disabled: boolean }) {
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const trimmed = value.trim();
+
+  async function save() {
+    if (!trimmed || saving) return;
+    setSaving(true);
+    try {
+      await setApiKey("openai", trimmed);
+      // Clear it out of component state the moment it is stored; there is no reason
+      // for the key to sit in the render tree afterwards.
+      setValue("");
+      onSaved();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center", flex: "0 0 auto" }}>
+      <input
+        type="password"
+        value={value}
+        disabled={disabled}
+        placeholder="gsk_…"
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void save();
+        }}
+        style={{
+          width: 150,
+          borderRadius: 10,
+          border: `1px solid ${theme.border}`,
+          background: theme.pageBg,
+          color: theme.textBody,
+          padding: "9px 10px",
+          fontSize: 13,
+          fontFamily: font.ui,
+        }}
+      />
+      <button
+        onClick={() => void save()}
+        disabled={disabled || !trimmed || saving}
+        style={{
+          cursor: disabled || !trimmed ? "default" : "pointer",
+          border: "none",
+          borderRadius: 10,
+          padding: "9px 14px",
+          fontSize: 13,
+          fontWeight: 600,
+          fontFamily: font.ui,
+          color: "#fff",
+          background: disabled || !trimmed ? theme.textFaint : palette.slate900,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {saving ? "Saving…" : "Save"}
+      </button>
+    </div>
+  );
+}
+
 export function Onboarding({
   status,
   refresh,
@@ -143,7 +220,14 @@ export function Onboarding({
   const acc = status.accessibility;
   const mic = status.microphone;
   const inp = status.input_monitoring;
-  const canEnter = acc && mic;
+
+  // No Whisper model on disk means this machine was installed cloud-only: there is
+  // nothing to transcribe with locally, so an API key is not an enhancement here,
+  // it is the difference between the app working and doing nothing at all. On an
+  // install that did download the models this step never appears.
+  const cloudOnly = status.asr_model === null;
+  const needsKey = cloudOnly && !status.has_openai_key;
+  const canEnter = acc && mic && !needsKey;
 
   // The Fn key step is a nag, so it only appears for people who actually have the
   // clash — but once shown it stays for the session, so fixing it ticks green here
@@ -186,7 +270,7 @@ export function Onboarding({
               padding: "2px 7px",
             }}
           >
-            Local
+            {cloudOnly ? "Cloud" : "Local"}
           </span>
         </div>
         <p style={{ color: theme.textMuted, lineHeight: 1.5, margin: "0 0 24px" }}>
@@ -224,9 +308,26 @@ export function Onboarding({
           required={false}
           onGrant={() => requestInputMonitoring()}
         />
-        {(clash || everClashed) && (
+        {cloudOnly && (
           <Step
             n={4}
+            title="Groq API key"
+            detail={
+              status.has_openai_key
+                ? "Saved to your macOS Keychain, never to a file."
+                : "This Mac has no speech model downloaded, so WhimprFlow uses Groq for both steps. A key is free at console.groq.com — no card. It is stored in your macOS Keychain, never in a file."
+            }
+            done={status.has_openai_key}
+            active={acc && mic && !status.has_openai_key}
+            locked={!(acc && mic)}
+            required
+            doneLabel="Saved"
+            control={<KeyField onSaved={refresh} disabled={!(acc && mic)} />}
+          />
+        )}
+        {(clash || everClashed) && (
+          <Step
+            n={cloudOnly ? 5 : 4}
             title="Free up the Fn key"
             detail={
               clash
@@ -262,7 +363,11 @@ export function Onboarding({
             background: canEnter ? theme.accentDeep : theme.textFaint,
           }}
         >
-          {canEnter ? "Enter WhimprFlow →" : "Grant Accessibility + Microphone to continue"}
+          {canEnter
+            ? "Enter WhimprFlow →"
+            : needsKey && acc && mic
+              ? "Add your Groq key to continue"
+              : "Grant Accessibility + Microphone to continue"}
         </button>
 
         <p style={{ fontSize: 12, color: theme.textFaint, lineHeight: 1.5, marginTop: 16 }}>
