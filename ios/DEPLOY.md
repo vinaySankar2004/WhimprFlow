@@ -20,41 +20,57 @@ agreement is missing or has expired", which is not what it sounds like.
 
 ## Part 1 — onto your own phone
 
-### 1. Register the two App IDs
+### 1. Check whether the App IDs already exist
 
-The app and the keyboard are separate bundles and each needs its own identifier.
+**Look before you create.** Building the project once with automatic signing makes
+Xcode register both App IDs for you, named with an `XC ` prefix (`XC com whimpr
+whimprflow`). If you then try to register them by hand, Apple answers *"An App ID with
+Identifier 'com.whimpr.whimprflow' is not available. Please enter a different
+string."* — which sounds like somebody else owns it, and means you already do.
 
 1. Go to <https://developer.apple.com/account/resources/identifiers/list>.
-2. Make sure the team selector (top right) says **VSTTF2AM22**.
-3. **+** → **App IDs** → **App** → Continue.
-   - Description: `WhimprFlow`
-   - Bundle ID: **Explicit**, `com.whimpr.whimprflow`
-   - Under Capabilities, tick **App Groups**.
-   - Continue → Register.
-4. **+** again → **App IDs** → **App**.
-   - Description: `WhimprFlow Keyboard`
-   - Bundle ID: **Explicit**, `com.whimpr.whimprflow.keyboard`
-   - Tick **App Groups**.
-   - Continue → Register.
+2. Check the team selector (top right) says **VSTTF2AM22**.
+3. Look for `com.whimpr.whimprflow` and `com.whimpr.whimprflow.keyboard`.
+
+**If both are listed, skip to step 3** — Xcode registering an App ID does *not*
+configure App Groups on it, so there is still work to do.
+
+Only if one is missing, create it: **+** → **App IDs** → **App** → Continue.
+
+- Description `WhimprFlow`, Bundle ID **Explicit** `com.whimpr.whimprflow`
+- Under Capabilities tick **App Groups** → Continue → Register.
+- Repeat with `WhimprFlow Keyboard` / `com.whimpr.whimprflow.keyboard`.
+
+> Still told "not available" while it appears on neither list? Then it is registered
+> to another team — check your other team (3V3J78V32Q) with the team selector before
+> concluding it belongs to a stranger. Only a genuine outside collision needs a new
+> bundle id, and that means changing it in `ios/project.yml` (both targets), both
+> `.entitlements` files, `Info.plist`, `Shared/Handoff.swift` and
+> `Shared/Settings.swift` together.
 
 ### 2. Create the App Group
 
 This is the only channel between the keyboard and the app. Get it wrong and the
 keyboard reads an empty container — silently, with no error.
 
-1. Identifiers → the dropdown at top right that says "App IDs" → change it to **App
-   Groups** → **+**.
-2. Description: `WhimprFlow Shared`
-3. Identifier: **`group.com.whimpr.whimprflow`** — exactly this string. It must match
-   both `.entitlements` files character for character.
-4. Continue → Register.
+1. Identifiers → the dropdown at top right that says **App IDs** → change it to **App
+   Groups**.
+2. If `group.com.whimpr.whimprflow` is already there, skip to step 3. (Xcode creates
+   it in some situations and not others; either is fine.)
+3. **+** → Description `WhimprFlow Shared` → Identifier **`group.com.whimpr.whimprflow`**
+   — exactly this string, matching both `.entitlements` files character for character
+   → Continue → Register.
 
 ### 3. Assign the group to both App IDs
 
-Registering the group does not attach it to anything.
+**Do not skip this because the App IDs already existed.** Registering an App ID —
+whether you did it or Xcode did — attaches no groups, and neither does registering the
+group. This step is what connects them, and omitting it on *either* App ID leaves the
+keyboard reading an empty container with nothing logged anywhere.
 
 1. Identifiers → back to **App IDs** → click `com.whimpr.whimprflow`.
-2. Find **App Groups** in the capability list, click **Configure** (or **Edit**).
+2. Find **App Groups** in the capability list. Tick **Enable** if it is not already,
+   then click **Configure** (or **Edit**).
 3. Tick `group.com.whimpr.whimprflow` → Continue → Save.
 4. **Repeat for `com.whimpr.whimprflow.keyboard`.** Both, or the handoff is one-way.
 
