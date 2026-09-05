@@ -13,7 +13,7 @@ odd parts are odd. Everything below is the working agreement on top of it.
 ```bash
 ./dev.sh                                  # Vite + app, hot reload
 ./scripts/install-macos.sh                # build + install to /Applications + verify permissions
-cargo test -p whimpr-core -p whimpr-ipc   # 97 tests, fast, no models needed
+cargo test -p whimpr-core -p whimpr-ipc -p whimpr-audio -p whimpr-asr -p whimpr-tauri  # 126 tests, no models
 cd ui && node_modules/.bin/tsc --noEmit   # typecheck the UI
 cargo run -p whimpr-audio --example mic_check --release   # devices, formats, does capture work now
 cargo run -p whimpr-llm-worker --example dictionary_check --release            # dictionary, end to end
@@ -105,6 +105,40 @@ These are not hypotheticals; each one bit during development.
 - **Do not "fix" the in-process Fn tap on principle.** The callback is cheap, heavy
   work already runs on spawned threads, and tap-disabled-by-timeout is caught and
   re-enabled. Move it to the sidecar when a real symptom appears, not before.
+- **Auto-learn compares the pasted text to a *window* of the field, not to the whole
+  field.** Set-differencing the two token lists is the obvious version and is what
+  `changed_word` replaced: every word already in the field — an earlier dictation into
+  the same box, most often — counts as a word "added", so the one-in-one-out rule never
+  holds and nothing is ever learned after the first paste. It passes its tests either
+  way. Also, `caps_are_informative` is false at the Messaging level on purpose;
+  `force_lowercase` has flattened the paste by then, so a Titlecase requirement would
+  make that register the one that never learns.
+- **Cloud ASR must forward `prompt` and pin `language`.** The prompt is what
+  `initial_prompt` is locally — drop it and the dictionary silently stops working the
+  moment cloud ASR is selected, while `accept_prompted` compares two unbiased passes and
+  always keeps the first. And auto language detection on a short push-to-talk clip does
+  not mis-spell a word when it guesses wrong, it *translates* the utterance.
+- **`asr_mode` and `cleanup_mode` are separate settings on purpose.** They upload
+  different things — a transcript versus the recording. Do not merge them into one
+  "cloud" switch to tidy the UI; that trades the user's voice for a faster full stop
+  without asking.
+- **`keyring` needs its `apple-native` feature or it stores nothing.** keyring 3 makes
+  every platform store opt-in and silently substitutes an in-memory mock when none is
+  enabled: `set_password` returns `Ok`, the Keychain stays empty, and the Hub reports
+  "no key set" the instant after it said it saved. Nothing in the build output names
+  the store in use. `cargo tree -i keyring -f "{p} {f}"` showing an empty feature list
+  is the tell, and `keychain_tests` catches it by reading back through a *fresh*
+  `Entry` — a same-entry round trip passes under the mock and proves nothing.
+- **Cloud cleanup falls back to the local model, not to raw.** A free tier returns 429
+  the moment its daily cap lands, and pasting raw there hands back fillers with only a
+  log line to explain it — which reads as cleanup being broken. `or_local` in
+  `run_cleanup` covers both no-key and call-errored.
+- **The mic meter is logarithmic and quiet audio is normalized before ASR.** Neither is
+  decoration. `rms * 14.0` put quiet speech under the pill's idle shimmer, so speaking
+  softly rendered as silence; and Whisper *drops* soft words rather than mis-hearing
+  them, so an un-normalized quiet recording loses its ending. `normalize_for_asr` caps
+  gain at 8x and skips healthy audio — do not remove the cap, it is what stops room
+  tone being amplified into something the model hallucinates over.
 - **The cleanup model will not apply a listed mishear that looks like a real name.**
   It fixes what reads as a mistake ("monvi" → "Manvi") and refuses what reads as
   correct — "Hey Geeta, how's it going?" came back untouched with `Geetha (mis-heard

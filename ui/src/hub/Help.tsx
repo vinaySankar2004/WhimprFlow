@@ -42,7 +42,7 @@ function tips(mode: TriggerMode): { emoji: string; title: string; body: string }
     {
       emoji: "🔑",
       title: "Pick a cleanup engine",
-      body: "Under Settings → Cleanup Engine, run fully offline (Local), paste exactly what you said (Raw), or add an OpenAI / Anthropic key for cloud cleanup. Keys are stored in your macOS keychain.",
+      body: "Under Settings → Cleanup Engine, run fully offline (Local), paste exactly what you said (Raw), or add a key for cloud cleanup — faster, and free on Groq. Also in the tray menu. Keys are stored in your macOS keychain.",
     },
   ];
 }

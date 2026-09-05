@@ -18,7 +18,11 @@ whimpr-ipc = { path = "../crates/whimpr-ipc" }
 whimpr-audio = { path = "../crates/whimpr-audio" }
 whimpr-asr = { path = "../crates/whimpr-asr" }
 whimpr-cleanup = { path = "../crates/whimpr-cleanup" }
-keyring = "3"
+# `apple-native` is REQUIRED, not a tuning choice. keyring 3.x makes every platform
+# store opt-in: with no feature enabled it silently substitutes an in-memory mock, so
+# `set_password` returns Ok, nothing reaches the Keychain, and the next `Entry::new`
+# finds nothing. That presents as "saved to keychain" followed by "no key set".
+keyring = { version = "3", features = ["apple-native"] }
 strsim = "0.11"
 tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
 serde = { workspace = true }

@@ -20,24 +20,31 @@ use tauri::{
     tray::TrayIconBuilder,
     Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry,
 };
-use whimpr_core::{CleanupLevel, Settings, TriggerMode};
+use whimpr_core::{AsrMode, CleanupLevel, CleanupMode, Settings, TriggerMode};
 
 const OVERLAY_LABEL: &str = "whimpr_bar";
 const HUB_LABEL: &str = "main";
 
 /// The tray's quick settings, and the event the Hub hears when one is used.
 ///
-/// These three are on the tray because they are the ones worth changing *mid-task*,
-/// from whatever app you are dictating into: how hard cleanup edits, whether the
-/// key is held or tapped, and whether it pings. The Cleanup Engine deliberately
-/// stays out — picking it means reading a model name or pasting an API key, which
-/// is Hub work, and it is not a decision that changes between two messages.
+/// These are the settings worth changing *mid-task*, from whatever app you are
+/// dictating into: which engine cleans up, how hard it edits, whether the key is
+/// held or tapped, and whether it pings.
+///
+/// The engine used to be Hub-only, on the grounds that choosing it meant reading a
+/// model name or pasting an API key. That is still true of *configuring* an engine,
+/// which is why the base URL, model and key fields stay in the Hub. Picking between
+/// engines already configured is a different act and does change between messages —
+/// cloud is several times faster, local keeps working on a plane or once a free tier
+/// hits its daily cap. That is a tray decision.
 const SETTINGS_EVENT: &str = "whimpr://settings";
 
 /// Handles to the tray's tick marks, so the menu can be re-ticked whenever settings
 /// change. Without this the menu shows whatever was true at launch and quietly
 /// disagrees with the Hub the moment either surface is used.
 struct TrayChecks {
+    modes: Vec<(CleanupMode, CheckMenuItem<Wry>)>,
+    asr: Vec<(AsrMode, CheckMenuItem<Wry>)>,
     levels: Vec<(CleanupLevel, CheckMenuItem<Wry>)>,
     triggers: Vec<(TriggerMode, CheckMenuItem<Wry>)>,
     sound: CheckMenuItem<Wry>,
@@ -49,6 +56,12 @@ static TRAY_CHECKS: OnceLock<TrayChecks> = OnceLock::new();
 /// each change from either surface, so the two can never drift.
 fn sync_tray_checks(s: &Settings) {
     let Some(t) = TRAY_CHECKS.get() else { return };
+    for (mode, item) in &t.modes {
+        let _ = item.set_checked(*mode == s.cleanup_mode);
+    }
+    for (mode, item) in &t.asr {
+        let _ = item.set_checked(*mode == s.asr_mode);
+    }
     for (level, item) in &t.levels {
         let _ = item.set_checked(*level == s.cleanup_level);
     }
@@ -63,6 +76,14 @@ fn sync_tray_checks(s: &Settings) {
 /// un-ticked explicitly — and clicking the already-chosen one would otherwise clear
 /// it, leaving a group with nothing selected. `sync_tray_checks` re-asserts the
 /// whole group from the settings, which handles both.
+fn set_mode(app: &tauri::AppHandle, mode: CleanupMode) {
+    apply_settings_from_tray(app, |s| s.cleanup_mode = mode);
+}
+
+fn set_asr(app: &tauri::AppHandle, mode: AsrMode) {
+    apply_settings_from_tray(app, |s| s.asr_mode = mode);
+}
+
 fn set_level(app: &tauri::AppHandle, level: CleanupLevel) {
     apply_settings_from_tray(app, |s| s.cleanup_level = level);
 }
@@ -361,7 +382,6 @@ struct StatusReport {
     microphone: bool,
     input_monitoring: bool,
     has_openai_key: bool,
-    has_anthropic_key: bool,
     /// "loading" | "ready" | "missing" — the local cleanup worker's model.
     local_state: &'static str,
     /// GGUF filename actually in use, when `local_state` is "ready".
@@ -382,7 +402,6 @@ fn get_status() -> StatusReport {
         microphone: paste::microphone_granted(),
         input_monitoring: paste::input_monitoring_granted(),
         has_openai_key: has_key("openai_api_key"),
-        has_anthropic_key: has_key("anthropic_api_key"),
         local_state: local.state,
         local_model: local.model,
         asr_model: hotkey::asr_model_name(),
@@ -468,7 +487,6 @@ fn request_input_monitoring() {
 fn set_api_key(provider: String, key: String) -> Result<(), String> {
     let account = match provider.as_str() {
         "openai" => "openai_api_key",
-        "anthropic" => "anthropic_api_key",
         _ => return Err(format!("unknown provider {provider}")),
     };
     let entry =
@@ -479,6 +497,23 @@ fn set_api_key(provider: String, key: String) -> Result<(), String> {
     let _ = entry.delete_credential();
     if !key.is_empty() {
         entry.set_password(key).map_err(|e| e.to_string())?;
+        // Read it straight back. A store that accepts writes and keeps nothing is not
+        // hypothetical: keyring 3 silently substitutes an in-memory mock when no
+        // platform-store feature is enabled, so this exact call returned Ok while the
+        // Keychain stayed empty and the Hub went on reporting "no key set". Cheap, runs
+        // once per key change, and turns that whole class of failure into a message.
+        match keyring::Entry::new("com.whimpr.whimprflow", account)
+            .and_then(|e| e.get_password())
+        {
+            Ok(stored) if stored == key => {}
+            _ => {
+                return Err(
+                    "the key was accepted but could not be read back from the Keychain — \
+                     it was not saved"
+                        .to_string(),
+                )
+            }
+        }
     }
     hotkey::rebuild_providers();
     Ok(())
@@ -541,6 +576,49 @@ pub fn run() {
 
             // Ids are "<group>:<value>" and parsed back in the handler, so adding a
             // level or a trigger mode is one line here and one line in the match.
+            // Labels say what the choice costs the user, not who the vendor is: the
+            // cloud entry follows `openai_base_url` wherever it points, so naming it
+            // "Groq" would go stale the moment that field is edited in the Hub.
+            let mode_items: Vec<(CleanupMode, CheckMenuItem<Wry>)> = [
+                (CleanupMode::Local, "local", "On this Mac"),
+                (CleanupMode::OpenAi, "openai", "Cloud"),
+                (CleanupMode::Raw, "raw", "None"),
+            ]
+            .into_iter()
+            .map(|(mode, id, label)| {
+                CheckMenuItem::with_id(
+                    app,
+                    format!("mode:{id}"),
+                    label,
+                    true,
+                    mode == settings.cleanup_mode,
+                    None::<&str>,
+                )
+                .map(|item| (mode, item))
+            })
+            .collect::<tauri::Result<_>>()?;
+
+            // Where recognition runs. Its own group, not folded into Cleanup Engine,
+            // because the two send different things off the machine: cleanup uploads a
+            // transcript, this uploads the recording.
+            let asr_items: Vec<(AsrMode, CheckMenuItem<Wry>)> = [
+                (AsrMode::Local, "local", "On this Mac"),
+                (AsrMode::Cloud, "cloud", "Cloud"),
+            ]
+            .into_iter()
+            .map(|(mode, id, label)| {
+                CheckMenuItem::with_id(
+                    app,
+                    format!("asr:{id}"),
+                    label,
+                    true,
+                    mode == settings.asr_mode,
+                    None::<&str>,
+                )
+                .map(|item| (mode, item))
+            })
+            .collect::<tauri::Result<_>>()?;
+
             let level_items: Vec<(CleanupLevel, CheckMenuItem<Wry>)> = [
                 (CleanupLevel::None, "none", "None"),
                 (CleanupLevel::Messaging, "messaging", "Messaging"),
@@ -587,6 +665,18 @@ pub fn run() {
                 None::<&str>,
             )?;
 
+            let engine_menu = Submenu::with_items(
+                app,
+                "Cleanup Engine",
+                true,
+                &mode_items.iter().map(|(_, i)| i as &dyn tauri::menu::IsMenuItem<Wry>).collect::<Vec<_>>(),
+            )?;
+            let asr_menu = Submenu::with_items(
+                app,
+                "Speech Recognition",
+                true,
+                &asr_items.iter().map(|(_, i)| i as &dyn tauri::menu::IsMenuItem<Wry>).collect::<Vec<_>>(),
+            )?;
             let cleanup_menu = Submenu::with_items(
                 app,
                 "Auto Cleanup",
@@ -605,6 +695,8 @@ pub fn run() {
                 &[
                     &open,
                     &PredefinedMenuItem::separator(app)?,
+                    &asr_menu,
+                    &engine_menu,
                     &cleanup_menu,
                     &trigger_menu,
                     &sound,
@@ -614,6 +706,8 @@ pub fn run() {
             )?;
 
             let _ = TRAY_CHECKS.set(TrayChecks {
+                modes: mode_items,
+                asr: asr_items,
                 levels: level_items,
                 triggers: trigger_items,
                 sound,
@@ -628,6 +722,11 @@ pub fn run() {
                     "sound" => apply_settings_from_tray(app, |s| {
                         s.sound_on_start = !s.sound_on_start;
                     }),
+                    "mode:local" => set_mode(app, CleanupMode::Local),
+                    "mode:openai" => set_mode(app, CleanupMode::OpenAi),
+                    "mode:raw" => set_mode(app, CleanupMode::Raw),
+                    "asr:local" => set_asr(app, AsrMode::Local),
+                    "asr:cloud" => set_asr(app, AsrMode::Cloud),
                     "level:none" => set_level(app, CleanupLevel::None),
                     "level:messaging" => set_level(app, CleanupLevel::Messaging),
                     "level:light" => set_level(app, CleanupLevel::Light),
@@ -652,4 +751,37 @@ pub fn run() {
                 show_hub(app);
             }
         });
+}
+
+#[cfg(test)]
+mod keychain_tests {
+    /// The API key must survive a round trip through a *fresh* `Entry`, which is the
+    /// only thing that distinguishes the real Keychain from keyring's in-memory mock.
+    ///
+    /// This exists because that mock shipped. keyring 3 makes every platform store an
+    /// opt-in feature and quietly falls back to the mock when none is enabled, so
+    /// `set_password` returned Ok, the Keychain stayed empty, and the Hub reported
+    /// "no key set" immediately after saying it had saved. Nothing in the type system
+    /// or the build output says which store you got — only a write followed by a read
+    /// from a separate handle can tell, which is exactly what this does.
+    #[test]
+    fn a_key_written_to_the_keychain_can_be_read_back() {
+        const SERVICE: &str = "com.whimpr.whimprflow.test";
+        let account = format!("roundtrip_{}", std::process::id());
+        let write = keyring::Entry::new(SERVICE, &account).expect("build entry");
+        write.set_password("sentinel-value").expect("write to keychain");
+
+        // A separate handle: the mock store is per-entry, so this is the assertion
+        // that actually catches a missing platform-store feature.
+        let read = keyring::Entry::new(SERVICE, &account).expect("build second entry");
+        let got = read.get_password();
+        let _ = write.delete_credential();
+
+        assert_eq!(
+            got.expect("read back from keychain"),
+            "sentinel-value",
+            "keyring is not talking to the real Keychain — is the `apple-native` \
+             feature still enabled in Cargo.toml?"
+        );
+    }
 }

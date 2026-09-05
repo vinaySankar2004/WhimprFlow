@@ -126,7 +126,7 @@ impl DictionaryStore {
             return text.to_string();
         }
         // Longest first, so a multi-word mishear wins over one of its own words.
-        rules.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        rules.sort_by_key(|r| std::cmp::Reverse(r.0.len()));
 
         let chars: Vec<char> = text.chars().collect();
         let n = chars.len();

@@ -165,8 +165,11 @@ mod imp {
     static TARGET_APP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
     static CAPTURE: OnceLock<Mutex<Option<whimpr_audio::CaptureHandle>>> = OnceLock::new();
     static ASR: OnceLock<Arc<whimpr_asr::WhisperEngine>> = OnceLock::new();
+    /// Cloud ASR, rebuilt alongside the cleanup provider whenever the key changes.
+    /// Kept beside the local engine rather than replacing it: `asr_mode` is a toggle
+    /// the user flips per-dictation, so both have to stay warm.
+    static CLOUD_ASR: OnceLock<Mutex<Option<Arc<whimpr_asr::CloudAsr>>>> = OnceLock::new();
     static OPENAI: OnceLock<Mutex<Option<whimpr_cleanup::OpenAiProvider>>> = OnceLock::new();
-    static ANTHROPIC: OnceLock<Mutex<Option<whimpr_cleanup::AnthropicProvider>>> = OnceLock::new();
     static LOCAL: OnceLock<Mutex<Option<crate::local_llm::LocalWorker>>> = OnceLock::new();
     static SETTINGS: OnceLock<Mutex<whimpr_core::Settings>> = OnceLock::new();
     static DICTIONARY: OnceLock<Mutex<whimpr_core::DictionaryStore>> = OnceLock::new();
@@ -398,11 +401,13 @@ mod imp {
             .map(|k| k.trim().to_string())
             .filter(|k| !k.is_empty())
     }
+    /// The key for the OpenAI-*compatible* cleanup mode. One keychain entry serves
+    /// whichever endpoint `openai_base_url` points at, so switching from Groq to
+    /// OpenAI is a URL change, not a second credential store. `GROQ_API_KEY` is
+    /// honoured alongside `OPENAI_API_KEY` because the default endpoint is Groq and
+    /// looking for a variable named after the wrong vendor is a confusing dead end.
     fn read_openai_key() -> Option<String> {
-        read_key("openai_api_key", "OPENAI_API_KEY")
-    }
-    fn read_anthropic_key() -> Option<String> {
-        read_key("anthropic_api_key", "ANTHROPIC_API_KEY")
+        read_key("openai_api_key", "GROQ_API_KEY").or_else(|| read_key("openai_api_key", "OPENAI_API_KEY"))
     }
 
     /// A snapshot of the current settings.
@@ -439,23 +444,29 @@ mod imp {
                 Some(settings.openai_base_url.clone()),
             )
         });
-        let anthropic = read_anthropic_key()
-            .map(|k| whimpr_cleanup::AnthropicProvider::new(k, settings.anthropic_model.clone()));
+        // The same key serves both stages: one Groq account, one credential.
+        let cloud_asr = read_openai_key().map(|k| {
+            Arc::new(whimpr_asr::CloudAsr::new(
+                k,
+                whimpr_core::GROQ_ASR_MODEL,
+                whimpr_core::GROQ_ASR_URL,
+            ))
+        });
         eprintln!(
-            "[whimpr] cleanup providers: openai={}, anthropic={}",
+            "[whimpr] cloud key present: {} (asr mode: {:?})",
             openai.is_some(),
-            anthropic.is_some()
+            settings.asr_mode
         );
+        match CLOUD_ASR.get() {
+            Some(m) => *m.lock().unwrap() = cloud_asr,
+            None => {
+                let _ = CLOUD_ASR.set(Mutex::new(cloud_asr));
+            }
+        }
         match OPENAI.get() {
             Some(m) => *m.lock().unwrap() = openai,
             None => {
                 let _ = OPENAI.set(Mutex::new(openai));
-            }
-        }
-        match ANTHROPIC.get() {
-            Some(m) => *m.lock().unwrap() = anthropic,
-            None => {
-                let _ = ANTHROPIC.set(Mutex::new(anthropic));
             }
         }
     }
@@ -475,7 +486,7 @@ mod imp {
     /// comparison a hallucinated name would go straight to the cursor. The cost is one
     /// extra pass over a few seconds of audio, and only when the pre-filter matched.
     fn biased_retranscribe(
-        asr: &whimpr_asr::WhisperEngine,
+        asr: &dyn AsrEngine,
         pcm: &[f32],
         unprompted: String,
         session: whimpr_core::SessionId,
@@ -548,8 +559,10 @@ mod imp {
     }
 
     /// Clean a raw transcript per the current settings (mode + level), feeding in the
-    /// dictionary vocabulary relevant to this utterance. Falls back to raw whenever
-    /// cleanup is off, the provider is unavailable, it errors, or the gates reject it.
+    /// dictionary vocabulary relevant to this utterance. A cloud provider that is
+    /// unavailable or errors falls back to the local model; raw is the last resort,
+    /// used when cleanup is off, no engine at all is available, or the gates reject
+    /// the edit.
     fn run_cleanup(raw: &str, settings: &whimpr_core::Settings) -> String {
         let level = settings.cleanup_level;
         if matches!(settings.cleanup_mode, CleanupMode::Raw) || level.bypasses_llm() {
@@ -594,17 +607,31 @@ mod imp {
                 })
             })
         };
-        // Selected provider, falling back to local when a cloud key can't be read
-        // (so cleanup still runs) — and Local mode uses the worker directly.
+        // A cloud attempt that produces no text falls back to the on-device model
+        // rather than to raw. Two different failures land here and both must survive
+        // a dictation: no usable key (`None`), and a call that errored (`Some(Err)`) —
+        // which on a free-tier endpoint means a 429 the moment the daily cap lands,
+        // plus the ordinary offline/timeout cases. Pasting raw there drops the user
+        // to unclean text with fillers intact, which reads as "cleanup is broken"
+        // rather than "the free quota ran out", so local absorbs it silently.
+        let or_local = |attempt: Option<anyhow::Result<String>>| match attempt {
+            Some(Ok(text)) => {
+                eprintln!("[whimpr] cleanup served by the cloud endpoint");
+                Some(Ok(text))
+            }
+            Some(Err(e)) => {
+                eprintln!("[whimpr] cloud cleanup failed ({e}) — retrying on the local model");
+                run_local()
+            }
+            None => run_local(),
+        };
+        // Selected provider; Local mode uses the worker directly.
         let result: Option<anyhow::Result<String>> = match settings.cleanup_mode {
-            CleanupMode::OpenAi => OPENAI
-                .get()
-                .and_then(|m| m.lock().unwrap().as_ref().map(|p| p.cleanup(raw, &ctx)))
-                .or_else(run_local),
-            CleanupMode::Anthropic => ANTHROPIC
-                .get()
-                .and_then(|m| m.lock().unwrap().as_ref().map(|p| p.cleanup(raw, &ctx)))
-                .or_else(run_local),
+            CleanupMode::OpenAi => or_local(
+                OPENAI
+                    .get()
+                    .and_then(|m| m.lock().unwrap().as_ref().map(|p| p.cleanup(raw, &ctx))),
+            ),
             CleanupMode::Local => run_local(),
             CleanupMode::Raw => None,
         };
@@ -633,11 +660,9 @@ mod imp {
                 raw_out
             }
             None => {
-                if matches!(settings.cleanup_mode, CleanupMode::Local) {
-                    eprintln!("[whimpr] local cleanup model not wired yet — pasting raw");
-                } else {
-                    eprintln!("[whimpr] cleanup provider has no API key — pasting raw");
-                }
+                // In a cloud mode this means the cloud attempt already failed *and*
+                // the local worker is missing too — every engine is out.
+                eprintln!("[whimpr] no cleanup engine available — pasting raw");
                 raw_out
             }
         }
@@ -820,7 +845,23 @@ mod imp {
                              Security → Microphone), then fully quit + reopen it and rerun."
                         );
                     }
-                    let Some(asr) = ASR.get().cloned() else {
+                    // Cloud ASR when asked for and usable, the local model otherwise.
+                    // Falling back rather than failing keeps the same promise cleanup
+                    // makes: a missing key or a dead network costs you speed, never the
+                    // dictation you just spoke.
+                    let local_asr = || ASR.get().cloned().map(|a| a as Arc<dyn AsrEngine>);
+                    let asr: Option<Arc<dyn AsrEngine>> = match current_settings().asr_mode {
+                        whimpr_core::AsrMode::Cloud => CLOUD_ASR
+                            .get()
+                            .and_then(|m| m.lock().unwrap().clone())
+                            .map(|c| c as Arc<dyn AsrEngine>)
+                            .or_else(|| {
+                                eprintln!("[whimpr] cloud ASR has no key — using the local model");
+                                local_asr()
+                            }),
+                        whimpr_core::AsrMode::Local => local_asr(),
+                    };
+                    let Some(asr) = asr else {
                         eprintln!("[whimpr] ASR not ready (model still loading or missing)");
                         finish();
                         return;
@@ -832,7 +873,20 @@ mod imp {
                         eprintln!("[whimpr] cancelled before transcribing — discarded");
                         return;
                     }
-                    let pcm = whimpr_audio::resample_to_16k(&res.samples, res.sample_rate);
+                    let mut pcm = whimpr_audio::resample_to_16k(&res.samples, res.sample_rate);
+                    // Lift a quiet recording before the model sees it. Whisper drops
+                    // softly-spoken words outright rather than mis-hearing them, so
+                    // this shows up as "it ignored the end of my sentence", not as a
+                    // wrong word. No-ops on audio that is already at a healthy level.
+                    let gain = whimpr_audio::normalize_for_asr(&mut pcm);
+                    if gain > 1.0 {
+                        eprintln!("[whimpr] quiet recording — normalized by {gain:.1}x");
+                    }
+                    // Stage timings. Worth having permanently: "dictation feels slow" is
+                    // otherwise unattributable, and the intuitive culprit — the cleanup
+                    // model — is usually the cheap half. ASR runs twice whenever the
+                    // dictionary hits, which costs more than any provider swap saves.
+                    let t_asr = std::time::Instant::now();
                     match asr.transcribe(&pcm, None) {
                         Ok(t) => {
                             let raw = t.text;
@@ -843,13 +897,22 @@ mod imp {
                             }
                             // Give recognition a second look with the dictionary in
                             // hand, when this utterance looks like it needs one.
-                            let raw = biased_retranscribe(&asr, &pcm, raw, session);
+                            let raw = biased_retranscribe(asr.as_ref(), &pcm, raw, session);
+                            let asr_ms = t_asr.elapsed().as_millis();
                             if is_cancelled(session) {
                                 eprintln!("[whimpr] cancelled after re-transcribing — not pasted");
                                 return;
                             }
                             // Clean the transcript (cloud LLM if configured), then paste.
+                            let t_clean = std::time::Instant::now();
                             let text = clean_transcript(&raw);
+                            eprintln!(
+                                "[whimpr] TIMING: asr {} ms + cleanup {} ms = {} ms for {:.1}s of audio",
+                                asr_ms,
+                                t_clean.elapsed().as_millis(),
+                                t_asr.elapsed().as_millis(),
+                                res.duration_secs()
+                            );
                             if text != raw {
                                 eprintln!("[whimpr] CLEANED:   \"{}\"", text);
                             }
@@ -903,7 +966,13 @@ mod imp {
                     play_ping(app);
                 }
             }
-            _ => {}
+            // A locked hands-free session auto-stops at the cap. Unhandled, the
+            // recording simply ended mid-sentence with nothing on screen to explain
+            // it, which reads as a crash rather than a limit.
+            Action::WarnSessionCap => {
+                eprintln!("[whimpr] session cap approaching — auto-stop in one minute");
+                let _ = app.emit_to(OVERLAY_LABEL, "whimpr://session-cap", ());
+            }
         }
     }
 

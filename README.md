@@ -10,8 +10,8 @@ A **local-first voice dictation app for macOS** — hold **Fn**, speak, release,
 text lands wherever your cursor is (or press **Fn** once to start and again to stop, if
 you'd rather not hold a key). Speech is transcribed on-device with Whisper on the
 GPU, then tidied up (fillers removed, spoken self-corrections resolved, punctuation,
-lists and newlines) by a local LLM. Nothing leaves the machine unless you explicitly
-choose a cloud cleanup engine — and even then, only the transcript, never the audio.
+lists and newlines) by a local LLM. Both stages are on-device by default; each can be
+switched to the cloud independently, and neither is on unless you turn it on.
 
 **macOS 14+ (Apple Silicon).** One command installs it — no Rust, Node or Xcode
 needed, and no clone:
@@ -32,8 +32,12 @@ program grant itself. Full walkthrough and troubleshooting in
 - **Local LLM cleanup** — Qwen3-4B-Instruct via `llama.cpp`, in a separate worker
   process. Deterministic gates guard against over-editing and fall back to the raw
   transcript when the model gets creative.
-- **Optional cloud cleanup** — OpenAI or Anthropic behind one trait, sharing the exact
-  same prompt as the local path. Keys live in the macOS Keychain, **never in a file**.
+- **Optional cloud cleanup** — any OpenAI-compatible endpoint, Groq by default,
+  sharing the exact same prompt as the local path. A cloud call that fails or hits a
+  free-tier cap retries on the local model rather than pasting raw.
+- **Optional cloud ASR** — the same Whisper model on Groq, measured ~3x faster. Its own
+  switch, separate from cloud cleanup (see *Privacy*). Keys live in the macOS Keychain,
+  **never in a file**.
 - **Floating pill** — a non-activating panel showing idle / recording / processing that
   follows you across Spaces, including other apps' full-screen ones. ■ stops and pastes,
   ✕ or **Esc** discards — and cancelling still works while it's transcribing, before
@@ -53,9 +57,9 @@ program grant itself. Full walkthrough and troubleshooting in
 ```
 crates/
   whimpr-core/       state machine, cleanup (prompts/gates/levels), dictionary, stats
-  whimpr-asr/        Whisper ASR (Metal)
+  whimpr-asr/        Whisper ASR — local (Metal) and cloud (Groq)
   whimpr-audio/      mic capture + resampling
-  whimpr-cleanup/    OpenAI / Anthropic cloud providers
+  whimpr-cleanup/    cloud cleanup via any OpenAI-compatible endpoint (Groq…)
   whimpr-llm-worker/ local llama.cpp cleanup worker (separate process)
   whimpr-ipc/        sidecar wire protocol (built, not yet wired in)
   whimpr-sidecar/    out-of-process hotkey host (built, not yet wired in)
@@ -96,9 +100,10 @@ them in `~/Library/Application Support/WhimprFlow/models/`:
   repair.
 - **Cleanup** — a Qwen GGUF, e.g. `qwen3-4b-instruct-2507-q4_k_m.gguf`
 
-No local cleanup model? Set Cleanup Engine to **OpenAI** in Settings and point the base
-URL at any OpenAI-compatible API — `https://openrouter.ai/api/v1` for
-[OpenRouter](https://openrouter.ai), with that key in the "OpenAI API key" field.
+No local cleanup model? Set Cleanup Engine to **Cloud** in Settings. It ships pointed
+at [Groq](https://console.groq.com) — free, and the fastest option, which matters
+because cleanup runs before the paste. The **OpenRouter** and **OpenAI** presets fill
+in their own base URL and model; any other OpenAI-compatible API works by hand.
 
 Exact filenames and the full search order are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -121,8 +126,9 @@ Settings → Keyboard → "Press 🌐 key to" → Do Nothing**; the emoji picker
   quarantine flag, which is safe because Gatekeeper only assesses quarantined files,
   and the code signature is verified either way. Error handling is thin. Known rough
   edges are listed at the end of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-- **Privacy.** ASR and default cleanup run on-device. Cloud cleanup is opt-in and sends
-  only the transcript. API keys never touch disk in plaintext.
+- **Privacy.** Both stages run on-device by default and are opt-in separately, because
+  they upload different things: cloud cleanup sends the transcript, cloud ASR sends the
+  recording. The tray labels say which. API keys never touch disk in plaintext.
 
 ## License
 

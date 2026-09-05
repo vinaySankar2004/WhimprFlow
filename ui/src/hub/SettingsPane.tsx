@@ -11,6 +11,7 @@ import {
   requestMicrophone,
   setApiKey,
   type CleanupLevel,
+  type AsrMode,
   type CleanupMode,
   type FnKeyAction,
   type Settings,
@@ -23,8 +24,41 @@ const MODES: { value: CleanupMode; label: string; hint: string }[] = [
   // The Local hint is replaced at render time by the model actually loaded; this
   // string only shows if the status call never resolves.
   { value: "local", label: "Local", hint: "On-device model (offline)" },
-  { value: "open_ai", label: "OpenAI", hint: "Cloud cleanup via OpenAI (or an OpenAI-compatible API like OpenRouter — set the base URL below)" },
-  { value: "anthropic", label: "Anthropic", hint: "Cloud cleanup via Claude" },
+  { value: "open_ai", label: "Cloud", hint: "Cloud cleanup — several times faster than on-device. Groq by default; any OpenAI-compatible API works" },
+];
+
+/**
+ * These must stay in step with `GROQ_BASE_URL` / `GROQ_MODEL` in
+ * `crates/whimpr-core/src/settings.rs`, which is where a fresh install gets its
+ * defaults from. Both endpoints speak the OpenAI chat-completions format, so
+ * switching between them is a URL and a model string — no new provider code.
+ *
+ * Model ids here are the *current* free-tier picks and they do rot: Groq announced
+ * the deprecation of the llama-3.x ids in June 2026, and OpenRouter's `:free`
+ * roster turns over constantly, which is why the OpenRouter entry uses the
+ * auto-routing `openrouter/free` rather than pinning a model that will vanish.
+ */
+const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
+const GROQ_MODEL = "openai/gpt-oss-20b";
+const ENDPOINTS: { label: string; baseUrl: string; model: string; hint: string }[] = [
+  {
+    label: "Groq",
+    baseUrl: GROQ_BASE_URL,
+    model: GROQ_MODEL,
+    hint: "Fastest. Free: 30 requests/min, 1,000/day. Key from console.groq.com",
+  },
+  {
+    label: "OpenRouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    model: "openrouter/free",
+    hint: "Free: 50/day, or 1,000/day after a one-off $10. Slower — shared queue",
+  },
+  {
+    label: "OpenAI",
+    baseUrl: "",
+    model: "gpt-4o-mini",
+    hint: "Paid, billed per token",
+  },
 ];
 
 /** The short name the sidebar badge shows for the engine that is actually live. */
@@ -42,6 +76,19 @@ const LEVELS: { value: CleanupLevel; label: string; hint: string }[] = [
     hint: "Same cleanup, all lowercase, minimal punctuation.",
   },
   { value: "light", label: "Light", hint: "Clean up filler words and grammar. (Recommended)" },
+];
+
+const ASR_MODES: { value: AsrMode; label: string; hint: string }[] = [
+  {
+    value: "local",
+    label: "On this Mac",
+    hint: "Whisper runs on your GPU. Your audio never leaves the machine.",
+  },
+  {
+    value: "cloud",
+    label: "Cloud (faster)",
+    hint: "The same Whisper model on Groq — roughly twice as fast. Uploads your audio.",
+  },
 ];
 
 const TRIGGERS: { value: TriggerMode; label: string; hint: string }[] = [
@@ -187,9 +234,7 @@ function EngineCard({
   const live = browsing === settings.cleanup_mode;
   // Cleanup falls back to the on-device model when a cloud key can't be read, so
   // say that here rather than letting it be discovered as "my cleanup is different".
-  const missingKey =
-    (browsing === "open_ai" && !status.has_openai_key) ||
-    (browsing === "anthropic" && !status.has_anthropic_key);
+  const missingKey = browsing === "open_ai" && !status.has_openai_key;
 
   return (
     <Card style={{ marginBottom: 16 }}>
@@ -227,34 +272,54 @@ function EngineCard({
       {browsing === "open_ai" && (
         <>
           <KeyField
-            label="OpenAI API key"
+            label="API key"
             configured={status.has_openai_key}
             onSave={(k) => {
               setApiKey("openai", k);
               setTimeout(refresh, 400);
             }}
           />
-          <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+          <div style={{ marginTop: 12, display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ fontSize: 12.5, color: theme.textMuted }}>Preset:</span>
+            {ENDPOINTS.map((p) => {
+              const active = settings.openai_base_url === p.baseUrl;
+              return (
+                <button
+                  key={p.label}
+                  title={p.hint}
+                  onClick={() =>
+                    onChange({ ...settings, openai_base_url: p.baseUrl, openai_model: p.model })
+                  }
+                  style={{
+                    ...presetStyle,
+                    borderColor: active ? theme.accent : theme.border,
+                    color: active ? theme.accent : theme.textMuted,
+                  }}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 6 }}>
-                Base URL (blank = OpenAI; e.g. https://openrouter.ai/api/v1 for OpenRouter)
+                Base URL (blank = OpenAI)
               </div>
               <input
                 type="text"
                 value={settings.openai_base_url}
-                placeholder="https://openrouter.ai/api/v1"
+                placeholder={GROQ_BASE_URL}
                 onChange={(e) => onChange({ ...settings, openai_base_url: e.target.value })}
                 style={fieldStyle}
               />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 6 }}>
-                Model (e.g. an OpenRouter model slug)
-              </div>
+              <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 6 }}>Model</div>
               <input
                 type="text"
                 value={settings.openai_model}
-                placeholder="meta-llama/llama-3.3-70b-instruct:free"
+                placeholder={GROQ_MODEL}
                 onChange={(e) => onChange({ ...settings, openai_model: e.target.value })}
                 style={fieldStyle}
               />
@@ -263,31 +328,18 @@ function EngineCard({
         </>
       )}
 
-      {browsing === "anthropic" && (
-        <>
-          <KeyField
-            label="Anthropic API key"
-            configured={status.has_anthropic_key}
-            onSave={(k) => {
-              setApiKey("anthropic", k);
-              setTimeout(refresh, 400);
-            }}
-          />
-          <div style={{ marginTop: 12 }}>
-            <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 6 }}>Model</div>
-            <input
-              type="text"
-              value={settings.anthropic_model}
-              placeholder="claude-haiku-4-5"
-              onChange={(e) => onChange({ ...settings, anthropic_model: e.target.value })}
-              style={fieldStyle}
-            />
-          </div>
-        </>
-      )}
     </Card>
   );
 }
+
+const presetStyle: React.CSSProperties = {
+  background: "transparent",
+  border: `1px solid ${theme.border}`,
+  borderRadius: 6,
+  padding: "3px 9px",
+  fontSize: 12,
+  cursor: "pointer",
+};
 
 const fieldStyle: React.CSSProperties = {
   width: "100%",
@@ -418,6 +470,23 @@ export function SettingsPane({
       <PageTitle>Settings</PageTitle>
 
       <EngineCard settings={settings} onChange={onChange} status={status} refresh={refresh} />
+
+      <Card style={{ marginBottom: 16 }}>
+        <SectionTitle sub="Where your speech is turned into text. This runs before cleanup.">
+          Speech Recognition
+        </SectionTitle>
+        <ChoiceList
+          options={ASR_MODES}
+          value={settings.asr_mode}
+          onChange={(v) => onChange({ ...settings, asr_mode: v })}
+        />
+        {settings.asr_mode === "cloud" && !status.has_openai_key && (
+          <div style={{ fontSize: 12.5, color: palette.warn, marginTop: 10 }}>
+            No API key set — recognition will keep running on this Mac until you add one
+            under Cleanup Engine. It uses the same Groq key.
+          </div>
+        )}
+      </Card>
 
       <Card style={{ marginBottom: 16 }}>
         <SectionTitle>Auto Cleanup</SectionTitle>

@@ -1,5 +1,5 @@
 //! The shared cleanup prompt text, held as data so every provider (local llama,
-//! OpenAI, Anthropic) sends byte-identical instructions. Only the wire envelope
+//! cloud) sends byte-identical instructions. Only the wire envelope
 //! differs per provider. The framing is deliberately deletion-oriented and treats
 //! the transcript as content, never as instructions (prompt-injection guard).
 
@@ -138,7 +138,7 @@ FAIL, else empty>\"}.";
 /// A per-app "Formatting Mode": how to shape the output for the medium the user
 /// is pasting into, matched on the frontmost app's bundle id. `None` means no
 /// adaptation (default cleanup only). Held as data so every provider (local,
-/// OpenAI, Anthropic) shares the same behavior. Substring-matched and
+/// cloud) shares the same behavior. Substring-matched and
 /// case-insensitive so app variants and browsers-of-the-same-family still hit.
 pub fn format_mode_for_app(bundle_id: &str) -> Option<&'static str> {
     let b = bundle_id.to_ascii_lowercase();

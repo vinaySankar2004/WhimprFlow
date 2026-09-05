@@ -2,7 +2,11 @@
 // without the shell) the invoke import fails and we fall back to defaults so the
 // Hub still renders for iteration.
 
-export type CleanupMode = "raw" | "local" | "open_ai" | "anthropic";
+export type CleanupMode = "raw" | "local" | "open_ai";
+
+/** Where speech recognition runs. Separate from CleanupMode: cleanup uploads a
+ *  transcript, ASR uploads the recording. */
+export type AsrMode = "local" | "cloud";
 /** Rust aliases the retired "medium" and "high" onto "light" when loading. */
 export type CleanupLevel = "none" | "messaging" | "light";
 /** How the dictation key starts/stops a recording. */
@@ -10,15 +14,17 @@ export type TriggerMode = "hold" | "toggle";
 
 export interface Settings {
   cleanup_mode: CleanupMode;
+  /** Where recognition runs. "cloud" uploads the audio; "local" never does. */
+  asr_mode: AsrMode;
   cleanup_level: CleanupLevel;
   // "hold": hold the key while speaking, release to finish.
   // "toggle": press once to start, press again to stop.
   trigger_mode: TriggerMode;
   openai_model: string;
-  // API root for "OpenAI" mode — leave blank for OpenAI itself, or point at
-  // an OpenAI-compatible endpoint like OpenRouter (https://openrouter.ai/api/v1).
+  // API root for the Cloud mode. Groq by default; any OpenAI-compatible endpoint
+  // works, and blank means OpenAI itself. The `open_ai` mode name is the protocol,
+  // not the vendor — it is in every saved settings.json.
   openai_base_url: string;
-  anthropic_model: string;
   sound_on_start: boolean;
   // Keep the raw pre-cleanup transcript next to the cleaned text, on this machine.
   // It is what speaking insights are computed from — fillers and self-corrections
@@ -42,7 +48,6 @@ export const EMPTY_STATUS: Status = {
   microphone: false,
   input_monitoring: false,
   has_openai_key: false,
-  has_anthropic_key: false,
   local_state: "loading",
   local_model: null,
   asr_model: null,
@@ -56,7 +61,6 @@ export interface Status {
   microphone: boolean;
   input_monitoring: boolean;
   has_openai_key: boolean;
-  has_anthropic_key: boolean;
   /** Load state of the on-device cleanup model. */
   local_state: LocalModelState;
   /** GGUF filename in use, when `local_state` is "ready". */
@@ -121,11 +125,11 @@ export const DEFAULT_SETTINGS: Settings = {
   // Matches Rust's `Settings::default`, so the pre-load render and the browser
   // preview don't advertise an engine the app isn't actually using.
   cleanup_mode: "local",
+  asr_mode: "local",
   cleanup_level: "light",
   trigger_mode: "hold",
-  openai_model: "gpt-4o-mini",
-  openai_base_url: "",
-  anthropic_model: "claude-haiku-4-5",
+  openai_model: "openai/gpt-oss-20b",
+  openai_base_url: "https://api.groq.com/openai/v1",
   sound_on_start: true,
   store_raw_transcripts: true,
 };
@@ -223,7 +227,7 @@ export async function openKeyboardSettings(): Promise<void> {
   }
 }
 
-export async function setApiKey(provider: "openai" | "anthropic", key: string): Promise<void> {
+export async function setApiKey(provider: "openai", key: string): Promise<void> {
   try {
     await invoke<void>("set_api_key", { provider, key });
   } catch {

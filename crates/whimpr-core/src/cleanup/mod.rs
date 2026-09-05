@@ -1,10 +1,10 @@
 //! The cleanup layer: the provider seam, the context passed to it, the levels,
 //! the shared prompt data, and the deterministic gates.
 //!
-//! A [`CleanupProvider`] turns a raw transcript into cleaned text. Three impls
-//! live in the ML crates and plug in here: a local llama runtime (default), an
-//! OpenAI client (default cloud, using the user's key), and an Anthropic client
-//! (option). All three send the byte-identical [`prompts::SYSTEM_PROMPT`].
+//! A [`CleanupProvider`] turns a raw transcript into cleaned text. Two impls live
+//! in the ML crates and plug in here: a local llama runtime (default), and a client
+//! for any endpoint speaking the OpenAI chat-completions format (Groq by default).
+//! Both send the byte-identical [`prompts::SYSTEM_PROMPT`].
 
 pub mod gates;
 pub mod levels;
@@ -21,7 +21,6 @@ use serde::{Deserialize, Serialize};
 pub enum ProviderId {
     Local,
     OpenAi,
-    Anthropic,
 }
 
 /// A single custom-vocabulary entry: the authoritative spelling plus known
@@ -35,6 +34,7 @@ pub struct VocabEntry {
 
 /// Everything a provider needs beyond the raw transcript.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct CleanupContext {
     pub level: CleanupLevel,
     /// Pre-filtered to the entries phonetically relevant to this utterance (≤~15).
@@ -45,16 +45,6 @@ pub struct CleanupContext {
     pub window_context: Option<String>,
 }
 
-impl Default for CleanupContext {
-    fn default() -> Self {
-        Self {
-            level: CleanupLevel::default(),
-            vocab: Vec::new(),
-            app_bundle_id: None,
-            window_context: None,
-        }
-    }
-}
 
 /// Health of a provider, surfaced to the UI and used for fallback decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +75,7 @@ pub trait CleanupProvider: Send + Sync {
 }
 
 /// One chat turn in a cleanup request. `role` is "system", "user", or "assistant".
-/// Providers translate this into their own wire envelope (OpenAI/Anthropic JSON,
+/// Providers translate this into their own wire envelope (chat-completions JSON,
 /// or the local worker's ChatML).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CleanupMsg {
@@ -103,8 +93,8 @@ pub fn wrap_transcript(raw: &str) -> String {
 /// Build the full ordered message list for a cleanup request: the system prompt,
 /// the few-shot demonstration turns (so small models actually produce newlines,
 /// lists, paragraph breaks, and resolved self-corrections instead of just being
-/// *told* to), then the real transcript with its vocab/context. Every provider —
-/// local worker, OpenAI, Anthropic — sends this identical sequence.
+/// *told* to), then the real transcript with its vocab/context. Both providers —
+/// local worker and cloud — send this identical sequence.
 pub fn build_messages(raw: &str, ctx: &CleanupContext) -> Vec<CleanupMsg> {
     let mut msgs = Vec::with_capacity(prompts::FEW_SHOT.len() * 2 + 2);
     msgs.push(CleanupMsg {

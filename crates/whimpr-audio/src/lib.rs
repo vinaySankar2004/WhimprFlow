@@ -27,8 +27,23 @@ use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 const WAVE_BARS: usize = 6;
 /// Emit the waveform at ~30 fps.
 const EMIT_INTERVAL: Duration = Duration::from_millis(33);
-/// Perceptual gain applied to raw RMS so speech fills the meter without clipping.
-const LEVEL_GAIN: f32 = 14.0;
+/// The meter's dynamic range, in dBFS. RMS is mapped across this window rather than
+/// scaled linearly, because loudness is perceived logarithmically and a linear meter
+/// is wrong at both ends: quiet speech (about -46 dBFS) produced a level of 0.07 —
+/// under the pill's idle shimmer, so speaking looked identical to silence — while
+/// anything above a normal speaking voice pinned at 1.0 and stopped moving.
+///
+/// The floor is set below a quiet room rather than at it: room tone should sit near
+/// zero, and every voice above it should have somewhere to go.
+const LEVEL_FLOOR_DB: f32 = -55.0;
+const LEVEL_CEIL_DB: f32 = -12.0;
+
+/// Map an RMS amplitude in `[0, 1]` onto meter height in `[0, 1]`.
+fn meter_level(rms: f32) -> f32 {
+    // Clamped before the log so digital silence gives the floor, not -infinity.
+    let db = 20.0 * rms.max(1e-6).log10();
+    ((db - LEVEL_FLOOR_DB) / (LEVEL_CEIL_DB - LEVEL_FLOOR_DB)).clamp(0.0, 1.0)
+}
 
 /// The captured audio for one utterance.
 pub struct CaptureResult {
@@ -264,7 +279,7 @@ where
                 } else {
                     0.0
                 };
-                let level = (rms * LEVEL_GAIN).clamp(0.0, 1.0);
+                let level = meter_level(rms);
                 ring.pop_front();
                 ring.push_back(level);
                 let bars: Vec<f32> = ring.iter().copied().collect();
@@ -299,9 +314,120 @@ pub fn resample_to_16k(input: &[f32], src_rate: u32) -> Vec<f32> {
     out
 }
 
+/// Peak-normalize a quiet utterance up to a healthy level before ASR.
+///
+/// Whisper transcribes low-amplitude audio noticeably worse — softly-spoken words
+/// get dropped or truncated rather than mis-heard, which reads as "it ignored me"
+/// instead of "it misunderstood me". A built-in mic at arm's length, or a headset
+/// that has switched to its HFP profile mid-call, routinely peaks around 0.05.
+///
+/// Two things keep this from making matters worse. Gain is capped, so a recording
+/// of an empty room is not amplified into something the model will hallucinate over
+/// — the ceiling is the whole reason this is not a plain divide-by-peak. And audio
+/// already at a healthy level is returned untouched, so the normal case is a scan
+/// and a move, and nothing that was fine gets touched.
+pub fn normalize_for_asr(samples: &mut [f32]) -> f32 {
+    /// Above this the recording is already fine; leave it alone.
+    const HEALTHY_PEAK: f32 = 0.5;
+    /// What a quiet recording is lifted to. Short of 1.0 so the linear resampler's
+    /// interpolation between two near-peak samples cannot overshoot into clipping.
+    const TARGET_PEAK: f32 = 0.7;
+    /// Ceiling on the boost. Past roughly this much, what is being amplified is the
+    /// noise floor rather than a voice.
+    const MAX_GAIN: f32 = 8.0;
+    /// Below this there is no signal to rescue, only room tone.
+    const NOISE_FLOOR: f32 = 0.002;
+
+    let peak = samples.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+    if peak < NOISE_FLOOR {
+        return 1.0; // room tone, not a voice — nothing to rescue
+    }
+    if peak >= HEALTHY_PEAK {
+        return 1.0; // already fine; rescaling would only risk clipping
+    }
+    let gain = (TARGET_PEAK / peak).min(MAX_GAIN);
+    for s in samples.iter_mut() {
+        *s *= gain;
+    }
+    gain
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bug this exists for: quiet speech must come out loud enough for Whisper.
+    #[test]
+    fn normalize_lifts_a_quiet_recording() {
+        let mut s = vec![0.15f32, -0.12, 0.02];
+        let gain = normalize_for_asr(&mut s);
+        assert!(gain > 1.0, "expected a boost, got {gain}");
+        let peak = s.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+        assert!((0.65..=0.75).contains(&peak), "peak {peak}");
+    }
+
+    /// A very quiet recording is lifted by the full 8x rather than all the way to
+    /// the target — 0.05 would need 14x, which is into noise-amplifying territory.
+    /// The result is short of `TARGET_PEAK` on purpose; it is still 8x better than
+    /// what Whisper was being handed.
+    #[test]
+    fn normalize_lifts_very_quiet_audio_as_far_as_the_cap_allows() {
+        let mut s = vec![0.05f32, -0.04];
+        assert_eq!(normalize_for_asr(&mut s), 8.0);
+        let peak = s.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+        assert!((0.35..0.5).contains(&peak), "peak {peak}");
+    }
+
+    /// A healthy recording is not touched — normalizing it would only add clipping
+    /// risk for no benefit.
+    #[test]
+    fn normalize_leaves_healthy_audio_alone() {
+        let mut s = vec![0.8f32, -0.6, 0.1];
+        let before = s.clone();
+        assert_eq!(normalize_for_asr(&mut s), 1.0);
+        assert_eq!(s, before);
+    }
+
+    /// Silence must not be amplified into something the model will hallucinate over.
+    /// This is the case the gain cap and the noise floor both exist for.
+    #[test]
+    fn normalize_refuses_to_amplify_room_tone() {
+        let mut s = vec![0.0004f32, -0.0003, 0.0001];
+        let before = s.clone();
+        assert_eq!(normalize_for_asr(&mut s), 1.0);
+        assert_eq!(s, before);
+    }
+
+    #[test]
+    fn normalize_caps_its_gain() {
+        // Peak 0.01 would need 70x to reach the target; the cap holds it to 8x.
+        let mut s = vec![0.01f32, -0.008];
+        assert_eq!(normalize_for_asr(&mut s), 8.0);
+    }
+
+    /// Quiet speech used to sit below the pill's idle shimmer (0.12), so speaking
+    /// looked exactly like silence. That is the symptom the dB curve fixes.
+    #[test]
+    fn meter_shows_quiet_speech_above_the_idle_shimmer() {
+        let quiet = meter_level(0.005);
+        assert!(quiet > 0.15, "quiet speech reads {quiet}, still lost in the shimmer");
+        assert!(quiet < 0.4, "quiet speech reads {quiet}, too hot to leave headroom");
+    }
+
+    /// A normal voice must not pin the meter, or the waveform stops responding at
+    /// exactly the level most speech sits at.
+    #[test]
+    fn meter_has_headroom_at_a_normal_speaking_level() {
+        let normal = meter_level(0.02);
+        assert!(normal > 0.4 && normal < 0.8, "normal speech reads {normal}");
+        assert!(meter_level(0.02) < meter_level(0.08), "louder must read higher");
+    }
+
+    #[test]
+    fn meter_bottoms_out_on_silence() {
+        assert_eq!(meter_level(0.0), 0.0);
+        assert_eq!(meter_level(1.0), 1.0);
+    }
 
     #[test]
     fn resample_48k_to_16k_thirds_the_length() {

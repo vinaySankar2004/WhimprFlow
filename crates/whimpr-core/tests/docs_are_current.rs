@@ -63,7 +63,8 @@ fn architecture_quotes_real_timing_constants() {
     let src = read("crates/whimpr-core/src/state/timing.rs");
 
     // (constant, how the doc is expected to phrase its value)
-    let checks: &[(&str, fn(u64) -> String)] = &[
+    type Phrasing = (&'static str, fn(u64) -> String);
+    let checks: &[Phrasing] = &[
         ("HOLD_MIN_MS", |v| format!("{v} ms")),
         ("DOUBLE_TAP_MS", |v| format!("{v} ms")),
         ("COOLDOWN_MS", |v| format!("{v} ms")),

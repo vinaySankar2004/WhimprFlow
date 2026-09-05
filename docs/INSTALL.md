@@ -123,8 +123,8 @@ ls -lh ~/Library/Application\ Support/WhimprFlow/models/
 fine and transcribes fine without either, and silently pastes raw text.
 
 **No local cleanup model and no wish to download one.** Settings → Cleanup Engine →
-OpenAI, with the base URL pointed at any OpenAI-compatible API. The transcript is
-sent; the audio never is.
+Cloud, then the **Groq** preset and a free key from console.groq.com. The transcript
+is sent; the audio never is.
 
 ## Updating
 

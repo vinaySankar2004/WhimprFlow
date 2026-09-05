@@ -18,3 +18,13 @@ hound = "3"
 [dependencies.whisper-rs]
 version = "0.12"
 features = ["metal"]
+
+# Cloud ASR (Groq). `multipart` is what uploads the WAV; rustls avoids linking
+# OpenSSL. `blocking` matches the rest of the pipeline, which is thread-per-dictation.
+[dependencies.reqwest]
+version = "0.12"
+default-features = false
+features = ["blocking", "json", "multipart", "rustls-tls"]
+
+[dependencies.serde_json]
+workspace = true

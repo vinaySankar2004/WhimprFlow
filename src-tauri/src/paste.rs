@@ -102,17 +102,51 @@ mod imp {
             ));
         }
         let mut cb = Clipboard::new()?;
-        let saved = cb.get_text().ok();
+        // Text is not the only thing a clipboard holds. Saving only `get_text()` meant
+        // that dictating while an image was copied silently destroyed it — `get_text`
+        // returns Err, nothing is saved, nothing is restored, and the transcript sits
+        // on the clipboard permanently. Images round-trip too now; anything else
+        // (files, custom flavors) still cannot, so that case is at least logged rather
+        // than lost in silence.
+        let saved = match cb.get_text() {
+            Ok(t) => Saved::Text(t),
+            Err(_) => match cb.get_image() {
+                Ok(img) => Saved::Image(img.to_owned_img()),
+                Err(_) => Saved::Unrestorable,
+            },
+        };
         cb.set_text(text.to_string())?;
         // Give the pasteboard a moment to settle before the paste keystroke.
         std::thread::sleep(Duration::from_millis(60));
         post_cmd_v();
-        // Let the target consume the paste before we restore the old clipboard.
-        std::thread::sleep(Duration::from_millis(150));
-        if let Some(prev) = saved {
-            let _ = cb.set_text(prev);
+        // Let the target consume the paste before the old clipboard goes back. Electron
+        // apps (Slack, VS Code) read the pasteboard well after the keystroke, and
+        // restoring under them presents as "it pasted my previous clipboard" — so this
+        // is deliberately slack. The cost of waiting is only that a transcript stays on
+        // the clipboard slightly longer.
+        std::thread::sleep(Duration::from_millis(320));
+        match saved {
+            Saved::Text(prev) => {
+                let _ = cb.set_text(prev);
+            }
+            Saved::Image(prev) => {
+                let _ = cb.set_image(prev);
+            }
+            Saved::Unrestorable => {
+                eprintln!(
+                    "[whimpr] clipboard held something that is neither text nor an image \
+                     (files?) — it could not be restored"
+                );
+            }
         }
         Ok(())
+    }
+
+    /// What was on the clipboard before the paste, in whatever form it can be put back.
+    enum Saved {
+        Text(String),
+        Image(arboard::ImageData<'static>),
+        Unrestorable,
     }
 }
 

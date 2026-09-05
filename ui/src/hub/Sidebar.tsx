@@ -68,7 +68,7 @@ export function Sidebar({
       }}
     >
       {/* Wordmark + the engine actually doing the cleanup. This badge used to be
-          the hardcoded word "Local", which meant picking OpenAI in Settings left
+          the hardcoded word "Local", which meant picking a cloud engine in Settings left
           the app still saying LOCAL — the single clearest reason a mode switch
           looked like it had not taken. */}
       <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 8px 20px" }}>

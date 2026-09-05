@@ -184,6 +184,9 @@ function Spinner() {
 export function FlowBar() {
   const [state, setState] = useState<BarState>("idle");
   const [bars, setBars] = useState<number[]>([]);
+  // A locked hands-free session auto-stops at the cap. Without this the recording
+  // just ends mid-sentence with no warning, which reads as a crash.
+  const [nearCap, setNearCap] = useState(false);
 
   useEffect(() => {
     // listen() resolves asynchronously, so a cleanup that runs before it settles
@@ -194,8 +197,15 @@ export function FlowBar() {
     const register = (p: Promise<() => void>) =>
       p.then((un) => (cancelled ? un() : unlisteners.push(un)));
 
-    register(tauriListen<StateEvent>("whimpr://flowbar/state", (p) => setState(p.state)));
+    register(
+      tauriListen<StateEvent>("whimpr://flowbar/state", (p) => {
+        setState(p.state);
+        // Any state change ends the session the warning was about.
+        setNearCap(false);
+      }),
+    );
     register(tauriListen<WaveformEvent>("whimpr://audio/waveform", (p) => setBars(p.bars)));
+    register(tauriListen("whimpr://session-cap", () => setNearCap(true)));
 
     return () => {
       cancelled = true;
@@ -221,7 +231,11 @@ export function FlowBar() {
 
   // Transcribing keeps a ✕ (the pipeline can still be abandoned before it pastes),
   // so it needs room for a control the terminal states don't have.
-  const dims = recording ? { w: 260, h: 46 } : processing ? { w: 226, h: 38 } : { w: 190, h: 38 };
+  const dims = recording
+    ? { w: nearCap ? 322 : 260, h: 46 } // the caption needs its own room, not the waveform's
+    : processing
+      ? { w: 226, h: 38 }
+      : { w: 190, h: 38 };
 
   return (
     <div
@@ -270,6 +284,11 @@ export function FlowBar() {
             <div style={{ flex: 1, minWidth: 0 }}>
               <DottedWaveform bars={bars} />
             </div>
+            {nearCap && (
+              <span style={{ color: palette.pillTextMuted, fontSize: 11, whiteSpace: "nowrap" }}>
+                1 min left
+              </span>
+            )}
             <StopButton />
           </>
         ) : processing ? (

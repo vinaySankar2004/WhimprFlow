@@ -3,8 +3,9 @@
 What the code does today, as of the current commit. If something here disagrees
 with the code, the code is right and this file is a bug.
 
-Everything runs on the machine: audio never leaves it, and the transcript only
-leaves it if you explicitly pick a cloud cleanup engine.
+Everything runs on the machine by default. Two independent settings can move a stage
+to the cloud — `cleanup_mode` sends the transcript, `asr_mode` sends the recording —
+and neither is on unless it is turned on.
 
 ## The loop
 
@@ -16,12 +17,13 @@ Fn down ─ CGEventTap ─→ state machine ─→ StartCapture ─→ cpal mic 
                                       └─→ PlayPing      └─→ RMS ──→ pill waveform
 Fn up / 2nd press / ■ → StopCaptureAndFinalize     ✕ → DiscardCapture (nothing pastes)
                             │
-                            ├─ resample to 16 kHz, pad the tail
-                            ├─ whisper.cpp (Metal) ──────────→ raw transcript
+                            ├─ resample to 16 kHz, normalize if quiet, pad the tail
+                            ├─ whisper (Metal, or Groq if asr_mode=cloud) → transcript
                             ├─ dictionary.prefilter(raw, 15) ─→ vocab entries
                             ├─ whisper again, vocab as initial_prompt   ┐ only when
                             ├─ accept_prompted: else keep pass 1        ┘ vocab hit
-                            ├─ cleanup provider (local | OpenAI | Anthropic | raw)
+                            ├─ cleanup provider (local | cloud | raw)
+                            │    └─ cloud failure or no key ─→ retry on local
                             ├─ gates: reject over-editing ────→ fall back to raw
                             ├─ apply_listed_mishears: enforce what the user listed
                             └─ clipboard save → ⌘V → restore → paste
@@ -100,9 +102,9 @@ emoji picker.
 | Crate | Does |
 |---|---|
 | `whimpr-core` | State machine, cleanup prompts/levels/gates, dictionary, settings, stats. No I/O, no platform code — this is where the tests live. |
-| `whimpr-asr` | Whisper via `whisper-rs`, on Metal. Implements the `AsrEngine` trait. |
+| `whimpr-asr` | Speech-to-text behind the `AsrEngine` trait: `whisper-rs` on Metal (default), and `cloud::CloudAsr` calling Groq's hosted Whisper. |
 | `whimpr-audio` | `cpal` mic capture (device/format search, see *Opening the mic*), downmix, resample to 16 kHz, throttled RMS for the waveform. |
-| `whimpr-cleanup` | OpenAI + Anthropic providers behind one trait. Keys come from the OS keychain, never a file. |
+| `whimpr-cleanup` | Cloud cleanup behind the provider trait: one client for any endpoint speaking the OpenAI chat-completions format (Groq by default, repointed by `openai_base_url`). Keys come from the OS keychain, never a file. |
 | `whimpr-llm-worker` | Separate binary running llama.cpp. Separate because llama.cpp's ggml and whisper.cpp's ggml cannot coexist in one process. Speaks one JSON request per line over stdio. |
 | `whimpr-ipc` | Length-prefixed JSON wire protocol for a hotkey sidecar. **Built and tested, but not wired in** — the Fn tap currently runs in-process. |
 | `whimpr-sidecar` | The sidecar binary for that protocol. Also **not currently used**. |
@@ -111,14 +113,26 @@ emoji picker.
 
 ## Cleanup
 
-Four modes (`CleanupMode`): `Raw`, `Local` (default), `OpenAi`, `Anthropic`.
+Three modes (`CleanupMode`): `Raw`, `Local` (default), `OpenAi`.
 All non-raw modes send the *same* prompt — system message, few-shot turns, then
 the transcript — assembled once in `cleanup::build_messages`, so providers can't
 drift apart.
 
+**A cloud attempt that produces nothing falls back to local, not to raw** — both no
+usable key and a call that errored, which on a free tier means a 429 the moment the
+daily cap lands. Pasting raw there returns text with the fillers still in it and only
+a log line to explain why, so it reads as "cleanup is broken" rather than "the quota
+ran out". Raw stays the last resort: no engine available, or the gates rejected.
+
+`CleanupMode::OpenAi` names the *protocol*, not the vendor — that string is in every
+saved `settings.json`, so renaming the variant resets the file. `openai_base_url`
+repoints it, making Groq, OpenRouter, Gemini's compatibility endpoint and OpenAI a URL
+and a model string rather than new provider code. It ships pointed at Groq: cleanup
+blocks the paste, so throughput is the selection criterion and the task is easy.
+
 The mode is committed by an explicit **Use this engine** button, not by touching a
 tab. Applying on click read as broken rather than fast — a tab highlights whether or
-not anything saved, and the sidebar badge hardcoded "Local", so choosing OpenAI left
+not anything saved, and the sidebar badge hardcoded "Local", so switching engines left
 the app still announcing LOCAL. Badge and card now both name the live engine.
 
 Three levels: None, Messaging, Light (default).
@@ -224,6 +238,44 @@ is fixed where no prompt reaches — cleanup off, gates rejected the edit, provi
 Mishears are punctuation-trimmed first: users add one by pasting what landed in the
 field ("Vinayk."), and the stray period would stop it ever matching.
 
+### Where recognition runs
+
+`asr_mode` picks between `whisper-rs` on Metal (default) and `cloud::CloudAsr`, which
+posts the utterance to Groq's OpenAI-compatible transcription endpoint. Both sit behind
+`AsrEngine`, so the two-pass prompted retranscribe, the dictionary and the gates are
+identical either way — the shell picks an `Arc<dyn AsrEngine>` per dictation and nothing
+downstream knows which one it got.
+
+It is deliberately the **same model** on both sides: Groq's `whisper-large-v3-turbo` is
+the weights that `ggml-large-v3-turbo-q5_0.bin` quantizes. Switching is meant to change
+how long a dictation takes and not which words come out.
+
+Measured on an M-series machine: **1388 ms** for a 10.6 s utterance locally against
+**523 ms** for a 13.1 s one on Groq — about 3x once normalized for length, and more than
+that whenever the dictionary hits and a second pass runs.
+
+That moves the bottleneck rather than removing it. With cloud ASR on, cleanup is the
+expensive stage: 1386 ms on that 13 s utterance and 4804 ms on a 30 s one, against
+~500-600 ms of recognition. Cleanup cost scales with how much text the model has to
+*generate*, so it grows with utterance length in a way ASR does not — the next real
+latency work is there, not here.
+
+Three things the cloud engine has to get right, none of them optional:
+
+- **The `prompt` parameter is forwarded.** It is what `initial_prompt` is locally, so
+  without it the dictionary silently stops working the moment cloud ASR is selected —
+  and `accept_prompted` would be comparing two unbiased passes and always keep the first.
+- **`language` is pinned to English, not auto-detected.** Whisper's language ID is
+  unreliable on short push-to-talk clips, and a wrong guess does not mis-spell a word,
+  it *translates* the whole utterance.
+- **A missing key or a failed call falls back to the local engine**, exactly as cleanup
+  does. Losing speed is acceptable; losing the sentence you just spoke is not.
+
+Audio is uploaded as 16-bit WAV, which halves the payload against f32 for no accuracy
+cost — Whisper's front end quantizes well below that anyway. `asr_mode` is separate from
+`cleanup_mode` because the two send different things: a transcript is words you were
+about to paste into someone's chat window; the recording is your voice, in your room.
+
 ### Opening the mic is a search, not a single attempt
 
 `whimpr_audio::start` tries every config the default input device advertises, then
@@ -241,6 +293,18 @@ is dead while I'm on a call", which sounds like an exclusivity problem and is no
 The device that won is logged and returned on `CaptureResult`, because "which mic did
 it actually use" is otherwise unanswerable after the fact — and once there is a
 fallback, that is the first question worth asking.
+
+### Quiet recordings are lifted before ASR
+
+`normalize_for_asr` peak-normalizes anything under 0.5 toward 0.7. Whisper fails on
+low-amplitude audio in a specific way — soft words are *dropped*, not mis-heard — so
+it presents as "it ignored the end of my sentence", a truncation bug rather than a
+level one. The HFP-profile headset from *Opening the mic* routinely lands near 0.05.
+
+Two limits stop it making things worse: gain caps at 8×, past which it is the noise
+floor being amplified and the model will hallucinate over it; and healthy audio is
+returned untouched. The target is 0.7, not 1.0, because the linear resampler
+interpolates between samples and would otherwise overshoot into clipping.
 
 ### Every utterance gets a second of silence appended
 
@@ -292,6 +356,18 @@ initial prompt to the front of it (checked in the vendored source, not assumed).
 Only the *correct* spellings go into the prompt, never the mishears — those are what
 recognition is being steered away from.
 
+### Paste borrows the clipboard and gives it back
+
+`paste_text` saves the pasteboard, writes the transcript, posts ⌘V, then restores.
+Two details are load-bearing. **Images are saved too**, not just text: `get_text()`
+errors on an image, so saving only text meant dictating with a screenshot copied
+destroyed it and left the transcript on the clipboard for good. Files and custom
+flavors still cannot be restored — that case is logged rather than lost silently.
+And the restore waits 320 ms, not the reflexive ~150: Electron apps read the
+pasteboard well after the keystroke, and restoring underneath them presents as "it
+pasted my previous clipboard". The only cost of waiting is a transcript sitting on
+the clipboard slightly longer.
+
 ### Auto-learn
 
 After a paste, `autolearn::watch_correction` polls the focused element via the
@@ -304,6 +380,20 @@ moved on and the diff is no longer the clean swap auto-learn will accept.
 both ≥3 characters and alphabetic, neither on a ~70-word common list, the new one
 Titlecase, and normalized distance in (0, 0.6]. A false positive poisons the dictionary
 into mis-correcting you forever, so the bar is set where a miss is the cheaper mistake.
+
+Two rules that look like extra strictness and are the opposite:
+
+- **The swap is found by sliding the pasted text over the field, not by
+  set-differencing the two.** The field holds more than WhimprFlow pasted — a
+  half-typed message, a reply box's quoted text, above all an earlier dictation into
+  the same box. Differencing token sets counted every one of those as a word "added",
+  so auto-learn could only fire on the first dictation into an empty field: correct in
+  tests, never firing in use. `changed_word` finds the window matching the paste in
+  all but one position, and refuses when two windows disagree.
+- **Titlecase is not required at the Messaging level.** `force_lowercase` flattens the
+  paste there and the user types the fix in lowercase too, so demanding a capital made
+  the one register that level exists for the one that never learned. Case is evidence
+  only where case survived; the common list and distance bound carry it otherwise.
 
 What gets recorded as the mishear is **what recognition wrote**, not what auto-learn
 observed. The observed form comes from the *pasted* text, which is post-cleanup, so it
@@ -366,11 +456,24 @@ focusing, because `set_focus` is a no-op on a hidden or minimized window.
 
 ### The tray's quick settings
 
-The menu carries Auto Cleanup, Dictation Key, and the record ping alongside Open
-and Quit. Those three are the ones worth changing *mid-task*, from whatever app you
-are dictating into. The Cleanup Engine stays out on purpose: picking it means
-reading a model name or pasting an API key, which is Hub work, and it is not a
-decision that changes between two messages.
+The menu carries Speech Recognition, Cleanup Engine, Auto Cleanup, Dictation Key, and
+the record ping alongside Open and Quit — the settings worth changing *mid-task*, from
+whatever app you are dictating into.
+
+Speech Recognition is its own group rather than a fourth Cleanup Engine entry (see
+*Where recognition runs*). Its items are bare — "On this Mac" and "Cloud" — because a
+tray menu is for flipping a setting you already understand, not for explaining it. What
+each one implies for your audio is spelled out on the Hub's Speech Recognition card,
+which is where the choice is made the first time.
+
+Engine is on the tray; its *configuration* is not. Base URL, model and key stay in the
+Hub, because setting one up means reading a model name and pasting a key. Choosing
+among engines already configured is a different act and does change between messages:
+cloud is several times faster, local keeps working on a plane or past a daily cap.
+Items name the place, not the vendor — "On this Mac", "Cloud", "None". The cloud entry
+follows `openai_base_url` wherever it points, so a "Groq" label would go stale the moment
+that field is edited. Both tray groups read the same way for the same reason: a tray menu
+is for flipping a setting you already understand, and the Hub is where it is explained.
 
 `show_menu_on_left_click(true)` is required. The default is right-click only, which
 presents as "the tray needs a double-click" — the first click does nothing visible,
@@ -433,6 +536,12 @@ failures leaves the flags looking right. Ask the window server instead:
 Idle renders nothing and sets `ignore_cursor_events`, so it is neither visible
 nor in the way. State arrives as `whimpr://flowbar/state` events; mic level
 arrives as `whimpr://audio/waveform`.
+
+**The meter is logarithmic, not a gain multiplier.** `meter_level` maps RMS across
+−55…−12 dBFS, because loudness is perceived that way and a linear meter is wrong at
+both ends. The old `rms * 14.0` put quiet speech (≈ −46 dBFS) at 0.07 — *below* the
+pill's 0.12 idle shimmer, so speaking softly looked exactly like saying nothing —
+while anything above a normal voice pinned at 1.0 and stopped moving.
 
 **The two controls are live.** ■ (`stop_dictation`) ends the recording and pastes
 what was said; ✕ (`cancel_dictation`) throws the dictation away, as does **Esc**.
@@ -557,16 +666,20 @@ Recognition latency on an M-series machine, 2.8 s of audio: ~185 ms to load at s
 `ggml-base.en.bin` transcribes in ~120 ms and mis-hears ordinary names ("Manvy" for
 "Manvi"), which is the trade the ladder exists to let you make.
 
-With no local GGUF, set the cleanup engine to OpenAI in Settings and point the
-base URL at any OpenAI-compatible API.
+With no local GGUF, set the cleanup engine to Cloud — which ships pointed at Groq
+and takes any OpenAI-compatible API.
 
 ## Build and install
 
 ```bash
 ./dev.sh                    # Vite + the app, hot reload
 ./scripts/install-macos.sh  # build, install to /Applications, verify permissions
-cargo test -p whimpr-core -p whimpr-ipc
+cargo test -p whimpr-core -p whimpr-ipc -p whimpr-audio -p whimpr-tauri
 ```
+
+`whimpr-audio` and `src-tauri` are in that list deliberately: auto-learn's detection
+and the mic's level maths are pure and tested, and leaving them out of the documented
+command is how the repo's most fragile subsystem sat outside its own test gate.
 
 `dev.sh` runs Tauri from `src-tauri/`, not the repo root: from the root the CLI
 resolves `ui/` as the app directory (the only `package.json`), so
@@ -612,10 +725,11 @@ means adding the branches back, not maintaining dead ones now.
   [INSTALL.md](INSTALL.md)) — but it signs with an Apple *Development* certificate,
   so the recipient's script has to clear the download's quarantine flag before first
   launch. Gatekeeper only assesses quarantined files, which is why that works at all.
-  `scripts/build-macos.sh` is the notarized path and needs a Developer ID this
-  project does not have; enrolling would replace the quarantine step with a
-  double-clickable dmg, at the cost of invalidating every existing install's TCC
-  grants once, since the designated requirement changes with the identity.
+  `scripts/build-macos.sh` is the notarized path and needs a Developer ID, which the
+  paid membership provides but this project has not yet used. Switching would replace
+  the quarantine step with a double-clickable dmg, at the cost of invalidating every
+  existing install's TCC grants once, since the designated requirement changes with
+  the identity.
 - The Hub's Insights pane and stats are lightly exercised compared to the
   dictation path. Its **Your Voice** tab is still a placeholder: the raw transcript
   it needs is now being stored (see *Where the data lives*), but nothing computes

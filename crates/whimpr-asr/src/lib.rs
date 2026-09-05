@@ -1,5 +1,10 @@
-//! Local speech-to-text via whisper.cpp (whisper-rs), implementing
-//! [`whimpr_core::AsrEngine`]. Expects 16 kHz mono f32 samples.
+//! Speech-to-text. Two engines behind [`whimpr_core::AsrEngine`], both taking 16 kHz
+//! mono f32 samples: whisper.cpp on Metal (default, audio stays on the machine) and
+//! [`cloud::CloudAsr`], the same Whisper model hosted on Groq.
+
+pub mod cloud;
+
+pub use cloud::CloudAsr;
 
 use std::path::Path;
 

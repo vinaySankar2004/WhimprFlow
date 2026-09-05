@@ -144,6 +144,12 @@ mod imp {
         if !crate::paste::is_trusted() || crate::autolearn::word_tokens(inserted).len() < 2 {
             return;
         }
+        // At the Messaging level the paste has been through `force_lowercase`, so a
+        // Titlecase test on the user's fix would reject every correction made there.
+        let caps_are_informative = !matches!(
+            crate::hotkey::current_settings().cleanup_level,
+            whimpr_core::CleanupLevel::Messaging
+        );
         let inserted = inserted.to_string();
         let raw = raw.to_string();
         let focused = unsafe { copy_focused_element() };
@@ -161,7 +167,9 @@ mod imp {
                 if let Some(after) = unsafe { element_value(holder.0) } {
                     // First clean one-word swap wins — later looks only get muddier as
                     // the user keeps typing around it.
-                    if let Some(pair) = super::detect_correction(&inserted, &after) {
+                    if let Some(pair) =
+                        super::detect_correction(&inserted, &after, caps_are_informative)
+                    {
                         break Some(pair);
                     }
                 }
@@ -211,26 +219,71 @@ const COMMON: &[&str] = &[
     "yeah", "hey", "hello", "please", "thanks", "thank", "message", "email", "text", "call",
 ];
 
-/// Detect a single clean one-word correction: exactly one word removed from the
-/// inserted text and one word added in the field, both distinctive and phonetically
-/// close, with the new word looking like a proper noun. Returns `(mishear, correct)`.
-pub fn detect_correction(inserted: &str, after: &str) -> Option<(String, String)> {
-    use std::collections::HashSet;
+/// Locate the pasted text inside the field and return the one word that changed.
+///
+/// The field holds more than what WhimprFlow pasted: a partly-typed message, the
+/// quoted text in a reply box, or — by far the most common — everything from an
+/// earlier dictation into the same field. So this slides a window the length of the
+/// pasted text across the field's tokens and looks for one differing in exactly one
+/// position, which is precisely "the text I pasted, with one word swapped".
+///
+/// The obvious implementation, set-differencing the two token lists, is what this
+/// replaced. It counted every pre-existing word in the field as "added", so it could
+/// only ever fire on the first dictation into an empty field — the second dictation
+/// into the same field always saw the first one's words as additions and bailed.
+/// That made auto-learn look like it worked in testing and never worked in use.
+///
+/// Windows that differ in a *different* position are ambiguous (repeated phrasing),
+/// and a length change means words were added or deleted rather than corrected;
+/// both give up rather than guess.
+fn changed_word(ins: &[String], aft: &[String]) -> Option<(String, String)> {
+    if aft.len() < ins.len() {
+        return None;
+    }
+    let mut found: Option<(String, String)> = None;
+    for start in 0..=(aft.len() - ins.len()) {
+        let window = &aft[start..start + ins.len()];
+        let mut diffs = window
+            .iter()
+            .zip(ins)
+            .filter(|(a, b)| !a.eq_ignore_ascii_case(b));
+        let Some((new, old)) = diffs.next() else {
+            // An identical window: the pasted text is still sitting there untouched,
+            // so there is no correction to learn anywhere.
+            return None;
+        };
+        if diffs.next().is_some() {
+            continue; // more than one word differs — not a clean swap
+        }
+        let pair = (old.clone(), new.clone());
+        match &found {
+            Some(prev) if *prev != pair => return None, // ambiguous
+            Some(_) => {}
+            None => found = Some(pair),
+        }
+    }
+    found
+}
+
+/// Detect a single clean one-word correction: exactly one word of the pasted text
+/// replaced in the field, both distinctive and phonetically close, with the new word
+/// looking like a proper noun. Returns `(mishear, correct)`.
+///
+/// `caps_are_informative` is false at the Messaging cleanup level, where
+/// `force_lowercase` has flattened the paste and the user types their fix in
+/// lowercase too — there, capitalization carries no signal and demanding it would
+/// mean the one register the level exists to serve is the one that never learns.
+pub fn detect_correction(
+    inserted: &str,
+    after: &str,
+    caps_are_informative: bool,
+) -> Option<(String, String)> {
     let ins = word_tokens(inserted);
     let aft = word_tokens(after);
     if ins.is_empty() || aft.is_empty() {
         return None;
     }
-    let ins_lc: HashSet<String> = ins.iter().map(|w| w.to_lowercase()).collect();
-    let aft_lc: HashSet<String> = aft.iter().map(|w| w.to_lowercase()).collect();
-
-    let removed: Vec<&String> = ins.iter().filter(|w| !aft_lc.contains(&w.to_lowercase())).collect();
-    let added: Vec<&String> = aft.iter().filter(|w| !ins_lc.contains(&w.to_lowercase())).collect();
-    if removed.len() != 1 || added.len() != 1 {
-        return None; // only learn on a clean 1-for-1 swap
-    }
-    let mishear = removed[0].clone();
-    let correct = added[0].clone();
+    let (mishear, correct) = changed_word(&ins, &aft)?;
 
     let alpha = |w: &str| w.chars().all(|c| c.is_alphabetic());
     if mishear.chars().count() < 3 || correct.chars().count() < 3 {
@@ -246,8 +299,10 @@ pub fn detect_correction(inserted: &str, after: &str) -> Option<(String, String)
         return None;
     }
     // The correction should look like a name (Titlecase) and be phonetically close
-    // to what it replaced (a real mishear, not an unrelated rewrite).
-    let titled = correct.chars().next().is_some_and(|c| c.is_uppercase());
+    // to what it replaced (a real mishear, not an unrelated rewrite). Where case has
+    // been flattened, closeness is the only signal left — which is weaker, so the
+    // COMMON list and the distance bound are doing all the work there.
+    let titled = !caps_are_informative || correct.chars().next().is_some_and(|c| c.is_uppercase());
     let d = norm_levenshtein(&mishear, &correct);
     if titled && d > 0.0 && d <= 0.6 {
         Some((mishear, correct))
@@ -277,33 +332,103 @@ fn norm_levenshtein(a: &str, b: &str) -> f32 {
 mod tests {
     use super::*;
 
+    /// The ordinary case: caps carry signal, so a Titlecase fix is required.
+    fn detect(inserted: &str, after: &str) -> Option<(String, String)> {
+        detect_correction(inserted, after, true)
+    }
+
     #[test]
     fn learns_a_name_correction() {
         // We inserted "monvi"; the user fixed it to "Manvi".
-        let got = detect_correction("send the deck to monvi please", "send the deck to Manvi please");
+        let got = detect("send the deck to monvi please", "send the deck to Manvi please");
         assert_eq!(got, Some(("monvi".to_string(), "Manvi".to_string())));
     }
 
     #[test]
     fn ignores_common_word_edits() {
         // "there" -> "their" is a common-word edit, never learned.
-        assert_eq!(detect_correction("i left there bag", "i left their bag"), None);
+        assert_eq!(detect("i left there bag", "i left their bag"), None);
     }
 
     #[test]
     fn ignores_multi_word_changes() {
         // More than one word changed → too ambiguous, skip.
-        assert_eq!(detect_correction("meet at noon monvi", "see you later Manvi"), None);
+        assert_eq!(detect("meet at noon monvi", "see you later Manvi"), None);
     }
 
     #[test]
     fn ignores_unrelated_replacement() {
         // Not phonetically close → not a mishear.
-        assert_eq!(detect_correction("ping the server foo", "ping the server Xylophone"), None);
+        assert_eq!(detect("ping the server foo", "ping the server Xylophone"), None);
     }
 
     #[test]
     fn no_change_learns_nothing() {
-        assert_eq!(detect_correction("hello there world", "hello there world"), None);
+        assert_eq!(detect("hello there world", "hello there world"), None);
+    }
+
+    /// The regression that made auto-learn effectively dead: the second dictation
+    /// into a field that already holds the first one's text. Set-differencing the
+    /// whole field counted every earlier word as "added" and bailed every time.
+    #[test]
+    fn learns_when_the_field_already_held_an_earlier_dictation() {
+        let got = detect(
+            "send the deck to monvi please",
+            "Here is the first thing I said. send the deck to Manvi please",
+        );
+        assert_eq!(got, Some(("monvi".to_string(), "Manvi".to_string())));
+    }
+
+    /// Same failure from the other side: a reply box with quoted text underneath.
+    #[test]
+    fn learns_with_text_on_both_sides_of_the_paste() {
+        let got = detect(
+            "thanks monvi for that",
+            "Draft: thanks Manvi for that\n\n> On Tuesday someone wrote:\n> earlier message",
+        );
+        assert_eq!(got, Some(("monvi".to_string(), "Manvi".to_string())));
+    }
+
+    /// Fixing the name and then carrying on typing is the common real sequence, and
+    /// it still learns: the window matches the paste, and what came after it is not
+    /// part of the comparison.
+    #[test]
+    fn learns_when_the_user_keeps_typing_after_the_fix() {
+        let got = detect("send the deck to monvi", "send the deck to Manvi tomorrow please");
+        assert_eq!(got, Some(("monvi".to_string(), "Manvi".to_string())));
+    }
+
+    /// Deleting from the paste leaves nothing to align against, so nothing is learned
+    /// rather than a guess being made.
+    #[test]
+    fn ignores_a_deletion() {
+        assert_eq!(detect("send the deck to monvi please", "send the deck"), None);
+    }
+
+    /// The pasted text is still sitting there unmodified — nothing to learn, even
+    /// though the field around it changed.
+    #[test]
+    fn untouched_paste_learns_nothing_despite_surrounding_edits() {
+        assert_eq!(detect("send it to monvi", "hello there send it to monvi ok"), None);
+    }
+
+    /// At the Messaging level `force_lowercase` flattens the paste and the user
+    /// types the fix in lowercase, so requiring Titlecase means never learning in
+    /// the register that setting exists for.
+    #[test]
+    fn learns_a_lowercase_fix_when_case_carries_no_signal() {
+        let flat = "send the deck to monvi please";
+        assert_eq!(detect(flat, "send the deck to manvi please"), None);
+        assert_eq!(
+            detect_correction(flat, "send the deck to manvi please", false),
+            Some(("monvi".to_string(), "manvi".to_string()))
+        );
+    }
+
+    /// Dropping the case requirement must not drop the others: an ordinary word
+    /// rewrite is still refused with caps flattened.
+    #[test]
+    fn flattened_case_still_refuses_common_word_edits() {
+        assert_eq!(detect_correction("i left there bag", "i left their bag", false), None);
     }
 }
