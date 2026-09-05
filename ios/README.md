@@ -46,23 +46,28 @@ carry a payload, so each one means only "look in the container".
 
 ### Does the app have to be open?
 
-**No — but it has to be alive.** With `UIBackgroundModes: audio` the app keeps its
-capture session while backgrounded, so the mic key signals it and nothing visibly
-switches. That is the normal case.
+**No — but it has to be alive, and "alive" means the microphone is actually running.**
+`UIBackgroundModes: audio` keeps an app resident only while audio is *active*;
+declaring the mode and idling gets the app suspended seconds after it backgrounds. So
+the app runs its capture engine in **standby** — discarding everything it hears until
+the mic key says otherwise — and that is what keeps it reachable. The orange mic
+indicator is on for as long as it is; Settings says so before the switch is turned on.
 
-What iOS does not guarantee is that a backgrounded app stays resident. When it has
-been suspended or killed, the heartbeat stops and the keyboard opens
-`whimprflow://dictate` instead — you see the app, then tap the back arrow to return.
-Launching your *own* container app is the one exception to the App Review rule that a
-keyboard "must not launch other apps", [confirmed by Apple DTS][dts]; since iOS 26 it
-also requires Full Access.
+Standby survives a phone call, Siri, AirPods connecting and a media-services reset:
+the recorder tracks whether it *should* be up separately from whether it is, and
+rebuilds on each. Without that, the first call of the day ended standby for good and
+every later mic tap opened the app.
 
-A heartbeat (`Handoff.markAlive`, every ~4s) rather than a flag, because an app that
-is killed never gets to clear a flag — and a stale "alive" would leave the mic key
-silently doing nothing, which is the one failure worth engineering against.
+What nothing survives is a force-quit. A terminated app cannot be woken by a Darwin
+notification and no extension can launch its container in the background, so the
+keyboard opens `whimprflow://dictate` — you see the app, then tap the back arrow.
+Wispr Flow's keyboard [documents the same limit][wispr]. Launching your *own*
+container app is the one exception to the rule that a keyboard "must not launch other
+apps", [confirmed by Apple DTS][dts]; since iOS 26 it also requires Full Access.
 
-Turn the heartbeat off in Settings ("Keep the mic ready in the background") to always
-bounce. Slower, completely reliable.
+The keyboard tells the two cases apart with a heartbeat (`Handoff.markAlive`, every
+~4s) rather than a flag: a killed app never gets to clear a flag, and a stale "alive"
+leaves the mic key silently doing nothing.
 
 ## Sharing the core
 
@@ -127,15 +132,18 @@ bridge. Both are commented as copies at both ends; retune one, retune the other.
 
 ```
 ios/
-  project.yml            XcodeGen source — the project is generated, not committed by hand
+  project.yml            XcodeGen source — the project is generated, never edited by hand
+  DEPLOY.md              registering App IDs, the App Group, TestFlight
   Shared/                compiled into BOTH targets
     WhimprCore.swift     the bridge; a transport with no judgement of its own
-    Handoff.swift        App Group + Darwin notifications
-    Settings.swift       settings, and the Keychain
+    Handoff.swift        App Group + Darwin notifications (start/stop/cancel/result/state/alive)
+    LevelChannel.swift   the live mic level, one Float in a memory-mapped file
+    Settings.swift       settings, appearance, and the Keychain
     Groq.swift           Whisper + chat-completions
-    Theme.swift          port of ui/src/tokens/values.ts
-  WhimprFlow/            the app
-  Keyboard/              the extension
+    Palette.swift        the colours, both appearances, as dynamic UIColors
+    Theme.swift          SwiftUI wrapper over Palette
+  WhimprFlow/            the app: Recorder (standby + capture), DictationController, views
+  Keyboard/              the extension: KeyboardViewController, WaveformView
   Frameworks/            generated xcframework (gitignored)
 ```
 
@@ -249,31 +257,20 @@ agreement.
 
 ## Status
 
-**Verified on the simulator** (iPhone 17 Pro and iPad Air 11-inch, iOS 26.5), by
-driving the UI and reading the result, not by inference:
+**Verified on an iPhone 15, in daily use** (2026-09-05):
 
-- builds and launches on both idioms; the Rust core answers across the bridge;
-- the dictate, settings and dictionary screens render correctly, and the content
-  column caps at 520pt on iPad instead of stretching;
-- the recording animation — level rings, glow, waveform — and the idle, recording,
-  transcribing and failed states;
-- **the capture path end to end**: the simulator records through the Mac's
-  microphone, the WAV is encoded and accepted, and the request reaches Groq. Tested
-  with a deliberately invalid key, which came back `401 invalid_api_key` and
-  surfaced as "Groq rejected the API key";
-- the Keychain round trip, saving and removing;
-- `cargo test --workspace`, including the macOS/iOS parity suite.
+- dictation from the keyboard in place, with no app switch — standby, the Darwin
+  handoff, `insertText`;
+- the live waveform, discard from both keyboard and app, light/dark/system theme;
+- keyboard switching with no visible frame, established from device screen
+  recordings pulled apart frame by frame (see the notes in `KeyboardViewController`);
+- the `whimprflow://` fallback after a force-quit;
+- the Mac and iOS shells pasting identical text: `cargo test -p whimpr-ffi`.
 
-**Not verified — each needs a physical device:**
+**Not yet exercised:** TestFlight. Nothing has been archived or uploaded; Part 2 of
+[DEPLOY.md](DEPLOY.md) is written but unwalked, and the globally unique App Store
+Connect name is the likeliest snag.
 
-- a *successful* dictation against a real key (only the 401 path has been exercised);
-- the background capture session surviving backgrounding. The simulator does not
-  model suspension or termination faithfully, so the entire no-visible-switch design
-  is unproven, as is the `whimprflow://` fallback that covers it;
-- the keyboard extension: installing it, the Allow Full Access prompt, the Darwin
-  handoff and `insertText`. **None of the keyboard has been run at all.**
-- App Group entitlement provisioning, which needs `group.com.whimpr.whimprflow`
-  registered in the developer portal against team VSTTF2AM22.
-
+[wispr]: https://docs.wisprflow.ai/articles/7453988911-set-up-the-flow-keyboard-on-iphone
 [qa1872]: https://developer.apple.com/library/archive/qa/qa1872/_index.html
 [dts]: https://developer.apple.com/forums/thread/812091

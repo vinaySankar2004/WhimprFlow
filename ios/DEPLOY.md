@@ -212,7 +212,8 @@ year. Setting a calendar reminder for day 80 is cheaper than being told it broke
 | Symptom | Cause |
 |---|---|
 | Mic key does nothing, no app switch | Allow Full Access is off. It is a *separate* toggle from adding the keyboard, and adding the keyboard does not imply it. |
-| Mic key always opens the app | Expected when iOS has killed the backgrounded app; it is the fallback. If it is constant, check ⚙︎ ▸ "Keep the mic ready in the background" is on. |
+| Mic key always opens the app | The app was force-quit — open it once and it stays reachable. If it happens without a force-quit, check ⚙︎ ▸ "Keep the mic ready in the background" is on; standby survives calls and route changes on its own. |
+| "Groq refused the request (403)" | A VPN. Groq's CDN refuses datacenter and VPN exit addresses; the key is fine. Turn the VPN off, or split-tunnel `api.groq.com`. |
 | Text never appears after dictating | The App Group is not attached to *both* App IDs (Part 1, step 3). The keyboard reads an empty container and nothing errors. |
 | "Groq rejected the API key" | Wrong or revoked key. Re-copy from the Groq console; keys are shown once. |
 | Rate limited | The free tier's daily cap. It resets. |

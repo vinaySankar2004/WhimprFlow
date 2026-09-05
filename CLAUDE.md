@@ -297,6 +297,24 @@ These are not hypotheticals; each one bit during development.
   nonexistent paths and Swift fails with `cannot find 'whimpr_call' in scope` — which
   reads as a link error and is not. Both targets need the bridging header, not just
   the app.
+- **`UIBackgroundModes: audio` keeps an app alive only while audio is actually
+  running.** Declaring it and idling gets the app suspended seconds after
+  backgrounding, so the keyboard's mic key falls back to opening the app *every*
+  time — which is what shipped first and read as an iOS limit. Standby runs the
+  capture engine continuously, discarding samples, and rebuilds it on interruption,
+  route change and media-services reset; before that, one phone call ended standby
+  for the day. The cost — the orange mic dot — is stated in Settings, not hidden.
+- **Keyboard-switch glitches are diagnosed from a screen recording, not reasoning.**
+  Four rounds of inference were wrong; `ffmpeg` frames from a device recording were
+  right in minutes. What they showed: for one frame per switch iOS lays the
+  keyboard out at the *outgoing* keyboard's height, so the layout hangs from the
+  bottom with a fixed panel height, the root view is transparent so that frame
+  shows the host through, and the declared height matches the stock keyboard
+  (242pt on a 6.1" iPhone; 258 moved the top edge on every switch). Do not pin
+  anything to the top of the input view, and do not give the root a background.
+- **A Groq 403 is a VPN, not a bad key.** Groq's CDN refuses datacenter exit
+  addresses; a working key fails behind a VPN and works without one. Never report
+  403 as "check your key" — it sent a good key to be deleted and re-created.
 
 ## Conventions
 
