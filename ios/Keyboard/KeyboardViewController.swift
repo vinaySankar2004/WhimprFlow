@@ -24,6 +24,9 @@ import UIKit
 /// matching what the stock keyboard does, so "give me ABC" and "give me emoji" are
 /// both one gesture away even though neither can be a dedicated button.
 final class KeyboardViewController: UIInputViewController {
+    /// Our own backdrop, sized to the keyboard and hung from the bottom. The root
+    /// view itself stays transparent — see `buildInterface`.
+    private var backdrop: UIView!
     private var micButton: UIButton!
     private var micLabel: UILabel!
     private var discardButton: UIButton!
@@ -127,13 +130,26 @@ final class KeyboardViewController: UIInputViewController {
         guard style != appliedStyle else { return }
         appliedStyle = style
         overrideUserInterfaceStyle = style
-        view.backgroundColor = Palette.background
+        backdrop?.backgroundColor = Palette.background
     }
 
     // MARK: - Interface
 
     private func buildInterface() {
-        view.backgroundColor = Palette.background
+        // Transparent, on purpose. For one frame during a keyboard switch iOS lays
+        // this view out at the *outgoing* keyboard's height; bottom-anchoring the
+        // content stopped that frame moving anything, but the extra height was
+        // still filled with an opaque near-black background — painted over the host
+        // app's text field for that frame, which a device recording shows as a
+        // black flash above the keyboard. With the root clear, the transient extra
+        // area shows the host through, and the backdrop is drawn only behind the
+        // content, whose position never changes.
+        view.backgroundColor = .clear
+
+        backdrop = UIView()
+        backdrop.backgroundColor = Palette.background
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(backdrop)
 
         // The mic target: everything above the key row, so it is hard to miss.
         micButton = UIButton(type: .custom)
@@ -209,6 +225,10 @@ final class KeyboardViewController: UIInputViewController {
 
         NSLayoutConstraint.activate([
             height,
+            backdrop.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            backdrop.heightAnchor.constraint(equalToConstant: keyboardHeight),
             // The panel has a fixed height and hangs from the key row, which hangs
             // from the bottom — nothing is pinned to the top. For one frame during a
             // keyboard switch iOS lays this view out at the *outgoing* keyboard's
