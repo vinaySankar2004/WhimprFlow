@@ -424,9 +424,14 @@ names the key each call used.
 **Volume in standby** (2026-09-05): confirmed by ear that other apps play at full
 volume with WhimprFlow holding the mic, after the move to `.default` mode.
 
-**Not yet exercised:** TestFlight. Nothing has been archived or uploaded; Part 2 of
-[DEPLOY.md](DEPLOY.md) is written but unwalked, and the globally unique App Store
-Connect name is the likeliest snag.
+**TestFlight** (2026-09-05): 0.1.0 (2) archived, uploaded and processed, and installed
+from TestFlight on the developer's own iPhone and iPad. The name `WhimprFlow` was
+available, so the unique-name snag Part 2 warned about did not arise.
+
+**Not yet confirmed on the TestFlight build:** Settings → About → Core reading 0.1.8,
+and a dictation end to end. Both were verified on the cable build, not on the uploaded
+one — which is the exact gap the [relink trap](../CLAUDE.md) produces. Also unwalked:
+a second person installing from an invite.
 
 [wispr]: https://docs.wisprflow.ai/articles/7453988911-set-up-the-flow-keyboard-on-iphone
 [qa1872]: https://developer.apple.com/library/archive/qa/qa1872/_index.html
