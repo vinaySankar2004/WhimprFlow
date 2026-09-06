@@ -232,6 +232,14 @@ Things about it that are not obvious from the code:
 - **It is taller than the stock keyboard by the height of the bar.** The
   bottom-anchored layout described in `KeyboardViewController` is what makes that
   safe during a keyboard switch.
+- **The iPad has its own arrangement, the stock one.** `KeyboardLayout.padRows`: tab
+  and delete flank the top row, return ends the home row, shift sits at both ends of
+  the third, and the bottom row is globe · .?123 · mic · space · .?123 · hide. Numbers
+  and symbols are secondary labels on the letters, typed with a downward flick, so
+  the grid stays four rows. `KeyboardView.Metrics` picks phone, iPad portrait or iPad
+  landscape from the device and the width, and the height constraint follows it; the
+  phone metrics stretched across an iPad gave hairline gaps between keys three times
+  as wide as they were tall.
 ```
 
 ## Building
@@ -372,6 +380,11 @@ banner counting down):
   recordings pulled apart frame by frame (see the notes in `KeyboardViewController`);
 - the `whimprflow://` fallback after a force-quit;
 - the Mac and iOS shells pasting identical text: `cargo test -p whimpr-ffi`.
+
+**Verified on the iPad Air 11" (2026-09-05, his screenshot in landscape):** the stock
+iPad arrangement with the flick secondaries, the bar scaled up, keys in stock
+proportions. Shift, caps lock and the flick were then fixed and reinstalled, not
+re-checked.
 
 **Verified on the iPhone 17 Pro simulator** (2026-09-05, the keyboard redesign — the
 simulator is honest about layout, ActivityKit and the bridge, and about nothing that

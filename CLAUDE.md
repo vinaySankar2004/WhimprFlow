@@ -345,10 +345,11 @@ These are not hypotheticals; each one bit during development.
   declared in `HandoffSignals.swift` and extended in `Handoff.swift`, not the other way
   round. Its intents post the keyboard's Darwin signals rather than calling into the
   app, for the same reason: the type has to compile where `DictationController` is not.
-- **The keyboard is deliberately taller than the stock 242 pt now** — a 50 pt bar over
-  the key grid, as Wispr Flow's is. The bottom-anchored, transparent-root layout is what
-  makes the mismatch harmless during a keyboard switch; do not pin the bar to the top,
-  and do not give the root a background, for the reasons in the next trap.
+- **The keyboard is deliberately taller than the stock 242 pt now** — a bar over the
+  key grid, as Wispr Flow's is, and on the iPad the grid itself is sized per width
+  (`KeyboardView.Metrics`). The bottom-anchored, transparent-root layout is what makes
+  the mismatch harmless during a keyboard switch; do not pin the bar to the top, and
+  do not give the root a background, for the reasons in the next trap.
 - **Keyboard-switch glitches are diagnosed from a screen recording, not reasoning.**
   Four rounds of inference were wrong; `ffmpeg` frames from a device recording were
   right in minutes. What they showed: for one frame per switch iOS lays the

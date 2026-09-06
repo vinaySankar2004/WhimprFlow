@@ -47,6 +47,12 @@ final class TypingEngine {
     /// The last swiped word as inserted, so an alternative can replace it.
     private var lastSwipe: (inserted: String, leadingSpace: Bool)?
 
+    /// Shift was set by a tap on the key, not by the sentence rule. The rule stands
+    /// down until a letter consumes it: without this, every key commit re-derived
+    /// shift from the text and undid the tap at once — and the second tap of a
+    /// caps-lock double tap never found the first one still on.
+    private var manualShift = false
+
     /// When the last space was inserted, for the double-space full stop.
     private var lastSpaceAt: Date?
     /// When shift was last tapped, for caps lock.
@@ -97,6 +103,12 @@ final class TypingEngine {
             return refreshShift()
         case .shift:
             return toggleShift()
+        case .tab:
+            proxy.insertText("\t")
+            typedWordLength = 0
+            return false
+        case .hide, .dictate:
+            return false // the controller's, not text
         case let .plane(next):
             plane = next
             // Coming back to letters, the sentence rule applies again; the other two
@@ -119,7 +131,10 @@ final class TypingEngine {
     /// sentence arms shift for the next one, but only once a space follows — which
     /// `refreshShift` sees on the next key.
     private func settleAfterCharacter(_ text: String) -> Bool {
-        if shift == .on, plane == .letters, text.first?.isLetter == true {
+        guard plane == .letters, text.first?.isLetter == true else { return false }
+        // A letter consumes a tapped shift, on or off; the sentence rule resumes.
+        manualShift = false
+        if shift == .on {
             shift = .off
             return true
         }
@@ -150,6 +165,7 @@ final class TypingEngine {
         let now = Date()
         let isDoubleTap = lastShiftAt.map { now.timeIntervalSince($0) < Self.doubleTapWindow } ?? false
         lastShiftAt = now
+        manualShift = true
         switch shift {
         case .off: shift = .on
         case .on: shift = isDoubleTap ? .locked : .off
@@ -240,6 +256,7 @@ final class TypingEngine {
         lastCorrection = nil
         lastSpaceAt = nil
         typedWordLength = 0
+        manualShift = false
         if shift == .on { shift = .off }
         refreshShift()
     }
@@ -280,7 +297,7 @@ final class TypingEngine {
     /// over. Caps lock is the user's explicit choice and is never overridden here.
     @discardableResult
     func refreshShift() -> Bool {
-        guard shift != .locked, plane == .letters else { return false }
+        guard shift != .locked, !manualShift, plane == .letters else { return false }
         let wanted: ShiftState = wantsCapital ? .on : .off
         guard wanted != shift else { return false }
         shift = wanted

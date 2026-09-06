@@ -50,16 +50,55 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
 
     // MARK: Geometry
 
-    // Tuned on the phone in two rounds: 43/11 read as heavy, 38/14 as too much air
-    // between rows. The stock keyboard's own 42/10 is where it settled — a key you
-    // can hit by feel, and rows that read as one surface.
-    static let keyHeight: CGFloat = 42
-    static let rowGap: CGFloat = 10
-    static let topPad: CGFloat = 8
-    static let bottomPad: CGFloat = 4
-    static let height: CGFloat = 4 * keyHeight + 3 * rowGap + topPad + bottomPad
-    private let sideMargin: CGFloat = 3
-    private let gap: CGFloat = 6
+    /// Everything about size, chosen per device and width rather than hard-coded:
+    /// the phone numbers stretched across an iPad gave hairline gaps between keys
+    /// three times as wide as they were tall, and no number row. These follow the
+    /// stock keyboard on each.
+    struct Metrics: Equatable {
+        var keyHeight: CGFloat
+        var rowGap: CGFloat
+        var gap: CGFloat
+        var sideMargin: CGFloat
+        var topPad: CGFloat
+        var bottomPad: CGFloat
+        var cornerRadius: CGFloat
+        var fontSize: CGFloat
+        /// Letter popups: the phone has them, the iPad's keys are big enough not to.
+        var popups: Bool
+        /// The iPad arrangement (`KeyboardLayout.padRows`), with flick secondaries.
+        var pad: Bool
+
+        var height: CGFloat {
+            4 * keyHeight + 3 * rowGap + topPad + bottomPad
+        }
+
+        /// Tuned on the phone in two rounds: 43/11 read as heavy, 38/14 as too much
+        /// air. The stock keyboard's own 42/10 is where it settled.
+        static let phone = Metrics(
+            keyHeight: 42, rowGap: 10, gap: 6, sideMargin: 3, topPad: 8, bottomPad: 4,
+            cornerRadius: 5.5, fontSize: 22, popups: true, pad: false
+        )
+        /// Measured off the stock keyboard on an 11" iPad: landscape keys are about
+        /// 81 × 71 pt with 13-pt gaps; portrait about 55 × 55 with 10. Ours are a
+        /// little shorter, since there is a bar above them the stock one lacks.
+        static let padPortrait = Metrics(
+            keyHeight: 58, rowGap: 10, gap: 10, sideMargin: 10, topPad: 10, bottomPad: 8,
+            cornerRadius: 8, fontSize: 24, popups: false, pad: true
+        )
+        static let padLandscape = Metrics(
+            keyHeight: 68, rowGap: 13, gap: 13, sideMargin: 14, topPad: 12, bottomPad: 10,
+            cornerRadius: 10, fontSize: 26, popups: false, pad: true
+        )
+
+        static func `for`(width: CGFloat) -> Metrics {
+            guard UIDevice.current.userInterfaceIdiom == .pad else { return .phone }
+            return width >= 1000 ? .padLandscape : .padPortrait
+        }
+    }
+
+    var metrics: Metrics = .phone {
+        didSet { if metrics != oldValue { rebuild() } }
+    }
 
     private var rows: [[Key]] = []
     private var keyViews: [[KeyView]] = []
@@ -73,6 +112,9 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
     /// and becomes a swipe, drawn as a trail and decoded on release.
     private var swipePaths: [UITouch: [CGPoint]] = [:]
     private var swiping: Set<UITouch> = []
+    /// iPad flick: a short downward drag on a letter types its secondary label.
+    private var touchStarts: [UITouch: CGPoint] = [:]
+    private var flicked: Set<UITouch> = []
     private let trail = CAShapeLayer()
     private let hint = UILabel()
     private var hintTimer: Timer?
@@ -118,6 +160,7 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
     }
 
     var letterKeyWidth: CGFloat {
+        // The q row, whichever row it is: the number row above it is the same width.
         keyViews.first?.first?.frame.width ?? 33
     }
 
@@ -145,10 +188,15 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
     private func rebuild() {
         keyViews.flatMap { $0 }.forEach { $0.removeFromSuperview() }
         popup.removeFromSuperview()
-        rows = KeyboardLayout.rows(for: plane, includeGlobe: includeGlobe)
+        rows = metrics.pad
+            ? KeyboardLayout.padRows(for: plane, includeGlobe: includeGlobe)
+            : KeyboardLayout.rows(for: plane, includeGlobe: includeGlobe)
         keyViews = rows.map { row in
             row.map { key in
-                let view = KeyView(key: key)
+                let view = KeyView(key: key, cornerRadius: metrics.cornerRadius)
+                if metrics.pad, plane == .letters, case let .character(text) = key {
+                    view.secondary = KeyboardLayout.padSecondary[text]
+                }
                 addSubview(view)
                 return view
             }
@@ -161,7 +209,7 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
 
     private func restyleAll() {
         for view in keyViews.flatMap({ $0 }) {
-            view.style(shift: shift, plane: plane, returnTitle: returnTitle)
+            view.style(shift: shift, plane: plane, returnTitle: returnTitle, fontSize: metrics.fontSize)
         }
     }
 
@@ -175,45 +223,34 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        if metrics.pad {
+            layoutPad()
+            return
+        }
+        let m = metrics
         let width = bounds.width
-        let available = width - 2 * sideMargin
-        let unit = (available - 9 * gap) / 10
+        let available = width - 2 * m.sideMargin
+        let unit = (available - 9 * m.gap) / 10
         let side = unit * 1.4          // shift, delete, #+=, and the globe
-        let wide = unit * 2.6          // the bottom row's plane key and return
-        var y = Self.topPad
+        let pad = false
+        var y = m.topPad
 
         for (rowIndex, row) in rows.enumerated() {
             let views = keyViews[rowIndex]
             var widths: [CGFloat] = []
-            var gaps: [CGFloat] = Array(repeating: gap, count: max(0, row.count - 1))
+            var gaps: [CGFloat] = Array(repeating: m.gap, count: max(0, row.count - 1))
+            let isModifierRow = row.count > 2 && row[row.count - 1] == .delete
+            let isBottomRow = row.contains(.space)
 
-            switch rowIndex {
-            case 0, 1:
-                widths = Array(repeating: unit, count: row.count)
-            case 2:
-                // Modifier, the middle keys, modifier — with a double gap either side
-                // of the middle, as stock. Letters keep their width; punctuation on
-                // the other planes spreads to fill.
-                let middle = row.count - 2
-                let inner = middle == 7
-                    ? unit
-                    : (available - 2 * side - 2 * (2 * gap) - CGFloat(middle - 1) * gap) / CGFloat(middle)
-                widths = [side] + Array(repeating: inner, count: middle) + [side]
-                gaps[0] = 2 * gap
-                gaps[gaps.count - 1] = 2 * gap
-                if middle == 7 {
-                    // Whatever is left after stock widths goes into the two double gaps.
-                    let used = 2 * side + 7 * unit + 6 * gap
-                    let extra = max(0, available - used) / 2
-                    gaps[0] = extra
-                    gaps[gaps.count - 1] = extra
-                }
-            default:
+            if isBottomRow {
+                // On the phone the plane key and return mirror each other around the
+                // space bar; on the iPad's width that would make them the size of a
+                // hand, so they stay near a key and a half, as stock does there.
                 widths = row.map { key in
                     switch key {
-                    case .plane: return includeGlobe ? side : wide
-                    case .globe: return side
-                    case .return: return wide
+                    case .plane: return pad ? unit * 1.4 : (includeGlobe ? side : unit * 2.6)
+                    case .globe: return pad ? unit : side
+                    case .return: return pad ? unit * 1.8 : unit * 2.6
                     default: return 0 // space: filled below
                     }
                 }
@@ -221,15 +258,80 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
                 if let spaceIndex = row.firstIndex(of: .space) {
                     widths[spaceIndex] = available - fixed
                 }
+            } else if isModifierRow {
+                // Modifier, the middle keys, modifier — with a double gap either side
+                // of the middle, as stock. Letters keep their width; punctuation on
+                // the other planes spreads to fill.
+                let middle = row.count - 2
+                let inner = middle == 7
+                    ? unit
+                    : (available - 2 * side - 2 * (2 * m.gap) - CGFloat(middle - 1) * m.gap) / CGFloat(middle)
+                widths = [side] + Array(repeating: inner, count: middle) + [side]
+                gaps[0] = 2 * m.gap
+                gaps[gaps.count - 1] = 2 * m.gap
+                if middle == 7 {
+                    // Whatever is left after stock widths goes into the two double gaps.
+                    let used = 2 * side + 7 * unit + 6 * m.gap
+                    let extra = max(0, available - used) / 2
+                    gaps[0] = extra
+                    gaps[gaps.count - 1] = extra
+                }
+            } else {
+                widths = Array(repeating: unit, count: row.count)
             }
 
             let rowWidth = widths.reduce(0, +) + gaps.reduce(0, +)
-            var x = sideMargin + (available - rowWidth) / 2
+            var x = m.sideMargin + (available - rowWidth) / 2
             for (index, view) in views.enumerated() {
-                view.frame = CGRect(x: x, y: y, width: widths[index], height: Self.keyHeight)
+                view.frame = CGRect(x: x, y: y, width: widths[index], height: m.keyHeight)
                 x += widths[index] + (index < gaps.count ? gaps[index] : 0)
             }
-            y += Self.keyHeight + Self.rowGap
+            y += m.keyHeight + m.rowGap
+        }
+    }
+
+    /// The iPad grid. Every row is side key · middle keys · side key, and the side
+    /// keys' widths are the stock keyboard's, in letter-key units: a letter key is
+    /// what is left of the top row after tab and delete, and the other rows come
+    /// out the same width by the factors below.
+    private func layoutPad() {
+        let m = metrics
+        let available = bounds.width - 2 * m.sideMargin
+        // Top row: 10 letters, tab and delete at 1.3 each, 11 gaps.
+        let unit = (available - 11 * m.gap) / 12.6
+        var y = m.topPad
+
+        for (rowIndex, row) in rows.enumerated() {
+            let views = keyViews[rowIndex]
+            var widths: [CGFloat] = row.enumerated().map { index, key in
+                let isFirst = index == 0
+                let isLast = index == row.count - 1
+                switch key {
+                case .character: return unit
+                case .tab: return unit * 1.3
+                case .delete: return row.count == 11 ? unit * 2.6 + m.gap : unit * 1.3
+                case .shift, .plane where isFirst:
+                    return rowIndex == 2 ? unit * 2.15 : unit * 1.65
+                case .shift, .plane where isLast && rowIndex == 2:
+                    return unit * 1.6
+                case .return: return unit * 2.1
+                case .globe, .dictate: return unit * 1.05
+                case .plane: return isLast || rowIndex == 3 && index >= row.count - 2 ? unit * 1.5 : unit * 1.05
+                case .hide: return unit * 1.5
+                case .space: return 0
+                }
+            }
+            let gaps = CGFloat(max(0, row.count - 1)) * m.gap
+            if let spaceIndex = row.firstIndex(of: .space) {
+                widths[spaceIndex] = available - widths.reduce(0, +) - gaps
+            }
+            let rowWidth = widths.reduce(0, +) + gaps
+            var x = m.sideMargin + (available - rowWidth) / 2
+            for (index, view) in views.enumerated() {
+                view.frame = CGRect(x: x, y: y, width: widths[index], height: m.keyHeight)
+                x += widths[index] + m.gap
+            }
+            y += m.keyHeight + m.rowGap
         }
     }
 
@@ -240,8 +342,8 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
         // in the gap still types. Rows are chosen by y, keys by x.
         for row in keyViews {
             guard let first = row.first else { continue }
-            let top = first.frame.minY - Self.rowGap / 2
-            let bottom = first.frame.maxY + Self.rowGap / 2
+            let top = first.frame.minY - metrics.rowGap / 2
+            let bottom = first.frame.maxY + metrics.rowGap / 2
             guard point.y >= top, point.y < bottom else { continue }
             return row.min { abs($0.frame.midX - point.x) < abs($1.frame.midX - point.x) }
         }
@@ -252,6 +354,7 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
         for touch in touches {
             guard let view = keyView(at: touch.location(in: self)) else { continue }
             active[touch] = view
+            touchStarts[touch] = touch.location(in: self)
             view.isPressed = true
             delegate?.keyboardViewDidTouchKey(self)
             switch view.key {
@@ -269,7 +372,7 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
                     self.delegate?.keyboardViewDidLongPressGlobe(self)
                 }
             case .character:
-                showPopup(over: view)
+                if metrics.popups { showPopup(over: view) }
                 if plane == .letters { swipePaths[touch] = [touch.location(in: self)] }
             default:
                 break
@@ -279,6 +382,19 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
+            // A flick: down a little, not sideways, on a key with a secondary. It
+            // wins over swipe typing because it is decided within the first key.
+            if metrics.pad, !flicked.contains(touch), !swiping.contains(touch),
+               let start = touchStarts[touch], let view = active[touch], view.secondary != nil {
+                let point = touch.location(in: self)
+                if point.y - start.y > 22, abs(point.x - start.x) < 28 {
+                    flicked.insert(touch)
+                    swipePaths.removeValue(forKey: touch)
+                    view.showsSecondary = true
+                    continue
+                }
+            }
+            if flicked.contains(touch) { continue }
             if var path = swipePaths[touch] {
                 let point = touch.location(in: self)
                 path.append(point)
@@ -307,7 +423,7 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
             current.isPressed = false
             next.isPressed = true
             active[touch] = next
-            if case .character = next.key {
+            if case .character = next.key, metrics.popups {
                 showPopup(over: next)
             } else {
                 popup.isHidden = true
@@ -317,6 +433,15 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
+            touchStarts.removeValue(forKey: touch)
+            if flicked.remove(touch) != nil, let view = active.removeValue(forKey: touch) {
+                view.isPressed = false
+                view.showsSecondary = false
+                if let secondary = view.secondary {
+                    delegate?.keyboardView(self, didCommit: .character(secondary))
+                }
+                continue
+            }
             if swiping.remove(touch) != nil, let path = swipePaths.removeValue(forKey: touch) {
                 clearTrail()
                 delegate?.keyboardView(self, didSwipe: path)
@@ -343,6 +468,8 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
+            touchStarts.removeValue(forKey: touch)
+            if flicked.remove(touch) != nil { active[touch]?.showsSecondary = false }
             swiping.remove(touch)
             swipePaths.removeValue(forKey: touch)
             clearTrail()
@@ -390,7 +517,7 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
         guard case let .character(text) = view.key else { return }
         popup.text = (shift.isActive && plane == .letters) ? text.uppercased() : text
         let width = view.frame.width + 20
-        let height = Self.keyHeight + 14
+        let height = metrics.keyHeight + 14
         popup.frame = CGRect(
             x: min(max(view.frame.midX - width / 2, 2), bounds.width - width - 2),
             y: view.frame.minY - height - 4,
@@ -408,6 +535,25 @@ final class KeyView: UIView {
     let key: Key
     private let label = UILabel()
     private let image = UIImageView()
+    private let secondaryLabel = UILabel()
+
+    /// The flick character printed small at the top (iPad letters).
+    var secondary: String? {
+        didSet {
+            secondaryLabel.text = secondary
+            secondaryLabel.isHidden = secondary == nil
+        }
+    }
+
+    /// While a flick is in progress the secondary takes the key, as stock animates.
+    var showsSecondary = false {
+        didSet {
+            guard let secondary else { return }
+            label.text = showsSecondary ? secondary : primaryText
+            secondaryLabel.isHidden = showsSecondary
+        }
+    }
+    private var primaryText: String?
 
     var isPressed = false {
         didSet { if isPressed != oldValue { paintBackground() } }
@@ -416,11 +562,11 @@ final class KeyView: UIView {
     private var baseColor: UIColor = Palette.control
     private var isAction = false
 
-    init(key: Key) {
+    init(key: Key, cornerRadius: CGFloat) {
         self.key = key
         super.init(frame: .zero)
         isUserInteractionEnabled = false
-        layer.cornerRadius = 5.5
+        layer.cornerRadius = cornerRadius
         layer.cornerCurve = .continuous
         // The stock keyboard's key shadow, which is most of why these read as keys.
         layer.shadowOpacity = 0.30
@@ -431,16 +577,22 @@ final class KeyView: UIView {
         label.adjustsFontSizeToFitWidth = true
         label.minimumScaleFactor = 0.7
         image.contentMode = .center
-        for view in [label, image] {
+        secondaryLabel.textAlignment = .center
+        secondaryLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        secondaryLabel.textColor = Palette.textSecondary
+        secondaryLabel.isHidden = true
+        for view in [label, image, secondaryLabel] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
             label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 0),
             image.centerXAnchor.constraint(equalTo: centerXAnchor),
             image.centerYAnchor.constraint(equalTo: centerYAnchor),
+            secondaryLabel.topAnchor.constraint(equalTo: topAnchor, constant: 5),
+            secondaryLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
         ])
         isAccessibilityElement = true
         accessibilityTraits = .keyboardKey
@@ -448,11 +600,14 @@ final class KeyView: UIView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func style(shift: ShiftState, plane: Plane, returnTitle: String?) {
+    func style(shift: ShiftState, plane: Plane, returnTitle: String?, fontSize: CGFloat) {
         layer.shadowColor = UIColor.black.cgColor
         label.textColor = Palette.textPrimary
         image.tintColor = Palette.textPrimary
-        label.font = .systemFont(ofSize: 22, weight: .regular)
+        label.font = .systemFont(ofSize: fontSize, weight: .regular)
+        // Glyphs and words scale with the letters, a little under them.
+        let symbolSize = fontSize * 0.78
+        let wordSize = fontSize * 0.68
         label.text = nil
         image.image = nil
         isAction = false
@@ -462,12 +617,15 @@ final class KeyView: UIView {
         case let .character(text):
             let shown = (plane == .letters && shift.isActive) ? text.uppercased() : text
             label.text = shown
+            primaryText = shown
+            // With a secondary printed above, the letter sits a little low, as stock.
+            if secondary != nil { label.transform = CGAffineTransform(translationX: 0, y: 5) }
             accessibilityLabel = shown
         case .space:
             // Named, like Wispr Flow's space bar — the one place the keyboard says
             // whose it is.
             label.text = "WhimprFlow"
-            label.font = .systemFont(ofSize: 14, weight: .regular)
+            label.font = .systemFont(ofSize: wordSize, weight: .regular)
             label.textColor = Palette.textSecondary
             accessibilityLabel = "space"
         case .shift:
@@ -477,30 +635,39 @@ final class KeyView: UIView {
             case .on: symbol = "shift.fill"
             case .locked: symbol = "capslock.fill"
             }
-            image.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .regular))
+            image.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: symbolSize, weight: .regular))
             if shift.isActive { baseColor = Palette.control }
             accessibilityLabel = shift == .locked ? "caps lock on" : "shift"
         case .delete:
-            image.image = UIImage(systemName: "delete.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .regular))
+            image.image = UIImage(systemName: "delete.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: symbolSize, weight: .regular))
             accessibilityLabel = "delete"
         case .return:
             if let returnTitle {
                 label.text = returnTitle
-                label.font = .systemFont(ofSize: 15, weight: .regular)
+                label.font = .systemFont(ofSize: wordSize + 1, weight: .regular)
                 label.textColor = .white
                 isAction = true
                 baseColor = Palette.actionKey
                 accessibilityLabel = returnTitle
             } else {
-                image.image = UIImage(systemName: "return", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .regular))
+                image.image = UIImage(systemName: "return", withConfiguration: UIImage.SymbolConfiguration(pointSize: symbolSize - 1, weight: .regular))
                 accessibilityLabel = "return"
             }
         case .globe:
-            image.image = UIImage(systemName: "globe", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .regular))
+            image.image = UIImage(systemName: "globe", withConfiguration: UIImage.SymbolConfiguration(pointSize: symbolSize, weight: .regular))
             accessibilityLabel = "next keyboard"
+        case .tab:
+            image.image = UIImage(systemName: "arrow.right.to.line", withConfiguration: UIImage.SymbolConfiguration(pointSize: symbolSize - 2, weight: .regular))
+            accessibilityLabel = "tab"
+        case .hide:
+            image.image = UIImage(systemName: "keyboard.chevron.compact.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: symbolSize, weight: .regular))
+            accessibilityLabel = "hide keyboard"
+        case .dictate:
+            image.image = UIImage(systemName: "mic", withConfiguration: UIImage.SymbolConfiguration(pointSize: symbolSize, weight: .regular))
+            accessibilityLabel = "dictate"
         case .plane:
             label.text = key.title
-            label.font = .systemFont(ofSize: 15, weight: .regular)
+            label.font = .systemFont(ofSize: wordSize + 1, weight: .regular)
             accessibilityLabel = key.title
         }
         paintBackground()

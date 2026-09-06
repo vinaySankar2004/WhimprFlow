@@ -22,8 +22,12 @@ final class TopBar: UIView {
     var onDismissNotice: (() -> Void)?
 
     /// Wispr's bar is about this tall with a 44-pt pill centred in it; the air
-    /// above and below is what keeps the pill from crowding the top row.
-    static let height: CGFloat = 60
+    /// above and below is what keeps the pill from crowding the top row. The iPad's
+    /// bar and controls are a size up, or they read as decoration on that width.
+    static var height: CGFloat { isPad ? 70 : 60 }
+    private static var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+    private static var control: CGFloat { isPad ? 50 : 44 }
+    private static var edge: CGFloat { isPad ? 20 : 12 }
 
     private let menuButton = UIButton(type: .system)
     private let cancelButton = UIButton(type: .custom)
@@ -53,7 +57,7 @@ final class TopBar: UIView {
         // key: the level as a list, and releasing the mic.
         menuButton.setImage(
             UIImage(systemName: "line.3.horizontal",
-                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)),
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: Self.isPad ? 23 : 20, weight: .medium)),
             for: .normal
         )
         menuButton.tintColor = Palette.textPrimary
@@ -73,7 +77,7 @@ final class TopBar: UIView {
         )
         cancelButton.tintColor = Palette.textPrimary
         cancelButton.backgroundColor = Palette.barControl
-        cancelButton.layer.cornerRadius = 22
+        cancelButton.layer.cornerRadius = Self.control / 2
         cancelButton.accessibilityLabel = "Discard dictation"
         cancelButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
         cancelButton.isHidden = true
@@ -91,7 +95,7 @@ final class TopBar: UIView {
         // Mic, or ✓ while listening.
         rightButton.backgroundColor = Palette.pill
         rightButton.tintColor = Palette.pillText
-        rightButton.layer.cornerRadius = 22
+        rightButton.layer.cornerRadius = Self.control / 2
         rightButton.addTarget(self, action: #selector(rightTapped), for: .touchUpInside)
 
         spinner.color = Palette.pillText
@@ -109,30 +113,30 @@ final class TopBar: UIView {
         spinner.translatesAutoresizingMaskIntoConstraints = false
 
         NSLayoutConstraint.activate([
-            menuButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            menuButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.edge + 2),
             menuButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            menuButton.widthAnchor.constraint(equalToConstant: 44),
-            menuButton.heightAnchor.constraint(equalToConstant: 44),
+            menuButton.widthAnchor.constraint(equalToConstant: Self.control),
+            menuButton.heightAnchor.constraint(equalToConstant: Self.control),
 
-            cancelButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            cancelButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.edge),
             cancelButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            cancelButton.widthAnchor.constraint(equalToConstant: 44),
-            cancelButton.heightAnchor.constraint(equalToConstant: 44),
+            cancelButton.widthAnchor.constraint(equalToConstant: Self.control),
+            cancelButton.heightAnchor.constraint(equalToConstant: Self.control),
 
-            rightButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            rightButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.edge),
             rightButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            rightButton.widthAnchor.constraint(equalToConstant: 44),
-            rightButton.heightAnchor.constraint(equalToConstant: 44),
+            rightButton.widthAnchor.constraint(equalToConstant: Self.control),
+            rightButton.heightAnchor.constraint(equalToConstant: Self.control),
 
-            pill.trailingAnchor.constraint(equalTo: rightButton.leadingAnchor, constant: -6),
+            pill.trailingAnchor.constraint(equalTo: rightButton.leadingAnchor, constant: -8),
             pill.centerYAnchor.constraint(equalTo: centerYAnchor),
-            pill.heightAnchor.constraint(equalToConstant: 44),
-            pill.widthAnchor.constraint(greaterThanOrEqualToConstant: 112),
+            pill.heightAnchor.constraint(equalToConstant: Self.control),
+            pill.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.isPad ? 132 : 112),
 
             spinner.centerXAnchor.constraint(equalTo: rightButton.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: rightButton.centerYAnchor),
 
-            alternatives.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            alternatives.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.edge),
             alternatives.centerYAnchor.constraint(equalTo: centerYAnchor),
             alternatives.trailingAnchor.constraint(lessThanOrEqualTo: pill.leadingAnchor, constant: -8),
             alternatives.heightAnchor.constraint(equalToConstant: 34),
@@ -150,7 +154,7 @@ final class TopBar: UIView {
         configuration?.attributedTitle = AttributedString(
             level.label,
             attributes: AttributeContainer([
-                .font: UIFont.systemFont(ofSize: 18, weight: .medium),
+                .font: UIFont.systemFont(ofSize: Self.isPad ? 20 : 18, weight: .medium),
             ])
         )
         pill.configuration = configuration

@@ -59,8 +59,9 @@ final class KeyboardViewController: UIInputViewController {
     /// appearance.
     private var appliedStyle: UIUserInterfaceStyle?
 
-    /// The keyboard's height: the bar plus the key grid. Declared, and installed in
-    /// `viewDidLoad` so the very first layout is already this tall.
+    /// The keyboard's height: the bar plus the key grid, from `KeyboardView.Metrics`
+    /// for the device and width. Installed in `viewDidLoad` so the very first layout
+    /// is already this tall.
     ///
     /// Taller than the stock keyboard's 242 by the height of the bar, as Wispr Flow's
     /// is. The keyboard-switch frame that a mismatched height causes is handled by
@@ -75,7 +76,12 @@ final class KeyboardViewController: UIInputViewController {
     /// `updateViewConstraints`: the keyboard then appears at whatever it was given and
     /// jumps. Priority 999 so it yields to the system's transient height during a
     /// switch rather than conflicting; 1000 was tried and changed nothing.
-    private let keyboardHeight: CGFloat = TopBar.height + KeyboardView.height
+    /// On the iPad the grid is taller in landscape than in portrait, so these are
+    /// re-set from `viewWillLayoutSubviews` whenever the width changes class.
+    private var heightConstraint: NSLayoutConstraint!
+    private var backdropHeightConstraint: NSLayoutConstraint!
+    private var keysHeightConstraint: NSLayoutConstraint!
+    private var appliedMetrics: KeyboardView.Metrics?
 
     // MARK: - Lifecycle
 
@@ -125,6 +131,24 @@ final class KeyboardViewController: UIInputViewController {
         // switched away from otherwise, which is wasted work in the tightest process
         // budget on the phone.
         listeningView.pause()
+    }
+
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        applyMetrics(for: view.bounds.width)
+    }
+
+    /// Size the grid and the panel for this width. Only on a real change: the
+    /// constraint constants are what iOS animates a keyboard switch against.
+    private func applyMetrics(for width: CGFloat) {
+        guard width > 0 else { return }
+        let metrics = KeyboardView.Metrics.for(width: width)
+        guard metrics != appliedMetrics else { return }
+        appliedMetrics = metrics
+        keyboardView.metrics = metrics
+        keysHeightConstraint.constant = metrics.height
+        heightConstraint.constant = TopBar.height + metrics.height
+        backdropHeightConstraint.constant = TopBar.height + metrics.height
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
@@ -196,21 +220,26 @@ final class KeyboardViewController: UIInputViewController {
             view.addSubview(subview)
         }
 
-        let height = view.heightAnchor.constraint(equalToConstant: keyboardHeight)
-        height.priority = UILayoutPriority(999)
+        let initial = KeyboardView.Metrics.for(width: UIScreen.main.bounds.width)
+        appliedMetrics = initial
+        keyboardView.metrics = initial
+        heightConstraint = view.heightAnchor.constraint(equalToConstant: TopBar.height + initial.height)
+        heightConstraint.priority = UILayoutPriority(999)
+        backdropHeightConstraint = backdrop.heightAnchor.constraint(equalToConstant: TopBar.height + initial.height)
+        keysHeightConstraint = keyboardView.heightAnchor.constraint(equalToConstant: initial.height)
 
         NSLayoutConstraint.activate([
-            height,
+            heightConstraint,
             backdrop.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             backdrop.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             backdrop.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            backdrop.heightAnchor.constraint(equalToConstant: keyboardHeight),
+            backdropHeightConstraint,
 
-            // Everything hangs from the bottom — see `keyboardHeight`.
+            // Everything hangs from the bottom — see the note on the height above.
             keyboardView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             keyboardView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             keyboardView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            keyboardView.heightAnchor.constraint(equalToConstant: KeyboardView.height),
+            keysHeightConstraint,
 
             listeningView.leadingAnchor.constraint(equalTo: keyboardView.leadingAnchor),
             listeningView.trailingAnchor.constraint(equalTo: keyboardView.trailingAnchor),
@@ -403,6 +432,10 @@ extension KeyboardViewController: KeyboardViewDelegate {
         switch key {
         case .globe:
             advanceToNextInputMode()
+        case .hide:
+            dismissKeyboard()
+        case .dictate:
+            micTapped()
         default:
             if engine.commit(key) { syncTyping() }
         }
