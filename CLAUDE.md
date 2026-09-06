@@ -361,9 +361,12 @@ These are not hypotheticals; each one bit during development.
   started, not the one the build phase just wrote.** Change the core, run `xcodebuild`
   once, and the app on the device carries the previous core: every new bridge op comes
   back "unknown variant", and the app reports it as "no API key is set". Run
-  `./scripts/build-ios-core.sh` *before* `xcodebuild`, and verify with a string only
-  the core contains — the crate version (`strings … | grep -c '^0\.1\.8$'`) — because
-  an op name like `key_ring_pick` is also a Swift literal and proves nothing.
+  `./scripts/build-ios-core.sh` *before* `xcodebuild`, and verify on the phone in
+  Settings → About → Core, which prints the bridge's own version. Do not verify with
+  `strings` on the binary: an op name like `key_ring_pick` is also a Swift literal and
+  proves nothing, and the crate version literal is merged into a longer string by the
+  linker, so `grep '^0\.1\.8$'` finds nothing even when the core is right (measured
+  on the 2026-09-05 device build).
 - **A Groq 403 is a VPN, not a bad key.** Groq's CDN refuses datacenter exit
   addresses; a working key fails behind a VPN and works without one. Never report
   403 as "check your key" — it sent a good key to be deleted and re-created.
