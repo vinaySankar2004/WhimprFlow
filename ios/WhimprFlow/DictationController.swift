@@ -45,6 +45,7 @@ final class DictationController {
     var blocker: String? {
         if !hasAPIKey { return "Add your Groq API key in Settings to start dictating." }
         if !hasMicPermission { return "WhimprFlow needs microphone access." }
+        if let ringError { return ringError }
         return nil
     }
 
@@ -53,19 +54,38 @@ final class DictationController {
 
     /// The keys with their rate-limit clocks, kept across dictations so a limited
     /// key stays skipped for as long as Groq asked. Rebuilt when the list changes.
-    private var ring: KeyRing? = try? KeyRing(keys: APIKey.loadAll())
+    private var ring: KeyRing?
+    /// Why the ring could not be built, shown in place of dictating. This is the
+    /// core refusing a request — in practice a linked library older than this Swift
+    /// — and reporting it as "no API key" sent someone to re-enter a key that was fine.
+    private var ringError: String?
+
+    init() {
+        buildRing()
+    }
 
     /// Re-read the things the observation graph cannot see for itself.
     func refreshConfiguration() {
         hasAPIKey = APIKey.isSet
         hasMicPermission = Recorder.hasPermission
-        ring = try? KeyRing(keys: APIKey.loadAll())
+        buildRing()
+    }
+
+    private func buildRing() {
+        do {
+            ring = try KeyRing(keys: APIKey.loadAll())
+            ringError = nil
+        } catch {
+            ring = nil
+            ringError = error.localizedDescription
+        }
     }
 
     // MARK: - Lifecycle
 
-    /// Enter standby: hold the microphone open and publish the liveness heartbeat, so
-    /// the keyboard's mic key can start a dictation without opening this app.
+    /// Enter standby: keep the app alive with silent playback and publish the
+    /// liveness heartbeat, so the keyboard's mic key can start a dictation without
+    /// opening this app.
     ///
     /// The engine has to be genuinely *running*, not merely permitted to run.
     /// `UIBackgroundModes: audio` keeps an app alive only while audio is active;
@@ -98,13 +118,14 @@ final class DictationController {
         heartbeat = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(Handoff.livenessWindow / 3))
-                guard let self, self.recorder.isEngineRunning else { return }
+                // Standby steps aside while a dictation holds the mic; both count.
+                guard let self, self.recorder.isAlive else { return }
                 Handoff.markAlive()
             }
         }
     }
 
-    /// Leave standby: release the microphone and stop claiming to be reachable.
+    /// Leave standby: stop the silent playback and stop claiming to be reachable.
     func stopStandby() {
         heartbeat?.cancel()
         heartbeat = nil
@@ -197,7 +218,7 @@ final class DictationController {
         }
 
         guard let ring, ring.count > 0 else {
-            fail("no API key is set")
+            fail(ringError ?? "no API key is set")
             return
         }
         let client = GroqClient(ring: ring)

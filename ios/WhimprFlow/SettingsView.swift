@@ -168,9 +168,9 @@ struct SettingsView: View {
             // who finds it without being told will reasonably assume they are being
             // listened to. Say it here, before they turn it on.
             Text("""
-            On, the mic key dictates without switching to this app. Keeping it ready means holding the microphone open, so iOS shows the orange microphone dot whenever WhimprFlow is in the background, and it uses more battery. Nothing is recorded or sent until you tap the mic key — audio is discarded until then.
+            On, the mic key dictates without switching to this app. Keeping it ready means WhimprFlow stays running in the background, which uses some battery. The microphone is opened only while you dictate, so the orange microphone dot shows only then.
 
-            Off, the mic key opens this app first. Slower, no orange dot, no background battery use.
+            Off, the mic key opens this app first. Slower, no background battery use.
             """)
         }
     }

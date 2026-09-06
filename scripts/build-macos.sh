@@ -179,7 +179,21 @@ if [ "$NOTARIZE" = "1" ]; then
   fi
 fi
 
+# The two assets setup-macos.sh fetches by exact name from releases/latest, made
+# here so a release cannot go out without them or with a checksum of some other
+# zip. Bare hex in the .sha256, which is what the installer compares against.
+BUNDLE_DIR="$(dirname "$(dirname "$APP")")"
+ZIP_ASSET="$BUNDLE_DIR/WhimprFlow.app.zip"
+rm -f "$ZIP_ASSET" "$ZIP_ASSET.sha256"
+/usr/bin/ditto -c -k --keepParent "$APP" "$ZIP_ASSET"
+shasum -a 256 "$ZIP_ASSET" | cut -d' ' -f1 > "$ZIP_ASSET.sha256"
+
+VERSION="$(defaults read "$APP/Contents/Info.plist" CFBundleShortVersionString)"
 echo
 echo "App: $APP"
 [ -n "$DMG" ] && echo "Dmg: $DMG"
-echo "Now run: scripts/verify-macos.sh"
+echo "Zip: $ZIP_ASSET (+ .sha256)"
+echo "Now run: scripts/verify-macos.sh, then publish with:"
+echo "  gh release create v$VERSION --title \"WhimprFlow v$VERSION\" --notes-file <notes.md> \\"
+echo "    \"$ZIP_ASSET\" \"$ZIP_ASSET.sha256\"${DMG:+ \\
+    \"$DMG\"}"

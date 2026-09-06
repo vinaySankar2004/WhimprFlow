@@ -46,12 +46,16 @@ carry a payload, so each one means only "look in the container".
 
 ### Does the app have to be open?
 
-**No — but it has to be alive, and "alive" means the microphone is actually running.**
+**No — but it has to be alive, and "alive" means audio is actually running.**
 `UIBackgroundModes: audio` keeps an app resident only while audio is *active*;
 declaring the mode and idling gets the app suspended seconds after it backgrounds. So
-the app runs its capture engine in **standby** — discarding everything it hears until
-the mic key says otherwise — and that is what keeps it reachable. The orange mic
-indicator is on for as long as it is; Settings says so before the switch is turned on.
+the app plays **silence in standby** — a `.playback` session rendering zeros — and
+that is what keeps it reachable. The microphone is opened only for a dictation, so
+the orange indicator shows only then. The first version stayed alive by *recording*
+and discarding, which lit the indicator all day and, under `.measurement` mode, made
+every other app quieter; both were user-visible enough to be reported within an hour
+of use. The cost of the silent version is the capture engine spinning up on each mic
+tap, a few dozen milliseconds before the first sample is kept.
 
 Standby survives a phone call, Siri, AirPods connecting and a media-services reset:
 the recorder tracks whether it *should* be up separately from whether it is, and
@@ -267,11 +271,19 @@ agreement.
 - the `whimprflow://` fallback after a force-quit;
 - the Mac and iOS shells pasting identical text: `cargo test -p whimpr-ffi`.
 
-**Installed but not exercised on the device:** key rotation (2026-09-05). The build
-with the key list and the ring installs and launches on the phone; that a 429 on one
-key actually moves a dictation to the next was verified only by the core's tests and
-the bridge round-trip in `crates/whimpr-ffi`, not by provoking a real limit with two
-keys on the device. Same standing on the Mac.
+**Partly exercised on the device:** key rotation (2026-09-05). Two keys stored, and
+dictation through the ring works on the phone (the first build shipped the previous
+core and reported "no API key is set" — see the Xcode relink trap in the root
+`CLAUDE.md`). That a 429 on one key actually moves a dictation to the next was
+verified only by the core's tests and the bridge round-trip in `crates/whimpr-ffi`,
+not by provoking a real limit on the device. Same standing on the Mac, where the log
+names the key each call used.
+
+**Silent standby** (2026-09-05): confirmed by ear that other apps play at full volume
+with WhimprFlow in standby. Still to confirm on the device: that the indicator is off
+between dictations, and that a backgrounded app can open the mic from a `.playback`
+session when the keyboard asks — if iOS refuses, the mic key falls back to opening the
+app, which is the behaviour with standby off.
 
 **Not yet exercised:** TestFlight. Nothing has been archived or uploaded; Part 2 of
 [DEPLOY.md](DEPLOY.md) is written but unwalked, and the globally unique App Store

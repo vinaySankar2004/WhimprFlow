@@ -60,6 +60,16 @@ impl CloudAsr {
     }
 }
 
+/// `2/2 (gsk_…sucR)`: enough to tell the keys apart in a log, never enough to use.
+fn label(ring: &KeyRing, index: usize) -> String {
+    format!(
+        "{}/{} ({})",
+        index + 1,
+        ring.len(),
+        ring.masked().get(index).map(String::as_str).unwrap_or("?")
+    )
+}
+
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -128,13 +138,21 @@ impl AsrEngine for CloudAsr {
                 let mut ring = self.keys.lock().unwrap();
                 ring.report_limited(index, unix_now(), secs);
                 eprintln!(
-                    "[whimpr] cloud ASR key {} of {} is rate limited for {}s",
-                    index + 1,
-                    ring.len(),
-                    secs.map(|s| s.ceil() as u64).unwrap_or(60)
+                    "[whimpr] cloud ASR: key {} rate limited for {}s{}",
+                    label(&ring, index),
+                    secs.map(|s| s.ceil() as u64).unwrap_or(60),
+                    match ring.pick(unix_now()) {
+                        Some(next) => format!(" — switching to key {}", label(&ring, next)),
+                        None => " — no key left, falling back".to_string(),
+                    }
                 );
                 continue;
             }
+            // Which key answered, every call — the only outside evidence of rotation.
+            eprintln!(
+                "[whimpr] cloud ASR: key {} answered {status}",
+                label(&self.keys.lock().unwrap(), index)
+            );
             if !status.is_success() {
                 anyhow::bail!("cloud ASR HTTP {status}: {body}");
             }

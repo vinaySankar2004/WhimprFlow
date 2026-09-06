@@ -196,6 +196,9 @@ asks and moves to the next; only when every key is marked does it fail, with the
 429-shaped error the fallback chain already handles. The clocks persist across
 dictations, so inside a limit window the dead key costs no round trip. Cleanup and
 cloud ASR each hold their own ring over the same keys, because the caps are per model.
+Every call logs which key answered (`key 2/2 (gsk_…sucR) answered 200 OK`) and every
+limit logs the switch, because with two keys stored there is no other outside evidence
+that rotation happened; the log file is under *Reveal logs* in the Hub.
 The policy is pure and passed `now`, so iOS runs the identical one through the bridge
 (`key_ring_new` / `key_ring_pick` / `key_ring_limited`) rather than a Swift copy.
 

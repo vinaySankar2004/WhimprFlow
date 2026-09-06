@@ -15,7 +15,11 @@ final class Recorder {
     /// Whisper's rate. Anything else has to be resampled before it is sent.
     static let sampleRate: Double = 16_000
 
-    private let engine = AVAudioEngine()
+    /// The microphone, only while a dictation is being captured.
+    private let captureEngine = AVAudioEngine()
+    /// Silence to the speaker, whenever the app wants to stay alive in the background.
+    private let standbyEngine = AVAudioEngine()
+    private var standbyAttached = false
     private var converter: AVAudioConverter?
     private var samples: [Float] = []
     private let lock = NSLock()
@@ -23,17 +27,25 @@ final class Recorder {
     /// 0…1, already log-scaled for display. See `level(from:)`.
     private(set) var level: Float = 0
 
-    /// Whether the engine is running at all — which is not the same as recording.
+    /// Whether standby is up — which is not the same as recording.
     ///
-    /// The engine runs in **standby** whenever the app wants to stay reachable from
-    /// the keyboard, discarding everything it hears. `UIBackgroundModes: audio` keeps
-    /// an app alive only while audio is *actively* running; declaring the mode and
-    /// then idling gets you suspended within seconds of backgrounding, which is what
-    /// made the keyboard's mic key always fall back to opening the app.
+    /// **Standby plays silence.** `UIBackgroundModes: audio` keeps an app alive only
+    /// while audio is *actively* running; declaring the mode and then idling gets you
+    /// suspended within seconds of backgrounding, which is what made the keyboard's
+    /// mic key always fall back to opening the app. The first version kept alive by
+    /// *recording* and discarding, and that lit the orange microphone indicator for
+    /// as long as the app was installed — iOS shows it for any active recording,
+    /// wanted or not. A silent output keeps the app just as alive, shows nothing, and
+    /// under a `.playback` category leaves every other app's volume alone. The
+    /// microphone is opened only for the dictation itself, so the indicator is on
+    /// exactly while you are dictating, which is what anyone would expect of it.
     private(set) var isEngineRunning = false
 
     /// Whether the samples arriving are being kept.
     private(set) var isCapturing = false
+
+    /// Something is running that keeps the app alive: standby, or a dictation.
+    var isAlive: Bool { isEngineRunning || isCapturing }
 
     /// Whether standby *should* be up, as opposed to whether it currently is.
     ///
@@ -77,19 +89,33 @@ final class Recorder {
 
     // MARK: - Session
 
-    /// Configure the shared audio session for recording.
+    /// Configure the shared audio session: for the microphone during a dictation,
+    /// for silent playback in standby.
     ///
     /// `.mixWithOthers` matters more than it looks: dictating while something else
     /// plays should duck that audio, not stop it, and without this a dictation
     /// interrupts whatever the user was listening to.
-    func activateSession() throws {
+    ///
+    /// Mode `.default`, not `.measurement`. Measurement strips the system's signal
+    /// processing from output as well as input, and on an iPhone that is what made
+    /// the speaker noticeably quieter for every other app while the session was
+    /// active. Whisper does not need the raw input; the user does need their volume.
+    ///
+    /// Standby is `.playback`, not `.playAndRecord` with nothing recording: an active
+    /// record-capable session is what lights the microphone indicator and puts the
+    /// speaker into its echo-cancelled mode, whether or not any input is consumed.
+    func activateSession(recording: Bool) throws {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(
-                .playAndRecord,
-                mode: .measurement,
-                options: [.mixWithOthers, .allowBluetooth, .defaultToSpeaker]
-            )
+            if recording {
+                try session.setCategory(
+                    .playAndRecord,
+                    mode: .default,
+                    options: [.mixWithOthers, .allowBluetooth, .defaultToSpeaker]
+                )
+            } else {
+                try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            }
             try session.setActive(true)
         } catch {
             throw Failure.sessionFailed(error.localizedDescription)
@@ -102,25 +128,51 @@ final class Recorder {
 
     // MARK: - Capture
 
-    /// Start the engine in standby: capturing from the microphone and throwing it
-    /// away, so the app stays alive in the background and the mic key can reach it
-    /// without a visible app switch.
-    ///
-    /// The orange microphone indicator is on for as long as this runs. That is not
-    /// avoidable and should not be hidden — an app holding the mic open is exactly
-    /// what this is.
+    /// Enter standby: play silence so the app stays alive in the background and the
+    /// mic key can reach it without a visible app switch. The microphone is not
+    /// touched.
     func startEngine() throws {
         wantsEngine = true
         observeAudioLifecycle()
-        try bringUpEngine()
+        guard !isCapturing else { return } // restored by `endCapture`
+        try bringUpStandby()
     }
 
-    private func bringUpEngine() throws {
+    private func bringUpStandby() throws {
         guard !isEngineRunning else { return }
-        guard Self.hasPermission else { throw Failure.denied }
-        try activateSession()
+        try activateSession(recording: false)
+        if !standbyAttached {
+            // Zeros, rendered on demand. Nothing is loaded, looped or decoded.
+            let silence = AVAudioSourceNode { _, _, _, bufferList -> OSStatus in
+                for buffer in UnsafeMutableAudioBufferListPointer(bufferList) {
+                    memset(buffer.mData, 0, Int(buffer.mDataByteSize))
+                }
+                return noErr
+            }
+            standbyEngine.attach(silence)
+            standbyEngine.connect(silence, to: standbyEngine.mainMixerNode, format: nil)
+            standbyAttached = true
+        }
+        standbyEngine.prepare()
+        do {
+            try standbyEngine.start()
+        } catch {
+            throw Failure.sessionFailed(error.localizedDescription)
+        }
+        isEngineRunning = true
+    }
 
-        let input = engine.inputNode
+    /// Open the microphone. Only ever called for a dictation, so the indicator iOS
+    /// shows for it is telling the truth.
+    private func bringUpCapture() throws {
+        guard Self.hasPermission else { throw Failure.denied }
+        // The two engines never run together: the capture engine keeps the app alive
+        // on its own, and a category change under a running standby engine would
+        // only give it a configuration change to recover from.
+        tearDownStandby()
+        try activateSession(recording: true)
+
+        let input = captureEngine.inputNode
         // The hardware format, whatever it happens to be. Never assume: a Bluetooth
         // headset that switches to its hands-free profile mid-call changes rate,
         // channel count *and* sample format, and a hard-coded format stops working
@@ -141,31 +193,35 @@ final class Recorder {
             self?.accept(buffer, target: target)
         }
 
-        engine.prepare()
+        captureEngine.prepare()
         do {
-            try engine.start()
+            try captureEngine.start()
         } catch {
+            input.removeTap(onBus: 0)
             throw Failure.sessionFailed(error.localizedDescription)
         }
-        isEngineRunning = true
     }
 
-    /// Tear the engine down completely. Releases the microphone and lets iOS suspend
-    /// the app, after which the keyboard has to open it to dictate.
-    func stopEngine() {
-        wantsEngine = false
-        tearDownEngine()
-        deactivateSession()
-    }
-
-    private func tearDownEngine() {
-        guard isEngineRunning else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        isEngineRunning = false
+    private func tearDownCapture() {
+        captureEngine.inputNode.removeTap(onBus: 0)
+        captureEngine.stop()
         isCapturing = false
         level = 0
         LevelChannel.shared.level = 0
+    }
+
+    /// Leave standby completely. Lets iOS suspend the app, after which the keyboard
+    /// has to open it to dictate.
+    func stopEngine() {
+        wantsEngine = false
+        tearDownStandby()
+        if !isCapturing { deactivateSession() }
+    }
+
+    private func tearDownStandby() {
+        guard isEngineRunning else { return }
+        standbyEngine.stop()
+        isEngineRunning = false
     }
 
     // MARK: - Surviving interruptions
@@ -204,14 +260,22 @@ final class Recorder {
         })
 
         // The route changed underneath us — AirPods connecting, a headset unplugged.
-        // The engine's input format can change with it, so the tap has to be rebuilt
-        // rather than the engine merely restarted.
+        // Standby is simply brought back. A dictation in flight is ended with what it
+        // has: its input format may have changed, and a tap installed against the old
+        // one delivers nothing from here on.
         observers.append(centre.addObserver(
             forName: .AVAudioEngineConfigurationChange,
-            object: engine,
+            object: standbyEngine,
             queue: .main
         ) { [weak self] _ in
             self?.recover()
+        })
+        observers.append(centre.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: captureEngine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleUnexpectedStop()
         })
 
         // The audio server restarted. Every object obtained from it is stale.
@@ -232,21 +296,19 @@ final class Recorder {
         onCaptureInterrupted?()
     }
 
-    /// Put standby back, if it is supposed to be up.
-    ///
-    /// Rebuilds rather than restarts: after a configuration change the input node's
-    /// format may differ, and a tap installed against the old one delivers nothing.
-    /// Retried once after a moment because the route is sometimes still settling when
-    /// the notification arrives, and a bring-up in that window throws.
+    /// Put standby back, if it is supposed to be up and no dictation is running (a
+    /// dictation restores it itself when it ends). Retried once after a moment
+    /// because the route is sometimes still settling when the notification arrives,
+    /// and a bring-up in that window throws.
     private func recover() {
-        guard wantsEngine else { return }
-        tearDownEngine()
+        guard wantsEngine, !isCapturing else { return }
+        tearDownStandby()
         do {
-            try bringUpEngine()
+            try bringUpStandby()
         } catch {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-                guard let self, self.wantsEngine, !self.isEngineRunning else { return }
-                try? self.bringUpEngine()
+                guard let self, self.wantsEngine, !self.isEngineRunning, !self.isCapturing else { return }
+                try? self.bringUpStandby()
             }
         }
     }
@@ -255,37 +317,39 @@ final class Recorder {
         observers.forEach(NotificationCenter.default.removeObserver)
     }
 
-    /// Start keeping what the microphone hears. Starts the engine first if it is not
-    /// already in standby, so a dictation works whether or not standby is enabled.
+    /// Open the microphone and start keeping what it hears. Works whether or not
+    /// standby is up; standby, if wanted, comes back when the capture ends.
+    ///
+    /// The engine spins up here rather than being already running, so the first
+    /// few dozen milliseconds after the mic key are not captured. That is the price
+    /// of the indicator being off between dictations, and a tap-then-speak gap
+    /// covers it.
     func beginCapture() throws {
-        try startEngine()
+        observeAudioLifecycle()
         lock.withLock { samples.removeAll(keepingCapacity: true) }
+        try bringUpCapture()
         isCapturing = true
     }
 
-    /// Stop keeping samples and return the recording, normalized and ready to send.
-    ///
-    /// Leaves the engine running: dropping back to standby rather than stopping is
-    /// what keeps the app reachable for the *next* dictation. Call `stopEngine()` to
-    /// actually release the microphone.
+    /// Release the microphone and return the recording, normalized and ready to
+    /// send. Standby, if wanted, is put back so the app stays reachable for the
+    /// *next* dictation; otherwise the session is released and iOS may suspend.
     func endCapture() -> [Float] {
         guard isCapturing else { return [] }
-        isCapturing = false
-        level = 0
-        // Or the keyboard's waveform freezes at the last thing it heard.
-        LevelChannel.shared.level = 0
-
+        tearDownCapture()
         var captured = lock.withLock { samples }
         Self.normalizeForASR(&captured)
+
+        if wantsEngine {
+            // A failure here is standby's to recover from, not the dictation's.
+            try? bringUpStandby()
+        } else {
+            deactivateSession()
+        }
         return captured
     }
 
     private func accept(_ buffer: AVAudioPCMBuffer, target: AVAudioFormat) {
-        // Standby: the engine must keep running to hold the app alive, but nothing it
-        // hears is kept, converted or measured. Returning here rather than not
-        // installing the tap is deliberate — removing and reinstalling a tap around
-        // every dictation restarts the engine, and the gap that opens while it spins
-        // back up swallows the first word.
         guard isCapturing else { return }
         guard let converter else { return }
         let ratio = target.sampleRate / buffer.format.sampleRate

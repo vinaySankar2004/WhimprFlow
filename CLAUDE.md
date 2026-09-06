@@ -317,10 +317,13 @@ These are not hypotheticals; each one bit during development.
 - **`UIBackgroundModes: audio` keeps an app alive only while audio is actually
   running.** Declaring it and idling gets the app suspended seconds after
   backgrounding, so the keyboard's mic key falls back to opening the app *every*
-  time — which is what shipped first and read as an iOS limit. Standby runs the
-  capture engine continuously, discarding samples, and rebuilds it on interruption,
-  route change and media-services reset; before that, one phone call ended standby
-  for the day. The cost — the orange mic dot — is stated in Settings, not hidden.
+  time — which is what shipped first and read as an iOS limit. Standby plays
+  *silence* under a `.playback` session and rebuilds on interruption, route change and
+  media-services reset; before that, one phone call ended standby for the day. Do not
+  keep alive by recording-and-discarding: any active record-capable session lights
+  the orange indicator all day and puts the speaker in its echo-cancelled mode, and
+  `.measurement` mode on top made every other app audibly quieter. The mic is opened
+  only for the dictation itself.
 - **Keyboard-switch glitches are diagnosed from a screen recording, not reasoning.**
   Four rounds of inference were wrong; `ffmpeg` frames from a device recording were
   right in minutes. What they showed: for one frame per switch iOS lays the
@@ -329,6 +332,13 @@ These are not hypotheticals; each one bit during development.
   shows the host through, and the declared height matches the stock keyboard
   (242pt on a 6.1" iPhone; 258 moved the top edge on every switch). Do not pin
   anything to the top of the input view, and do not give the root a background.
+- **Xcode links the phone build against the xcframework it had when the build
+  started, not the one the build phase just wrote.** Change the core, run `xcodebuild`
+  once, and the app on the device carries the previous core: every new bridge op comes
+  back "unknown variant", and the app reports it as "no API key is set". Run
+  `./scripts/build-ios-core.sh` *before* `xcodebuild`, and verify with a string only
+  the core contains — the crate version (`strings … | grep -c '^0\.1\.8$'`) — because
+  an op name like `key_ring_pick` is also a Swift literal and proves nothing.
 - **A Groq 403 is a VPN, not a bad key.** Groq's CDN refuses datacenter exit
   addresses; a working key fails behind a VPN and works without one. Never report
   403 as "check your key" — it sent a good key to be deleted and re-created.

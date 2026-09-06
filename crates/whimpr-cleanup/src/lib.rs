@@ -78,6 +78,16 @@ impl OpenAiProvider {
         }
     }
 
+    /// `2/2 (gsk_…sucR)`: enough to tell the keys apart in a log, never enough to use.
+    fn label(&self, ring: &KeyRing, index: usize) -> String {
+        format!(
+            "{}/{} ({})",
+            index + 1,
+            ring.len(),
+            ring.masked().get(index).map(String::as_str).unwrap_or("?")
+        )
+    }
+
     /// POST with the first usable key, moving to the next on a 429 until one answers
     /// or none is left. A key that is limited stays marked for as long as the
     /// endpoint asked, so the dictations that follow inside that window skip the
@@ -120,14 +130,23 @@ impl OpenAiProvider {
                 let mut ring = self.keys.lock().unwrap();
                 ring.report_limited(index, unix_now(), secs);
                 eprintln!(
-                    "[whimpr] cloud key {} of {} is rate limited for {}s{}",
-                    index + 1,
-                    ring.len(),
+                    "[whimpr] cloud cleanup: key {} rate limited for {}s{}",
+                    self.label(&ring, index),
                     secs.map(|s| s.ceil() as u64).unwrap_or(60),
-                    if ring.pick(unix_now()).is_some() { " — trying the next" } else { "" }
+                    match ring.pick(unix_now()) {
+                        Some(next) => format!(" — switching to key {}", self.label(&ring, next)),
+                        None => " — no key left, falling back".to_string(),
+                    }
                 );
                 continue;
             }
+            // Which key answered, every call: with more than one stored there is
+            // otherwise no way to tell from the outside whether rotation happened.
+            eprintln!(
+                "[whimpr] cloud cleanup: key {} answered {}",
+                self.label(&self.keys.lock().unwrap(), index),
+                resp.status()
+            );
             return Ok(resp);
         }
     }
