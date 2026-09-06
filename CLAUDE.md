@@ -317,13 +317,15 @@ These are not hypotheticals; each one bit during development.
 - **`UIBackgroundModes: audio` keeps an app alive only while audio is actually
   running.** Declaring it and idling gets the app suspended seconds after
   backgrounding, so the keyboard's mic key falls back to opening the app *every*
-  time — which is what shipped first and read as an iOS limit. Standby plays
-  *silence* under a `.playback` session and rebuilds on interruption, route change and
-  media-services reset; before that, one phone call ended standby for the day. Do not
-  keep alive by recording-and-discarding: any active record-capable session lights
-  the orange indicator all day and puts the speaker in its echo-cancelled mode, and
-  `.measurement` mode on top made every other app audibly quieter. The mic is opened
-  only for the dictation itself.
+  time — which is what shipped first and read as an iOS limit. Standby runs the
+  capture engine continuously, discarding samples, and rebuilds it on interruption,
+  route change and media-services reset; before that, one phone call ended standby
+  for the day. The cost — the orange mic dot — is stated in Settings, not hidden.
+  Keep the session in `.default` mode: `.measurement` made every other app audibly
+  quieter all day. And do not retry "play silence in standby, open the mic on
+  demand" from reasoning: it failed with `!cat` (560557684) even in the foreground
+  and bounced every mic tap to the app; ios/README records it. Get a device log of
+  the failing call first.
 - **Keyboard-switch glitches are diagnosed from a screen recording, not reasoning.**
   Four rounds of inference were wrong; `ffmpeg` frames from a device recording were
   right in minutes. What they showed: for one frame per switch iOS lays the

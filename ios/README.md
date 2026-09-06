@@ -46,16 +46,24 @@ carry a payload, so each one means only "look in the container".
 
 ### Does the app have to be open?
 
-**No — but it has to be alive, and "alive" means audio is actually running.**
+**No — but it has to be alive, and "alive" means the microphone is actually running.**
 `UIBackgroundModes: audio` keeps an app resident only while audio is *active*;
 declaring the mode and idling gets the app suspended seconds after it backgrounds. So
-the app plays **silence in standby** — a `.playback` session rendering zeros — and
-that is what keeps it reachable. The microphone is opened only for a dictation, so
-the orange indicator shows only then. The first version stayed alive by *recording*
-and discarding, which lit the indicator all day and, under `.measurement` mode, made
-every other app quieter; both were user-visible enough to be reported within an hour
-of use. The cost of the silent version is the capture engine spinning up on each mic
-tap, a few dozen milliseconds before the first sample is kept.
+the app runs its capture engine in **standby** — discarding everything it hears until
+the mic key says otherwise — and that is what keeps it reachable. The orange mic
+indicator is on for as long as it is; Settings says so before the switch is turned on.
+The session runs in `.default` mode, not `.measurement`: measurement strips output
+processing too and made every other app audibly quieter all day.
+
+**Silent standby was tried and failed (2026-09-05).** Keeping alive by playing zeros
+under a `.playback` session, and switching to `.playAndRecord` only when the keyboard
+asked, so the indicator would show only while dictating. Opening the mic from that
+state failed with OSStatus 560557684 (`!cat`, incompatible category) — in the
+foreground app as well as from the keyboard — and every mic-key tap then bounced to
+the app. Not diagnosed: whether it was the category switch on an active session, the
+second `AVAudioEngine` in the process, or iOS refusing a record category from the
+background (the documented `!rec` case). Reverted the same evening. A second attempt
+should begin by logging which call throws, on the device, before changing anything.
 
 Standby survives a phone call, Siri, AirPods connecting and a media-services reset:
 the recorder tracks whether it *should* be up separately from whether it is, and
@@ -279,11 +287,9 @@ verified only by the core's tests and the bridge round-trip in `crates/whimpr-ff
 not by provoking a real limit on the device. Same standing on the Mac, where the log
 names the key each call used.
 
-**Silent standby** (2026-09-05): confirmed by ear that other apps play at full volume
-with WhimprFlow in standby. Still to confirm on the device: that the indicator is off
-between dictations, and that a backgrounded app can open the mic from a `.playback`
-session when the keyboard asks — if iOS refuses, the mic key falls back to opening the
-app, which is the behaviour with standby off.
+**Volume in standby** (2026-09-05): confirmed by ear that other apps play at full
+volume with WhimprFlow holding the mic, after the move to `.default` mode. The
+indicator stays on in standby; the silent-standby attempt is recorded above.
 
 **Not yet exercised:** TestFlight. Nothing has been archived or uploaded; Part 2 of
 [DEPLOY.md](DEPLOY.md) is written but unwalked, and the globally unique App Store

@@ -83,9 +83,8 @@ final class DictationController {
 
     // MARK: - Lifecycle
 
-    /// Enter standby: keep the app alive with silent playback and publish the
-    /// liveness heartbeat, so the keyboard's mic key can start a dictation without
-    /// opening this app.
+    /// Enter standby: hold the microphone open and publish the liveness heartbeat, so
+    /// the keyboard's mic key can start a dictation without opening this app.
     ///
     /// The engine has to be genuinely *running*, not merely permitted to run.
     /// `UIBackgroundModes: audio` keeps an app alive only while audio is active;
@@ -125,7 +124,7 @@ final class DictationController {
         }
     }
 
-    /// Leave standby: stop the silent playback and stop claiming to be reachable.
+    /// Leave standby: release the microphone and stop claiming to be reachable.
     func stopStandby() {
         heartbeat?.cancel()
         heartbeat = nil
