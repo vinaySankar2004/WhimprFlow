@@ -168,12 +168,11 @@ Beta App Review entirely.
    that existed when the build *started*, so archiving without this ships the previous
    core — which the app reports as "no API key is set", not as a build error. Same
    trap as a device build; the root `CLAUDE.md` has it in full.
-2. **Scheme: WhimprFlow.** Not `WhimprKeyboard`, not `WhimprWidgets` — an extension
-   archive uploads as the wrong product type and App Store Connect refuses it. The
-   scheme may be *missing from the dropdown entirely*: `project.yml` declares no
-   `schemes:`, so `xcodegen generate` writes none and Xcode autocreates them on open,
-   sometimes skipping the app's. **Product ▸ Scheme ▸ Manage Schemes… → Autocreate
-   Schemes Now** restores it.
+2. **Scheme: WhimprFlow**, and it is the only one `xcodegen generate` writes — the
+   `schemes:` block in `project.yml` exists because Xcode's autocreation once produced
+   schemes for the two extensions and not for the app, leaving nothing archivable and
+   no message saying why. If the dropdown is somehow empty, regenerate rather than
+   autocreating by hand.
 3. Destination **Any iOS Device (arm64)** — Archive is greyed out on a simulator.
 4. **Product ▸ Archive**. In the Organizer, confirm the row says **Type: iOS App
    Archive** and the identifier is `com.whimpr.whimprflow` before going on; that is
@@ -270,7 +269,7 @@ registration.
 | Key will not save | Building unsigned. Never pass `CODE_SIGNING_ALLOWED=NO` — the app then has no `application-identifier` and every Keychain write fails. |
 | "Command PhaseScriptExecution failed with a nonzero exit code" | The Rust build phase could not find `cargo`. Xcode build phases run without your shell profile, so `~/.cargo/bin` is off `PATH`; `build-ios-core.sh` handles this, so if it recurs, expand the phase's log in the Issue navigator for the real message. |
 | Upload rejected, "redundant version" | You did not bump `CURRENT_PROJECT_VERSION`. |
-| `WhimprFlow` absent from the scheme dropdown | `xcodegen generate` writes no schemes and Xcode's autocreation missed it. Manage Schemes… → Autocreate Schemes Now. Archiving the keyboard scheme instead produces an archive Connect will not take. |
+| `WhimprFlow` absent from the scheme dropdown | The project was opened without `xcodegen generate` after a checkout, so Xcode autocreated schemes instead of using the generated one. Regenerate. Archiving an extension scheme produces an archive Connect will not take. |
 | Installed from TestFlight, "no API key is set" | The archive carried the previous core. `build-ios-core.sh` was not run *before* the archive. Settings → About → Core names what actually shipped. |
 | Build stuck in "Missing Compliance" | `ITSAppUsesNonExemptEncryption` did not make it into the build. It is in `Info.plist`; check the archive really contains it. |
 

@@ -125,3 +125,25 @@ targets:
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "2"
         SKIP_INSTALL: YES
+
+# --------------------------------------------------------------------------- schemes
+# Declared rather than left to Xcode. With no `schemes:` here XcodeGen writes none,
+# and Xcode autocreates them on open — which on 2026-09-05 produced schemes for the
+# two extensions and *not* for the app, leaving nothing archivable in the dropdown
+# and no message naming the cause. Archiving an extension scheme instead yields an
+# archive App Store Connect refuses. Only the app needs one; the extensions build as
+# its embedded dependencies.
+schemes:
+  WhimprFlow:
+    build:
+      targets:
+        WhimprFlow: all
+    run:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    # Release, or TestFlight gets an unoptimized Rust core and cleanup feels broken.
+    archive:
+      config: Release

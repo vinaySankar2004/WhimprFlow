@@ -428,10 +428,12 @@ volume with WhimprFlow holding the mic, after the move to `.default` mode.
 from TestFlight on the developer's own iPhone and iPad. The name `WhimprFlow` was
 available, so the unique-name snag Part 2 warned about did not arise.
 
-**Not yet confirmed on the TestFlight build:** Settings → About → Core reading 0.1.8,
-and a dictation end to end. Both were verified on the cable build, not on the uploaded
-one — which is the exact gap the [relink trap](../CLAUDE.md) produces. Also unwalked:
-a second person installing from an invite.
+Dictation works through that build on both devices, with the cable build deleted first
+and Full Access re-granted — so the archive carried a current core, which is the thing
+the [relink trap](../CLAUDE.md) takes away and which surfaces as "no API key is set".
+
+**Not yet exercised:** a second person installing from an invite, and the 90-day
+expiry cycle.
 
 [wispr]: https://docs.wisprflow.ai/articles/7453988911-set-up-the-flow-keyboard-on-iphone
 [qa1872]: https://developer.apple.com/library/archive/qa/qa1872/_index.html
