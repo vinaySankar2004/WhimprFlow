@@ -17,6 +17,7 @@ final class Settings {
         static let backgroundSession = "settings.backgroundSession"
         static let standbyTimeout = "settings.standbyTimeout"
         static let soundOnStart = "settings.soundOnStart"
+        static let autocorrect = "settings.autocorrect"
         static let appearance = "settings.appearance"
     }
 
@@ -94,6 +95,19 @@ final class Settings {
     /// standby asks this one question.
     var keepSessionAlive: Bool { standbyTimeout != .off }
 
+    // MARK: - Typing
+
+    /// Whether the keyboard corrects spelling as you type. Conservative by design —
+    /// see `TypingEngine.autocorrect` — and honouring a field that turns it off.
+    var autocorrect: Bool {
+        didSet { defaults.set(autocorrect, forKey: Key.autocorrect) }
+    }
+
+    /// The same value for the keyboard, which reads the container directly.
+    static var storedAutocorrect: Bool {
+        (Handoff.defaults ?? .standard).object(forKey: Key.autocorrect) as? Bool ?? true
+    }
+
     // MARK: - Sound
 
     /// The record-start pop. Mirrors the Mac's `sound_on_start`, default and all: the
@@ -118,6 +132,7 @@ final class Settings {
         }
         appearance = Appearance(rawValue: defaults.string(forKey: Key.appearance) ?? "") ?? .system
         soundOnStart = defaults.object(forKey: Key.soundOnStart) as? Bool ?? true
+        autocorrect = defaults.object(forKey: Key.autocorrect) as? Bool ?? true
         if let data = defaults.data(forKey: Key.dictionary),
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let entries = object["entries"] as? [[String: Any]] {

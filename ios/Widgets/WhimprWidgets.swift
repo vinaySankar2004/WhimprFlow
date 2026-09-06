@@ -79,9 +79,12 @@ struct RingGlyph: View {
 
 struct StatusLines: View {
     let state: StandbyActivityAttributes.ContentState
+    /// Centred in the island's expanded view, leading on the Lock Screen banner —
+    /// the two places Apple's own activities align differently.
+    var alignment: HorizontalAlignment = .center
 
     var body: some View {
-        VStack(spacing: 2) {
+        VStack(alignment: alignment, spacing: 2) {
             Text(title)
                 .font(.headline)
                 .foregroundStyle(.white)
@@ -90,7 +93,7 @@ struct StatusLines: View {
                 .foregroundStyle(Color(uiColor: Palette.slate300))
                 .monospacedDigit()
         }
-        .multilineTextAlignment(.center)
+        .multilineTextAlignment(alignment == .leading ? .leading : .center)
     }
 
     private var title: String {
@@ -132,6 +135,7 @@ struct StatusLines: View {
 
 struct ActionRow: View {
     let state: StandbyActivityAttributes.ContentState
+    var alignment: Alignment = .center
 
     var body: some View {
         HStack(spacing: 10) {
@@ -160,23 +164,25 @@ struct ActionRow: View {
         .buttonBorderShape(.capsule)
         .controlSize(.small)
         .font(.caption.weight(.semibold))
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: alignment)
     }
 }
 
+/// The Lock Screen banner: icon at the leading edge, text and the action beside it,
+/// everything leading-aligned — the shape of every system activity there.
 struct LockScreenView: View {
     let state: StandbyActivityAttributes.ContentState
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(alignment: .center, spacing: 14) {
             RingGlyph(size: 34)
-            VStack(alignment: .leading, spacing: 8) {
-                StatusLines(state: state)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                ActionRow(state: state)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 10) {
+                StatusLines(state: state, alignment: .leading)
+                ActionRow(state: state, alignment: .leading)
             }
+            Spacer(minLength: 0)
         }
-        .padding(14)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
     }
 }

@@ -7,6 +7,8 @@ protocol KeyboardViewDelegate: AnyObject {
     /// A finger landed on a key. Feedback — click, haptic — belongs to the owner.
     func keyboardViewDidTouchKey(_ view: KeyboardView)
     func keyboardViewDidLongPressGlobe(_ view: KeyboardView)
+    /// A finger drew a path across the letters instead of tapping one.
+    func keyboardView(_ view: KeyboardView, didSwipe path: [CGPoint])
 }
 
 /// The key grid, drawn and hit-tested by hand.
@@ -48,11 +50,11 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
 
     // MARK: Geometry
 
-    // Measured off Wispr Flow's keyboard on a 6.1" phone: shorter keys and wider
-    // gaps than a first guess, which is most of why theirs reads as light and a
-    // 43-pt key with an 11-pt gap read as heavy.
-    static let keyHeight: CGFloat = 38
-    static let rowGap: CGFloat = 14
+    // Tuned on the phone in two rounds: 43/11 read as heavy, 38/14 as too much air
+    // between rows. The stock keyboard's own 42/10 is where it settled — a key you
+    // can hit by feel, and rows that read as one surface.
+    static let keyHeight: CGFloat = 42
+    static let rowGap: CGFloat = 10
     static let topPad: CGFloat = 8
     static let bottomPad: CGFloat = 4
     static let height: CGFloat = 4 * keyHeight + 3 * rowGap + topPad + bottomPad
@@ -66,12 +68,74 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
     private var globeLongPress: Timer?
     private let popup = KeyPopup()
 
+    /// Swipe typing. A touch that starts on a letter records its path; once it has
+    /// travelled further than a slide-to-the-next-key could, it stops being a tap
+    /// and becomes a swipe, drawn as a trail and decoded on release.
+    private var swipePaths: [UITouch: [CGPoint]] = [:]
+    private var swiping: Set<UITouch> = []
+    private let trail = CAShapeLayer()
+    private let hint = UILabel()
+    private var hintTimer: Timer?
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         isMultipleTouchEnabled = true
         clipsToBounds = false
         popup.isHidden = true
+
+        trail.fillColor = nil
+        trail.strokeColor = Palette.accent.cgColor
+        trail.lineWidth = 7
+        trail.lineCap = .round
+        trail.lineJoin = .round
+        trail.opacity = 0.55
+        layer.addSublayer(trail)
+
+        hint.font = .systemFont(ofSize: 14, weight: .medium)
+        hint.textColor = Palette.textPrimary
+        hint.backgroundColor = Palette.control
+        hint.textAlignment = .center
+        hint.layer.cornerRadius = 14
+        hint.layer.cornerCurve = .continuous
+        hint.layer.masksToBounds = true
+        hint.alpha = 0
+        addSubview(hint)
         rebuild()
+    }
+
+    /// The letter keys' centres, a=0…z=25, for the swipe decoder. Empty off the
+    /// letters plane, where swiping is not offered.
+    func letterCentres() -> [Int: CGPoint] {
+        guard plane == .letters else { return [:] }
+        var centres: [Int: CGPoint] = [:]
+        for view in keyViews.flatMap({ $0 }) {
+            if case let .character(text) = view.key, text.count == 1,
+               let scalar = text.unicodeScalars.first, scalar.value >= 97, scalar.value <= 122 {
+                centres[Int(scalar.value) - 97] = view.center
+            }
+        }
+        return centres
+    }
+
+    var letterKeyWidth: CGFloat {
+        keyViews.first?.first?.frame.width ?? 33
+    }
+
+    /// A short line above the space bar — "teh → the" — gone after a moment.
+    func showHint(_ text: String) {
+        hintTimer?.invalidate()
+        hint.text = "  \(text)  "
+        hint.sizeToFit()
+        let width = hint.frame.width + 12
+        let space = keyViews.last?.first(where: { $0.key == .space })
+        let anchorX = space?.frame.midX ?? bounds.midX
+        let anchorY = (space?.frame.minY ?? bounds.maxY) - 8
+        hint.frame = CGRect(x: anchorX - width / 2, y: anchorY - 28, width: width, height: 28)
+        bringSubviewToFront(hint)
+        UIView.animate(withDuration: 0.12) { self.hint.alpha = 1 }
+        hintTimer = Timer.scheduledTimer(withTimeInterval: 1.4, repeats: false) { [weak self] _ in
+            UIView.animate(withDuration: 0.25) { self?.hint.alpha = 0 }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -206,6 +270,7 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
                 }
             case .character:
                 showPopup(over: view)
+                if plane == .letters { swipePaths[touch] = [touch.location(in: self)] }
             default:
                 break
             }
@@ -214,6 +279,25 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
+            if var path = swipePaths[touch] {
+                let point = touch.location(in: self)
+                path.append(point)
+                swipePaths[touch] = path
+                if swiping.contains(touch) {
+                    drawTrail(path)
+                    continue
+                }
+                // Further than a finger slides to correct a tap: this is a swipe.
+                var length: CGFloat = 0
+                for index in 1..<path.count { length += hypot(path[index].x - path[index - 1].x, path[index].y - path[index - 1].y) }
+                if length > letterKeyWidth * 1.6 {
+                    swiping.insert(touch)
+                    if let view = active.removeValue(forKey: touch) { view.isPressed = false }
+                    if active.isEmpty { popup.isHidden = true }
+                    drawTrail(path)
+                    continue
+                }
+            }
             guard let current = active[touch] else { continue }
             // Shift and delete act on touch-down and do not slide; a finger that
             // wanders off delete should keep deleting, not start typing.
@@ -233,6 +317,12 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
+            if swiping.remove(touch) != nil, let path = swipePaths.removeValue(forKey: touch) {
+                clearTrail()
+                delegate?.keyboardView(self, didSwipe: path)
+                continue
+            }
+            swipePaths.removeValue(forKey: touch)
             guard let view = active.removeValue(forKey: touch) else { continue }
             view.isPressed = false
             switch view.key {
@@ -253,6 +343,9 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
+            swiping.remove(touch)
+            swipePaths.removeValue(forKey: touch)
+            clearTrail()
             guard let view = active.removeValue(forKey: touch) else { continue }
             view.isPressed = false
             if view.key == .delete { stopDeleteRepeat() }
@@ -260,6 +353,21 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
         globeLongPress?.invalidate()
         globeLongPress = nil
         if active.isEmpty { popup.isHidden = true }
+    }
+
+    private func drawTrail(_ path: [CGPoint]) {
+        // Only the last stretch, so the trail reads as motion rather than a scrawl.
+        let recent = path.suffix(28)
+        let bezier = UIBezierPath()
+        for (index, point) in recent.enumerated() {
+            if index == 0 { bezier.move(to: point) } else { bezier.addLine(to: point) }
+        }
+        trail.strokeColor = Palette.accent.resolvedColor(with: traitCollection).cgColor
+        trail.path = bezier.cgPath
+    }
+
+    private func clearTrail() {
+        trail.path = nil
     }
 
     private func startDeleteRepeat() {

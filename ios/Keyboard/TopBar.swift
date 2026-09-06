@@ -30,6 +30,10 @@ final class TopBar: UIView {
     private let pill = UIButton(type: .custom)
     private let rightButton = UIButton(type: .custom)
     private let spinner = UIActivityIndicatorView(style: .medium)
+    /// Other readings of the last swipe, in the menu's place for a few seconds.
+    private let alternatives = UIStackView()
+    private var alternativesTimer: Timer?
+    private var onPickAlternative: ((String) -> Void)?
 
     private(set) var mode: Mode = .typing
     private var level: CleanupLevel = .light
@@ -94,7 +98,11 @@ final class TopBar: UIView {
         spinner.hidesWhenStopped = true
         rightButton.addSubview(spinner)
 
-        for view in [menuButton, cancelButton, pill, rightButton] {
+        alternatives.axis = .horizontal
+        alternatives.spacing = 6
+        alternatives.isHidden = true
+
+        for view in [menuButton, cancelButton, pill, rightButton, alternatives] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -123,6 +131,11 @@ final class TopBar: UIView {
 
             spinner.centerXAnchor.constraint(equalTo: rightButton.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: rightButton.centerYAnchor),
+
+            alternatives.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            alternatives.centerYAnchor.constraint(equalTo: centerYAnchor),
+            alternatives.trailingAnchor.constraint(lessThanOrEqualTo: pill.leadingAnchor, constant: -8),
+            alternatives.heightAnchor.constraint(equalToConstant: 34),
         ])
 
         setLevel(.light)
@@ -159,6 +172,7 @@ final class TopBar: UIView {
     }
 
     private func apply(_ mode: Mode) {
+        if mode != .typing { hideAlternatives() }
         let listening = mode == .listening
         let busy = mode == .transcribing
         let notice = mode == .notice
@@ -203,6 +217,47 @@ final class TopBar: UIView {
         configuration?.baseBackgroundColor = Palette.pill
         configuration?.baseForegroundColor = Palette.pillText
         pill.configuration = configuration
+    }
+
+    // MARK: - Swipe alternatives
+
+    /// Offer other words for the last swipe. Tapping one swaps it in; they leave on
+    /// their own after a few seconds or on the next key.
+    func showAlternatives(_ words: [String], onPick: @escaping (String) -> Void) {
+        alternatives.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for word in words.prefix(3) {
+            var configuration = UIButton.Configuration.filled()
+            configuration.baseBackgroundColor = Palette.barControl
+            configuration.baseForegroundColor = Palette.textPrimary
+            configuration.cornerStyle = .capsule
+            configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12)
+            configuration.attributedTitle = AttributedString(
+                word, attributes: AttributeContainer([.font: UIFont.systemFont(ofSize: 15, weight: .medium)])
+            )
+            let button = UIButton(configuration: configuration)
+            button.addAction(UIAction { [weak self] _ in
+                self?.onPickAlternative?(word)
+                self?.hideAlternatives()
+            }, for: .touchUpInside)
+            alternatives.addArrangedSubview(button)
+        }
+        onPickAlternative = onPick
+        guard mode == .typing, !alternatives.arrangedSubviews.isEmpty else { return }
+        menuButton.isHidden = true
+        alternatives.isHidden = false
+        alternativesTimer?.invalidate()
+        alternativesTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { [weak self] _ in
+            self?.hideAlternatives()
+        }
+    }
+
+    func hideAlternatives() {
+        alternativesTimer?.invalidate()
+        alternativesTimer = nil
+        guard !alternatives.isHidden else { return }
+        alternatives.isHidden = true
+        onPickAlternative = nil
+        if mode == .typing { menuButton.isHidden = false }
     }
 
     // MARK: - Menu

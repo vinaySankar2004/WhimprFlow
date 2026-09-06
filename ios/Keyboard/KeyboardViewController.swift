@@ -39,6 +39,7 @@ final class KeyboardViewController: UIInputViewController {
     private var keyboardView: KeyboardView!
     private var listeningView: ListeningView!
     private var engine: TypingEngine!
+    private let decoder = SwipeDecoder()
     private let haptic = UIImpactFeedbackGenerator(style: .light)
 
     private var lastInsertedResultID = 0
@@ -81,6 +82,9 @@ final class KeyboardViewController: UIInputViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         engine = TypingEngine(proxy: textDocumentProxy)
+        engine.onCorrection = { [weak self] correction in
+            self?.keyboardView.showHint("\(correction.from) → \(correction.to)")
+        }
         buildInterface()
         applyAppearance()
         // Anything already in the container predates this keyboard appearing and must
@@ -102,6 +106,7 @@ final class KeyboardViewController: UIInputViewController {
         // it must be right before the first frame is drawn.
         applyAppearance()
         topBar.setLevel(Settings.storedLevel)
+        engine.autocorrectEnabled = Settings.storedAutocorrect
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -394,6 +399,7 @@ extension KeyboardViewController: KeyboardViewDelegate {
     func keyboardView(_ view: KeyboardView, didCommit key: Key) {
         // Any keypress ends a notice; the user has moved on.
         if screen == .failed { show(.typing) }
+        if key != .shift { topBar.hideAlternatives() }
         switch key {
         case .globe:
             advanceToNextInputMode()
@@ -404,5 +410,22 @@ extension KeyboardViewController: KeyboardViewDelegate {
 
     func keyboardViewDidLongPressGlobe(_ view: KeyboardView) {
         handleInputModeList(from: view, with: UIEvent())
+    }
+
+    func keyboardView(_ view: KeyboardView, didSwipe path: [CGPoint]) {
+        if screen == .failed { show(.typing) }
+        let candidates = decoder.decode(path: path, centres: view.letterCentres(), keyWidth: view.letterKeyWidth)
+        guard let best = candidates.first else { return }
+        engine.insertSwipe(best.word)
+        syncTyping()
+        feedback()
+        let others = candidates.dropFirst().map(\.word)
+        if others.isEmpty {
+            topBar.hideAlternatives()
+        } else {
+            topBar.showAlternatives(Array(others)) { [weak self] word in
+                self?.engine.replaceLastSwipe(with: word)
+            }
+        }
     }
 }

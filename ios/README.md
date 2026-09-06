@@ -194,14 +194,27 @@ dictate on a phone already know.
 | `TopBar` | the bar, in typing and listening forms; the ≡ menu (Open WhimprFlow · Cleanup · Release the mic) |
 | `KeyboardLayout` | the three planes as data — letters, numbers, symbols — in the stock arrangement |
 | `KeyboardView` | the key grid: geometry, touch handling across keys, popups, delete repeat |
-| `TypingEngine` | what typing does: sentence capitals honouring `autocapitalizationType`, double-space full stop, caps lock, the return key's word, smart insert of a dictation |
+| `TypingEngine` | what typing does: sentence capitals honouring `autocapitalizationType`, double-space full stop, caps lock, the return key's word, autocorrect, smart insert of a dictation or a swiped word |
+| `SwipeDecoder` | a finger path over the letters → a word, by path shape against `Resources/words-20k.txt` with frequency as the tie-break |
 | `ListeningView` | waveform, "Listening", which microphone and for how long; transcribing; failure with Try again |
 | `WaveformView` | twelve dots that rise into bars, driven from `LevelChannel` |
 
 Things about it that are not obvious from the code:
 
-- **No autocorrect and no predictions.** A third-party keyboard gets neither; Wispr's
-  has neither. What it does have is the rest of the muscle memory, in `TypingEngine`.
+- **Autocorrect is Apple's checker, used conservatively.** `UITextChecker` is
+  available to a keyboard extension; a word is corrected on the space or punctuation
+  that ends it only when every letter was typed here, the checker flags the whole
+  word, its first guess keeps the first letter and is within one edit (two for longer
+  words), and the field has not turned correction off. Delete straight after restores
+  the typed word and teaches the checker it. Anything looser rewrites names, which is
+  why people turn autocorrect off. No predictions strip: the bar's space belongs to
+  the pill and the mic.
+- **Swipe typing is SHARK²-shaped, on a 20k-word list.** Each candidate's ideal path
+  through its key centres is compared with the drawn path (both resampled, mean
+  distance in key widths), every letter must lie within reach of the path in order,
+  and word frequency breaks ties. Other readings appear in the bar for a few seconds.
+  The list and its provenance are in `Keyboard/Resources/README.md`; the decoder
+  loads it on the first swipe, not at keyboard launch.
 - **The globe is drawn only when `needsInputModeSwitchKey` is true.** On Face ID
   phones iOS draws it in the strip below every third-party keyboard.
 - **Touches are handled by the grid, not by buttons.** Sliding onto the right key
@@ -364,7 +377,8 @@ touches real audio or suspension):
 
 - the three planes type into a Safari field; shift stays off in a field whose
   `autocapitalizationType` is none; the pill and the ≡ menu open; the failure notice
-  has a way back to the keys;
+  has a way back to the keys; a swiped "hello" lands with its leading space; "teh" +
+  space in Reminders becomes "The", with the sentence capital kept;
 - the mic key starts a dictation over the Darwin handoff and the key area becomes the
   listening screen with the elapsed counter; ✕ discards and the keys return;
 - the Live Activity appears in the Dynamic Island when standby starts, its expanded
@@ -381,7 +395,8 @@ the smart leading space; key click and haptics under Full Access; the keyboard-s
 frames with the new, taller keyboard (screen recording, `ffmpeg`, as before); standby
 surviving a call with the activity intact; the eight-hour activity limit under
 "Always". Also unverified anywhere: the double-space full stop and caps lock by double
-tap were exercised only by reading `TypingEngine`, not on a device.
+tap were exercised only by reading `TypingEngine`, not on a device; swipe accuracy
+has been tried on one word.
 
 **Partly exercised on the device:** key rotation (2026-09-05). Two keys stored, and
 dictation through the ring works on the phone (the first build shipped the previous

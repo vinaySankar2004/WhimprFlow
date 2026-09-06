@@ -115,6 +115,7 @@ struct SettingsView: View {
             Link(destination: URL(string: UIApplication.openSettingsURLString)!) {
                 Label("Open iOS Settings", systemImage: "arrow.up.forward.app")
             }
+            Toggle("Correct spelling as you type", isOn: $settings.autocorrect)
         } header: {
             Text("Keyboard")
         } footer: {
@@ -124,6 +125,8 @@ struct SettingsView: View {
             To dictate inside other apps, add the WhimprFlow keyboard in Settings → General → Keyboard → Keyboards → Add New Keyboard, then tap it and turn on Allow Full Access.
 
             Full Access is required: without it the keyboard has no network and cannot see the app's results. A keyboard extension cannot record audio at all — iOS does not permit it — so the mic key hands recording to this app.
+
+            Spelling is corrected only for clear typos with one close fix, and never in fields that turn correction off. Delete right after a correction to get your word back. Swipe across the letters to write a word without lifting your finger.
             """)
         }
     }

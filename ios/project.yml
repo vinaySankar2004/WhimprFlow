@@ -82,7 +82,13 @@ targets:
     platform: iOS
     sources:
       - path: Keyboard
+        excludes:
+          - Resources
       - path: Shared
+      # The swipe word list (see Keyboard/Resources/README.md), copied not compiled.
+      - path: Keyboard/Resources/words-20k.txt
+        type: file
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.whimpr.whimprflow.keyboard
