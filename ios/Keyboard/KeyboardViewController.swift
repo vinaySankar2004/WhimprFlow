@@ -13,26 +13,44 @@ import UIKit
 ///
 /// - The app is alive (its heartbeat is recent, because it holds a capture session in
 ///   standby): post a Darwin notification. Nothing visibly switches.
-/// - It is not: open `whimprflow://dictate`. iOS shows a back arrow to return here.
+/// - It is not: open `whimprflow://dictate`. You see the app, then come back.
+///
+/// # Shape
+///
+/// A top bar — menu, level pill, mic — over a full typing keyboard, and while a
+/// dictation is happening the key area becomes the listening screen. This is Wispr
+/// Flow's arrangement, adopted deliberately: it is what people who dictate on a phone
+/// already know. What the four screens do is split across `TopBar`, `KeyboardView`,
+/// `ListeningView` and `TypingEngine`; this class only connects them to the host
+/// field and to the app.
 ///
 /// # Getting to another keyboard
 ///
 /// A custom keyboard cannot select a *specific* system keyboard — there is no API to
 /// jump to Emoji or to the English layout. What exists is `advanceToNextInputMode()`,
 /// which cycles, and `handleInputModeList(from:with:)`, which raises the system
-/// picker. The globe key does the first on a tap and the second on a long press,
-/// matching what the stock keyboard does, so "give me ABC" and "give me emoji" are
-/// both one gesture away even though neither can be a dedicated button.
+/// picker. On Face ID phones iOS draws the globe itself, below the keyboard, and
+/// `needsInputModeSwitchKey` is false; a globe key is drawn here only when it is true.
 final class KeyboardViewController: UIInputViewController {
     /// Our own backdrop, sized to the keyboard and hung from the bottom. The root
     /// view itself stays transparent — see `buildInterface`.
     private var backdrop: UIView!
-    private var micButton: UIButton!
-    private var micLabel: UILabel!
-    private var discardButton: UIButton!
-    private var waveform: WaveformView!
+    private var topBar: TopBar!
+    private var keyboardView: KeyboardView!
+    private var listeningView: ListeningView!
+    private var engine: TypingEngine!
+    private let haptic = UIImpactFeedbackGenerator(style: .light)
+
     private var lastInsertedResultID = 0
     private var isDictating = false
+    /// The app state seen on the previous refresh. A `failed` is shown only when it
+    /// follows a recording or transcribing this keyboard watched: the app leaves the
+    /// last outcome in the container, and a failure from hours ago is not what
+    /// someone opening the keyboard wants to read.
+    private var lastObservedState: Handoff.State = .idle
+    /// The screen the key area is showing.
+    private enum Screen: Equatable { case typing, listening, transcribing, failed }
+    private var screen: Screen = .typing
 
     /// What `overrideUserInterfaceStyle` was last set to, so it is only written when
     /// it actually changes — assigning it re-resolves every dynamic colour and
@@ -40,38 +58,29 @@ final class KeyboardViewController: UIInputViewController {
     /// appearance.
     private var appliedStyle: UIUserInterfaceStyle?
 
-    /// The keyboard's height. Declared, and installed in `viewDidLoad` so the very
-    /// first layout is already this tall.
+    /// The keyboard's height: the bar plus the key grid. Declared, and installed in
+    /// `viewDidLoad` so the very first layout is already this tall.
     ///
-    /// 242 matches the stock keyboard on a 6.1" iPhone — measured on the simulator by
-    /// comparing where the host's search field sits over each keyboard. The original
-    /// 258 was 16pt taller, which moved the top edge on every switch. Matching it is
-    /// necessary, but it was not the glitch: a device screen recording, frame by
-    /// frame, showed a single frame per switch in which this view is laid out at the
-    /// *outgoing* keyboard's height (in Spotlight the stock keyboard carries a
-    /// suggestion strip and is taller still). That is why the layout below hangs from
-    /// the bottom with a fixed panel height — see the note on the constraints.
+    /// Taller than the stock keyboard's 242 by the height of the bar, as Wispr Flow's
+    /// is. The keyboard-switch frame that a mismatched height causes is handled by
+    /// the layout, not the number: for one frame per switch iOS lays this view out at
+    /// the *outgoing* keyboard's height (seen frame-by-frame in a device screen
+    /// recording), so everything hangs from the bottom with a fixed panel height and
+    /// nothing is pinned to the top. A top-pinned, flexible layout fills that frame by
+    /// growing upward over the host's text field and snaps back the next frame.
     ///
     /// Not left to the system: without a constraint iOS hands the extension almost no
-    /// height and the panel collapses onto its own label. Not installed later, in
+    /// height and the panel collapses. Not installed later, in
     /// `updateViewConstraints`: the keyboard then appears at whatever it was given and
     /// jumps. Priority 999 so it yields to the system's transient height during a
     /// switch rather than conflicting; 1000 was tried and changed nothing.
-    ///
-    /// Not fixable here: iOS relaunches the extension process on most summons (the
-    /// log shows a fresh PID each time) and draws the keyboard frame before the new
-    /// process has drawn anything. Every cold third-party keyboard has that frame.
-    private let keyboardHeight: CGFloat = 242
-
-    /// The glyph currently on the mic key, so it is only rebuilt on a real change.
-    /// `.some(nil)` is a real value here — it means the waveform has the space —
-    /// hence the double optional rather than a plain String?.
-    private var appliedMicSymbol: String??
+    private let keyboardHeight: CGFloat = TopBar.height + KeyboardView.height
 
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        engine = TypingEngine(proxy: textDocumentProxy)
         buildInterface()
         applyAppearance()
         // Anything already in the container predates this keyboard appearing and must
@@ -79,6 +88,7 @@ final class KeyboardViewController: UIInputViewController {
         // dictation into whatever field happens to be focused.
         lastInsertedResultID = Handoff.latestResult()?.id ?? 0
         observeHandoff()
+        syncTyping()
         refresh()
     }
 
@@ -91,32 +101,41 @@ final class KeyboardViewController: UIInputViewController {
         // Appearance only. It is guarded to a no-op unless the setting changed, and
         // it must be right before the first frame is drawn.
         applyAppearance()
+        topBar.setLevel(Settings.storedLevel)
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        // Syncing state *after* the transition rather than during it. `refresh()`
-        // touches the mic key, the waveform and the discard button, and doing that
-        // while the keyboard is sliding in is the jitter seen when switching back to
-        // it. Nothing here is urgent enough to be worth a frame of the animation.
+        // `needsInputModeSwitchKey` is only meaningful once the view is in a window.
+        keyboardView.includeGlobe = needsInputModeSwitchKey
+        // Syncing state *after* the transition rather than during it: `refresh()`
+        // touches several views, and doing that while the keyboard is sliding in is
+        // the jitter seen when switching back to it.
         refresh()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        // The display link keeps firing on a keyboard the user has switched away from
-        // otherwise, which is wasted work in the tightest process budget on the phone.
-        waveform.stop()
+        // The display link and the clock keep firing on a keyboard the user has
+        // switched away from otherwise, which is wasted work in the tightest process
+        // budget on the phone.
+        listeningView.pause()
+    }
+
+    override func textDidChange(_ textInput: UITextInput?) {
+        super.textDidChange(textInput)
+        // The host moved the cursor, cleared the field, or focused another one. The
+        // sentence rule and the return key both depend on where we now are.
+        syncTyping()
     }
 
     override func traitCollectionDidChange(_ previous: UITraitCollection?) {
         super.traitCollectionDidChange(previous)
         // This also fires during transitions, so only act when light/dark genuinely
-        // flipped. Dynamic colours re-resolve themselves; CGColor on a layer does not,
-        // which is why the border is repainted by hand.
+        // flipped. Dynamic colours re-resolve themselves; CGColor on a layer does not.
         guard previous?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
-        micButton.backgroundColor = Palette.surface.resolvedColor(with: traitCollection)
-        micButton.layer.borderColor = Palette.border.resolvedColor(with: traitCollection).cgColor
+        keyboardView.repaint()
+        topBar.repaint()
     }
 
     /// Follow the app's appearance setting, which the keyboard reads from the shared
@@ -124,13 +143,10 @@ final class KeyboardViewController: UIInputViewController {
     /// frozen at whatever it was when the keyboard was built.
     private func applyAppearance() {
         let style = Settings.storedAppearance.interfaceStyle
-        // Only on an actual change. Writing this unconditionally on every appearance
-        // re-resolves every dynamic colour and re-renders the keyboard, which is one
-        // of the flashes seen when switching back to it.
         guard style != appliedStyle else { return }
         appliedStyle = style
         overrideUserInterfaceStyle = style
-        backdrop?.backgroundColor = Palette.background
+        backdrop?.backgroundColor = Palette.keyboardBackdrop
     }
 
     // MARK: - Interface
@@ -147,78 +163,33 @@ final class KeyboardViewController: UIInputViewController {
         view.backgroundColor = .clear
 
         backdrop = UIView()
-        backdrop.backgroundColor = Palette.background
-        backdrop.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(backdrop)
+        backdrop.backgroundColor = Palette.keyboardBackdrop
 
-        // The mic target: everything above the key row, so it is hard to miss.
-        micButton = UIButton(type: .custom)
-        micButton.backgroundColor = Palette.surface
-        micButton.layer.cornerRadius = 16
-        micButton.layer.cornerCurve = .continuous
-        micButton.layer.borderWidth = 1
-        micButton.layer.borderColor = Palette.border.cgColor
-        micButton.accessibilityLabel = "Dictate"
-        micButton.addTarget(self, action: #selector(micTapped), for: .touchUpInside)
-        micButton.translatesAutoresizingMaskIntoConstraints = false
+        topBar = TopBar()
+        topBar.onOpenApp = { [weak self] in self?.openContainerApp(Handoff.settingsURL) }
+        topBar.onRelease = { [weak self] in self?.releaseMic() }
+        topBar.onPill = { [weak self] in
+            guard let self else { return }
+            self.feedback()
+            self.setLevel(Settings.storedLevel.next)
+        }
+        topBar.onMic = { [weak self] in self?.micTapped() }
+        topBar.onCancel = { [weak self] in self?.discardTapped() }
+        topBar.onDismissNotice = { [weak self] in self?.show(.typing) }
+        topBar.onConfirm = { [weak self] in self?.finishTapped() }
 
-        waveform = WaveformView()
-        waveform.translatesAutoresizingMaskIntoConstraints = false
-        waveform.isUserInteractionEnabled = false
-        micButton.addSubview(waveform)
+        keyboardView = KeyboardView()
+        keyboardView.delegate = self
 
-        micLabel = UILabel()
-        micLabel.font = .preferredFont(forTextStyle: .footnote)
-        micLabel.textColor = Palette.textSecondary
-        micLabel.textAlignment = .center
-        micLabel.numberOfLines = 2
-        micLabel.adjustsFontSizeToFitWidth = true
-        micLabel.minimumScaleFactor = 0.85
-        micLabel.translatesAutoresizingMaskIntoConstraints = false
-        micButton.addSubview(micLabel)
+        listeningView = ListeningView()
+        listeningView.isHidden = true
+        listeningView.onRetry = { [weak self] in self?.micTapped() }
+        listeningView.onOpenApp = { [weak self] in self?.openContainerApp(Handoff.dictateURL) }
 
-        // Discard. Only while recording, and its own control rather than a gesture on
-        // the panel: stopping and throwing away are both one tap, and the difference
-        // between them is a recognition call plus a cleanup call on audio the user has
-        // already decided against.
-        discardButton = UIButton(type: .system)
-        discardButton.setImage(
-            UIImage(
-                systemName: "xmark",
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
-            ),
-            for: .normal
-        )
-        discardButton.tintColor = Palette.textSecondary
-        discardButton.backgroundColor = Palette.control
-        discardButton.layer.cornerRadius = 16
-        discardButton.layer.cornerCurve = .continuous
-        discardButton.accessibilityLabel = "Discard dictation"
-        discardButton.isHidden = true
-        discardButton.translatesAutoresizingMaskIntoConstraints = false
-        discardButton.addTarget(self, action: #selector(discardTapped), for: .touchUpInside)
-        micButton.addSubview(discardButton)
-
-        // The bottom row, in the stock keyboard's proportions: the two glyph keys
-        // narrow at the edges, return a little wider, and space taking everything
-        // that is left. Equal widths made every key look like a modifier and the
-        // spacebar impossible to hit by feel.
-        let globe = key(symbol: "globe", action: #selector(globeTapped), accessibility: "Next keyboard")
-        globe.addGestureRecognizer(
-            UILongPressGestureRecognizer(target: self, action: #selector(globeLongPressed))
-        )
-        let delete = key(symbol: "delete.left", action: #selector(deleteTapped), accessibility: "Delete")
-        let space = key(title: "space", action: #selector(spaceTapped), accessibility: "Space")
-        let ret = key(symbol: "return", action: #selector(returnTapped), accessibility: "Return")
-
-        let row = UIStackView(arrangedSubviews: [globe, delete, space, ret])
-        row.axis = .horizontal
-        row.spacing = 6
-        row.distribution = .fill
-        row.translatesAutoresizingMaskIntoConstraints = false
-
-        view.addSubview(micButton)
-        view.addSubview(row)
+        for subview in [backdrop, topBar, keyboardView, listeningView] as [UIView] {
+            subview.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(subview)
+        }
 
         let height = view.heightAnchor.constraint(equalToConstant: keyboardHeight)
         height.priority = UILayoutPriority(999)
@@ -229,86 +200,84 @@ final class KeyboardViewController: UIInputViewController {
             backdrop.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             backdrop.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             backdrop.heightAnchor.constraint(equalToConstant: keyboardHeight),
-            // The panel has a fixed height and hangs from the key row, which hangs
-            // from the bottom — nothing is pinned to the top. For one frame during a
-            // keyboard switch iOS lays this view out at the *outgoing* keyboard's
-            // height, which in Spotlight is taller (a suggestion strip); a top-pinned,
-            // flexible panel then fills that extra height by growing upward over the
-            // host's text field, and snaps back the next frame. Seen frame-by-frame in
-            // a device screen recording. Bottom-anchored, the same transient frame
-            // leaves an empty band of backdrop above the panel instead, which is not
-            // visible against the keyboard container.
-            micButton.heightAnchor.constraint(equalToConstant: keyboardHeight - 8 - 8 - 46 - 6),
-            micButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6),
-            micButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -6),
 
-            waveform.centerXAnchor.constraint(equalTo: micButton.centerXAnchor),
-            waveform.centerYAnchor.constraint(equalTo: micButton.centerYAnchor, constant: -8),
-            waveform.widthAnchor.constraint(equalToConstant: 120),
-            waveform.heightAnchor.constraint(equalToConstant: 46),
+            // Everything hangs from the bottom — see `keyboardHeight`.
+            keyboardView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            keyboardView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            keyboardView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            keyboardView.heightAnchor.constraint(equalToConstant: KeyboardView.height),
 
-            micLabel.leadingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: 12),
-            micLabel.trailingAnchor.constraint(equalTo: micButton.trailingAnchor, constant: -12),
-            micLabel.bottomAnchor.constraint(equalTo: micButton.bottomAnchor, constant: -10),
+            listeningView.leadingAnchor.constraint(equalTo: keyboardView.leadingAnchor),
+            listeningView.trailingAnchor.constraint(equalTo: keyboardView.trailingAnchor),
+            listeningView.topAnchor.constraint(equalTo: keyboardView.topAnchor),
+            listeningView.bottomAnchor.constraint(equalTo: keyboardView.bottomAnchor),
 
-            discardButton.topAnchor.constraint(equalTo: micButton.topAnchor, constant: 10),
-            discardButton.trailingAnchor.constraint(equalTo: micButton.trailingAnchor, constant: -10),
-            discardButton.widthAnchor.constraint(equalToConstant: 32),
-            discardButton.heightAnchor.constraint(equalToConstant: 32),
-
-            row.topAnchor.constraint(equalTo: micButton.bottomAnchor, constant: 8),
-            row.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6),
-            row.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -6),
-            row.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -6),
-            // 46 clears Apple's 44pt minimum target with a little room.
-            row.heightAnchor.constraint(equalToConstant: 46),
-
-            globe.widthAnchor.constraint(equalToConstant: 46),
-            delete.widthAnchor.constraint(equalToConstant: 46),
-            ret.widthAnchor.constraint(equalToConstant: 74),
+            topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            topBar.bottomAnchor.constraint(equalTo: keyboardView.topAnchor),
+            topBar.heightAnchor.constraint(equalToConstant: TopBar.height),
         ])
     }
 
-    private func key(
-        symbol: String? = nil,
-        title: String? = nil,
-        action: Selector,
-        accessibility: String
-    ) -> UIButton {
-        var configuration = UIButton.Configuration.plain()
-        if let symbol { configuration.image = UIImage(systemName: symbol) }
-        if let title {
-            configuration.title = title
-            configuration.attributedTitle = AttributedString(
-                title,
-                attributes: AttributeContainer([.font: UIFont.preferredFont(forTextStyle: .body)])
-            )
+    /// Show one of the key-area screens. The bar follows.
+    private func show(_ next: Screen) {
+        guard next != screen else { return }
+        screen = next
+        let typing = next == .typing
+        UIView.transition(with: view, duration: 0.18, options: [.transitionCrossDissolve, .allowUserInteraction]) {
+            self.keyboardView.isHidden = !typing
+            self.listeningView.isHidden = typing
         }
-        configuration.baseForegroundColor = Palette.textPrimary
-
-        let button = UIButton(configuration: configuration)
-        button.backgroundColor = Palette.control
-        button.layer.cornerRadius = 8
-        button.layer.cornerCurve = .continuous
-        // The stock keyboard's key shadow, which is most of why these read as keys.
-        button.layer.shadowColor = UIColor.black.cgColor
-        button.layer.shadowOpacity = 0.28
-        button.layer.shadowOffset = CGSize(width: 0, height: 1)
-        button.layer.shadowRadius = 0
-        button.accessibilityLabel = accessibility
-        button.addTarget(self, action: action, for: .touchUpInside)
-        return button
+        switch next {
+        case .typing: topBar.setMode(.typing)
+        case .failed: topBar.setMode(.notice)
+        case .listening: topBar.setMode(.listening)
+        case .transcribing: topBar.setMode(.transcribing)
+        }
     }
 
-    // MARK: - Actions
+    // MARK: - Typing
 
-    @objc private func micTapped() {
+    /// Push the engine's view of the world into the grid.
+    private func syncTyping() {
+        engine.refreshShift()
+        keyboardView.plane = engine.plane
+        keyboardView.shift = engine.shift
+        keyboardView.returnTitle = engine.returnKeyTitle
+    }
+
+    /// Key click and a light tap. Both are no-ops without Full Access — the sound
+    /// needs the system's audio, the haptic the system's engine — so they are not
+    /// attempted then, rather than failing quietly on every key.
+    private func feedback() {
+        guard Handoff.isReachable else { return }
+        UIDevice.current.playInputClick()
+        haptic.impactOccurred(intensity: 0.6)
+    }
+
+    // MARK: - Level
+
+    private func setLevel(_ level: CleanupLevel) {
+        Settings.storedLevel = level
+        topBar.setLevel(level)
+        // The app caches the level; tell it to look again before the next dictation.
+        Handoff.post(.settings)
+    }
+
+    // MARK: - Dictation
+
+    private func micTapped() {
         // Without Full Access there is no container and no network; say so rather
         // than appearing to work.
         guard Handoff.isReachable else {
-            micLabel.text = "Turn on Allow Full Access in Settings to dictate."
+            listeningView.setMode(.failed(
+                "Turn on Allow Full Access for WhimprFlow in Settings → General → Keyboard to dictate.",
+                canRetry: false
+            ))
+            show(.failed)
             return
         }
+        feedback()
         if isDictating {
             Handoff.post(.stop)
             return
@@ -318,32 +287,30 @@ final class KeyboardViewController: UIInputViewController {
         } else {
             // Say why. iOS is about to switch apps, and without a reason that reads as
             // the keyboard malfunctioning rather than as the one thing it cannot avoid:
-            // a terminated app cannot be woken by a notification, and no extension can
-            // launch its container app in the background.
-            micLabel.text = "WhimprFlow isn't running — opening it"
-            openContainerApp()
+            // a terminated or timed-out app cannot be woken by a notification, and no
+            // extension can launch its container app in the background.
+            listeningView.setMode(.failed("Waking the mic — opening WhimprFlow. Swipe back when it says ready.", canRetry: false))
+            show(.failed)
+            openContainerApp(Handoff.dictateURL)
         }
     }
 
-    /// Tap: the next keyboard, which is normally the letters one. Long press: the
-    /// system picker, which is the only route to a *specific* keyboard such as Emoji.
-    @objc private func globeTapped() {
-        advanceToNextInputMode()
-    }
-
-    @objc private func globeLongPressed(_ gesture: UILongPressGestureRecognizer) {
-        guard gesture.state == .began else { return }
-        handleInputModeList(from: gesture.view ?? view, with: UIEvent())
-    }
-
-    @objc private func discardTapped() {
+    private func finishTapped() {
         guard Handoff.isReachable else { return }
+        feedback()
+        Handoff.post(.stop)
+    }
+
+    private func discardTapped() {
+        guard Handoff.isReachable else { return }
+        feedback()
         Handoff.post(.cancel)
     }
 
-    @objc private func deleteTapped() { textDocumentProxy.deleteBackward() }
-    @objc private func spaceTapped() { textDocumentProxy.insertText(" ") }
-    @objc private func returnTapped() { textDocumentProxy.insertText("\n") }
+    private func releaseMic() {
+        guard Handoff.isReachable else { return }
+        Handoff.post(.release)
+    }
 
     /// Launching the *container* app is the one exception to the App Review rule that
     /// a keyboard "must not launch other apps", confirmed by Apple DTS. Since iOS 26
@@ -351,16 +318,17 @@ final class KeyboardViewController: UIInputViewController {
     ///
     /// The responder-chain walk is the documented way: an extension has no
     /// `UIApplication.shared`.
-    private func openContainerApp() {
+    private func openContainerApp(_ url: URL) {
         var responder: UIResponder? = self
         while let current = responder {
             if let application = current as? UIApplication {
-                application.open(Handoff.dictateURL)
+                application.open(url)
                 return
             }
             responder = current.next
         }
-        micLabel.text = "Could not open WhimprFlow."
+        listeningView.setMode(.failed("Could not open WhimprFlow.", canRetry: false))
+        show(.failed)
     }
 
     // MARK: - Handoff
@@ -378,66 +346,63 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
-    /// Insert anything new, and reflect the app's state in the key.
+    /// Insert anything new, and reflect the app's state on screen.
     private func refresh() {
         let state = Handoff.state
         isDictating = (state == .recording)
+        topBar.setCanRelease(Handoff.isAppLive)
 
         if let result = Handoff.latestResult(), result.id > lastInsertedResultID {
             lastInsertedResultID = result.id
-            textDocumentProxy.insertText(result.text)
+            engine.insertDictation(result.text)
+            syncTyping()
         }
 
         switch state {
         case .recording:
-            setMic(symbol: nil, label: "Listening — tap to finish")
-            waveform.isHidden = false
-            waveform.start()
-            discardButton.isHidden = false
+            listeningView.setMode(.listening)
+            show(.listening)
         case .transcribing:
-            discardButton.isHidden = true
-            waveform.stop()
-            waveform.isHidden = true
-            setMic(symbol: "waveform", label: "Transcribing…")
+            listeningView.setMode(.transcribing)
+            show(.transcribing)
         case .failed:
-            discardButton.isHidden = true
-            waveform.stop()
-            waveform.isHidden = true
-            setMic(symbol: "exclamationmark.triangle", label: "Dictation failed — open WhimprFlow")
+            if lastObservedState == .recording || lastObservedState == .transcribing {
+                listeningView.setMode(.failed(
+                    "Recognition or cleanup did not answer. Try again, or open WhimprFlow to see why.",
+                    canRetry: true
+                ))
+                show(.failed)
+            } else if screen == .listening || screen == .transcribing {
+                show(.typing)
+            }
         case .idle:
-            discardButton.isHidden = true
-            waveform.stop()
-            waveform.isHidden = true
-            setMic(
-                symbol: "mic.fill",
-                label: Handoff.isReachable
-                    ? "Tap to dictate"
-                    : "Turn on Allow Full Access in Settings to dictate."
-            )
+            // A notice we put up ourselves (no Full Access, opening the app) stays
+            // until the user acts; the app's idle is not news about it.
+            if screen != .failed { show(.typing) }
+        }
+        lastObservedState = state
+    }
+}
+
+// MARK: - Keys
+
+extension KeyboardViewController: KeyboardViewDelegate {
+    func keyboardViewDidTouchKey(_ view: KeyboardView) {
+        feedback()
+    }
+
+    func keyboardView(_ view: KeyboardView, didCommit key: Key) {
+        // Any keypress ends a notice; the user has moved on.
+        if screen == .failed { show(.typing) }
+        switch key {
+        case .globe:
+            advanceToNextInputMode()
+        default:
+            if engine.commit(key) { syncTyping() }
         }
     }
 
-    /// The glyph and the caption. A nil symbol means the waveform has the space
-    /// instead — showing both put a static mic above moving bars, which read as two
-    /// unrelated things happening.
-    private func setMic(symbol: String?, label: String) {
-        // Only when it actually changed. Assigning `configuration` forces the button
-        // to rebuild and re-lay-out its contents, and `refresh()` runs on every
-        // appearance — so doing this unconditionally rebuilds the mic key in the
-        // middle of the keyboard's presentation transition, every single time, for a
-        // state that is usually identical to the last one.
-        if symbol != appliedMicSymbol {
-            appliedMicSymbol = symbol
-            var configuration = UIButton.Configuration.plain()
-            if let symbol {
-                configuration.image = UIImage(
-                    systemName: symbol,
-                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 30, weight: .medium)
-                )
-            }
-            configuration.baseForegroundColor = isDictating ? Palette.accent : Palette.textPrimary
-            micButton.configuration = configuration
-        }
-        if micLabel.text != label { micLabel.text = label }
+    func keyboardViewDidLongPressGlobe(_ view: KeyboardView) {
+        handleInputModeList(from: view, with: UIEvent())
     }
 }

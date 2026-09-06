@@ -167,7 +167,10 @@ The shape is forced by one constraint: **an iOS keyboard extension cannot record
 audio** — Apple's QA1872 states it and offers no workaround. So the keyboard signals
 the app (Darwin notification when the app is alive, a `whimprflow://` open when it is
 not), the app records and runs the pipeline, and the result crosses back through the
-App Group container for `insertText`.
+App Group container for `insertText`. "Alive" means holding the microphone in a
+standby session with an idle timeout, shown as a Live Activity in the Dynamic Island
+so the orange indicator comes with its explanation and a Release button — the same
+design Wispr Flow's keyboard uses, with the reasons in `ios/README.md`.
 
 Parity between the two shells is asserted, not assumed:
 `crates/whimpr-ffi/tests/parity.rs` sends the same inputs down both paths and compares

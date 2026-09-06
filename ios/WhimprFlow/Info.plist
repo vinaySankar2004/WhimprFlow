@@ -44,6 +44,12 @@
 		<string>audio</string>
 	</array>
 
+	<!-- The standby session is shown as a Live Activity, so the orange microphone
+	     indicator sits beside our glyph in the Dynamic Island with the reason one
+	     tap away, instead of standing alone. -->
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+
 	<key>NSMicrophoneUsageDescription</key>
 	<string>WhimprFlow records what you dictate so it can be transcribed. Audio is sent to the transcription service you configured and is never stored.</string>
 

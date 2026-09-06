@@ -18,69 +18,13 @@ import Foundation
 ///
 /// Both need Allow Full Access. Without it the keyboard's view of the container is
 /// empty rather than an error, which is why `Handoff.isReachable` exists.
-enum Handoff {
-    /// Must match the `com.apple.security.application-groups` entry in *both*
-    /// entitlement files. A mismatch is silent: the container simply reads empty.
-    static let appGroup = "group.com.whimpr.whimprflow"
-
+extension Handoff {
     /// The URL the keyboard opens to reach the app when the background session is
     /// not alive. See `Info.plist`'s `CFBundleURLTypes`.
     static let dictateURL = URL(string: "whimprflow://dictate")!
 
-    // MARK: - Signals
-
-    /// Cross-process wake-ups. Payload-free by design — the data is in the container.
-    enum Signal: String {
-        /// Keyboard → app: begin a dictation.
-        case start = "com.whimpr.whimprflow.dictate.start"
-        /// Keyboard → app: the user tapped the mic key again; stop and transcribe.
-        case stop = "com.whimpr.whimprflow.dictate.stop"
-        /// Keyboard → app: throw the recording away without transcribing it.
-        ///
-        /// Distinct from `stop` rather than a flag beside it, because the two differ
-        /// in what they cost: `stop` spends a recognition call and a cleanup call on
-        /// audio the user has already decided against.
-        case cancel = "com.whimpr.whimprflow.dictate.cancel"
-        /// App → keyboard: a new result is in the container.
-        case result = "com.whimpr.whimprflow.dictate.result"
-        /// App → keyboard: `state` changed (recording, transcribing, failed).
-        case state = "com.whimpr.whimprflow.dictate.state"
-        /// App → keyboard: sent on every foreground tick while the app holds a live
-        /// capture session, so the keyboard can tell whether tapping the mic key will
-        /// work in place or needs to open the app.
-        case alive = "com.whimpr.whimprflow.dictate.alive"
-    }
-
-    static func post(_ signal: Signal) {
-        CFNotificationCenterPostNotification(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            CFNotificationName(signal.rawValue as CFString),
-            nil, nil, true
-        )
-    }
-
-    /// Observe a signal. The callback arrives on the main thread.
-    ///
-    /// `observer` must be a stable pointer for the lifetime of the observation — pass
-    /// the object that owns it — because Darwin notifications carry no context and
-    /// this is the only way to unregister precisely.
-    static func observe(_ signal: Signal, observer: UnsafeRawPointer, callback: @escaping CFNotificationCallback) {
-        CFNotificationCenterAddObserver(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            observer,
-            callback,
-            signal.rawValue as CFString,
-            nil,
-            .deliverImmediately
-        )
-    }
-
-    static func stopObserving(observer: UnsafeRawPointer) {
-        CFNotificationCenterRemoveEveryObserver(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            observer
-        )
-    }
+    /// The URL the keyboard's menu opens to reach the app's settings.
+    static let settingsURL = URL(string: "whimprflow://settings")!
 
     // MARK: - Shared state
 
@@ -102,6 +46,8 @@ enum Handoff {
         static let resultDegraded = "result.degraded"
         static let state = "state"
         static let aliveAt = "alive.at"
+        static let inputName = "input.name"
+        static let captureStartedAt = "capture.startedAt"
     }
 
     // MARK: - Result
@@ -155,6 +101,26 @@ enum Handoff {
             defaults?.set(newValue.rawValue, forKey: Key.state)
             post(.state)
         }
+    }
+
+    // MARK: - The capture in progress
+
+    /// The microphone being recorded from, by the name iOS gives the route ("iPhone
+    /// Microphone", "AirPods Pro"). Written by the app when a dictation starts; the
+    /// keyboard cannot see another process's audio session.
+    static var inputName: String? {
+        get { defaults?.string(forKey: Key.inputName) }
+        set { defaults?.set(newValue, forKey: Key.inputName) }
+    }
+
+    /// When the current dictation began, so the keyboard can show elapsed time
+    /// without being told a tick at a time. Nil when nothing is being recorded.
+    static var captureStartedAt: Date? {
+        get {
+            guard let at = defaults?.double(forKey: Key.captureStartedAt), at > 0 else { return nil }
+            return Date(timeIntervalSince1970: at)
+        }
+        set { defaults?.set(newValue?.timeIntervalSince1970 ?? 0, forKey: Key.captureStartedAt) }
     }
 
     // MARK: - Liveness

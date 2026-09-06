@@ -35,6 +35,12 @@ final class Recorder {
     /// Whether the samples arriving are being kept.
     private(set) var isCapturing = false
 
+    /// Drop input until this moment. Set when the start pop plays: the speaker is a
+    /// hand's width from the microphone, and without this the first thing Whisper
+    /// hears is the pop. Read on the audio thread, written on the main one; a stale
+    /// read costs a few milliseconds of silence at most.
+    private var muteUntil: Date?
+
     /// Something is running that keeps the app alive.
     var isAlive: Bool { isEngineRunning || isCapturing }
 
@@ -97,7 +103,7 @@ final class Recorder {
             try session.setCategory(
                 .playAndRecord,
                 mode: .default,
-                options: [.mixWithOthers, .allowBluetooth, .defaultToSpeaker]
+                options: [.mixWithOthers, .allowBluetoothHFP, .defaultToSpeaker]
             )
             try session.setActive(true)
         } catch {
@@ -121,10 +127,12 @@ final class Recorder {
     ///
     /// Keeping alive by playing *silence* under a `.playback` session instead, and
     /// opening the mic only for the dictation, was tried on 2026-09-05 and did not
-    /// work: opening the mic from that state failed with OSStatus 560557684 (`!cat`,
-    /// incompatible category) even with the app in the foreground, and every mic-key
-    /// tap then bounced to the app. The evidence is recorded in ios/README; a second
-    /// attempt should start from a device log of which call fails, not from here.
+    /// work: opening the mic from that state failed with OSStatus 560557684 (`!int`,
+    /// cannotInterruptOthers — a non-mixable session activated while another app held
+    /// audio; it was misread as `!cat` at the time) even with the app in the
+    /// foreground, and every mic-key tap then bounced to the app. The evidence is
+    /// recorded in ios/README; a second attempt should keep one category throughout
+    /// and start from a device log of which call fails, not from here.
     func startEngine() throws {
         wantsEngine = true
         observeAudioLifecycle()
@@ -276,7 +284,13 @@ final class Recorder {
     func beginCapture() throws {
         try startEngine()
         lock.withLock { samples.removeAll(keepingCapacity: true) }
+        muteUntil = nil
         isCapturing = true
+    }
+
+    /// Ignore the microphone for `seconds` from now — see `muteUntil`.
+    func muteInput(for seconds: TimeInterval) {
+        muteUntil = Date().addingTimeInterval(seconds)
     }
 
     /// Stop keeping samples and return the recording, normalized and ready to send.
@@ -303,6 +317,10 @@ final class Recorder {
         // every dictation restarts the engine, and the gap that opens while it spins
         // back up swallows the first word.
         guard isCapturing else { return }
+        if let muteUntil {
+            if Date() < muteUntil { return }
+            self.muteUntil = nil
+        }
         guard let converter else { return }
         let ratio = target.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1024

@@ -30,7 +30,10 @@ string."* — which sounds like somebody else owns it, and means you already do.
 
 1. Go to <https://developer.apple.com/account/resources/identifiers/list>.
 2. Check the team selector (top right) says **VSTTF2AM22**.
-3. Look for `com.whimpr.whimprflow` and `com.whimpr.whimprflow.keyboard`.
+3. Look for `com.whimpr.whimprflow` and `com.whimpr.whimprflow.keyboard`. (A third,
+   `com.whimpr.whimprflow.widgets`, is the Live Activity's widget extension. Automatic
+   signing registers it on the first device build and it needs **no** capability —
+   not the App Group, nothing — so it never appears in the steps below.)
 
 **If both are listed, skip to step 3** — Xcode registering an App ID does *not*
 configure App Groups on it, so there is still work to do.
@@ -212,7 +215,7 @@ year. Setting a calendar reminder for day 80 is cheaper than being told it broke
 | Symptom | Cause |
 |---|---|
 | Mic key does nothing, no app switch | Allow Full Access is off. It is a *separate* toggle from adding the keyboard, and adding the keyboard does not imply it. |
-| Mic key always opens the app | The app was force-quit — open it once and it stays reachable. If it happens without a force-quit, check ⚙︎ ▸ "Keep the mic ready in the background" is on; standby survives calls and route changes on its own. |
+| Mic key opens the app | By design after the idle timeout (⚙︎ ▸ "Keep the mic ready for", 5 minutes by default) or a force-quit — the app re-arms on that visit; swipe back. If it happens on every tap, that setting is Off. Standby survives calls and route changes on its own. |
 | "Groq refused the request (403)" | A VPN. Groq's CDN refuses datacenter and VPN exit addresses; the key is fine. Turn the VPN off, or split-tunnel `api.groq.com`. |
 | Text never appears after dictating | The App Group is not attached to *both* App IDs (Part 1, step 3). The keyboard reads an empty container and nothing errors. |
 | "Groq rejected the API key" | Wrong or revoked key. Re-copy from the Groq console; keys are shown once. |

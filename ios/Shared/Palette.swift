@@ -60,6 +60,32 @@ enum Palette {
     /// The waveform bars.
     static let waveBar = dynamic(light: accent600, dark: UIColor(hex: 0xCFF3EA))
 
+    // MARK: - Keyboard
+
+    /// The keyboard's own backdrop. Not `background`: white keys on a white page
+    /// have no edges, and the stock keyboard's grey is what makes a key a key. The
+    /// dark value is the page colour, where the keys are the lighter surface.
+    static let keyboardBackdrop = dynamic(light: UIColor(hex: 0xD1D4D9), dark: slate950)
+
+    /// A modifier key — shift, delete, 123, return — darker than a letter key, as on
+    /// the stock keyboard, so the typing keys read as the foreground.
+    static let modifierKey = dynamic(light: UIColor(hex: 0xADB3BD), dark: slate800)
+
+    /// A key while the finger is on it.
+    static let keyPressed = dynamic(light: UIColor(hex: 0xE6E8EC), dark: slate600)
+
+    /// The top bar's pill and mic button: inverted against the backdrop. The one
+    /// high-contrast element on the keyboard, so the eye lands on it first.
+    static let pill = dynamic(light: slate900, dark: slate100)
+    static let pillText = dynamic(light: slate050, dark: slate900)
+
+    /// The quieter round control beside the pill while listening (discard).
+    static let barControl = dynamic(light: slate200, dark: slate700)
+
+    /// The return key when the field asks for an action — search, send, go. The
+    /// system's blue, because that is what the stock keyboard turns it.
+    static let actionKey = UIColor.systemBlue
+
     static let error = dynamic(light: UIColor(hex: 0xD8443C), dark: UIColor(hex: 0xFF6B6B))
     static let warn = dynamic(light: UIColor(hex: 0xB07300), dark: UIColor(hex: 0xF5B454))
     static let success = dynamic(light: accent600, dark: accent500)

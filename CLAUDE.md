@@ -323,9 +323,32 @@ These are not hypotheticals; each one bit during development.
   for the day. The cost — the orange mic dot — is stated in Settings, not hidden.
   Keep the session in `.default` mode: `.measurement` made every other app audibly
   quieter all day. And do not retry "play silence in standby, open the mic on
-  demand" from reasoning: it failed with `!cat` (560557684) even in the foreground
-  and bounced every mic tap to the app; ios/README records it. Get a device log of
-  the failing call first.
+  demand" from reasoning: it failed with 560557684 even in the foreground and bounced
+  every mic tap to the app; ios/README records it. That code is `!int`
+  (cannotInterruptOthers, a non-mixable activation), not the `!cat` it was first read
+  as — decode OSStatus codes before diagnosing them. Get a device log of the failing
+  call first.
+- **Face ID phones draw the globe key themselves, below every third-party keyboard.**
+  `needsInputModeSwitchKey` is false there, and a keyboard that draws its own globe
+  anyway shows two, a centimetre apart. Check it in `viewDidAppear` (it is not
+  meaningful before the view is in a window), and only then add the key.
+- **A Live Activity cannot be requested from the background — only updated or ended.**
+  `Activity.request` from a backgrounded app fails with "Target is not foreground", so
+  `StandbyActivityController.ensure` requests only while active and the app re-asks on
+  every `.active`. iOS also ends every activity after eight hours regardless; with the
+  default five-minute standby timeout that never shows, with "Always" the island glyph
+  simply returns on the next app visit. Do not treat either as a bug in our code.
+- **The widget target must not compile all of `Shared/`.** It lists three files by
+  name (`StandbyActivity.swift`, `HandoffSignals.swift`, `Palette.swift`); the rest is
+  the bridge, the Keychain and the core's types, and `Handoff.swift` references
+  `Finished`, which only exists behind the bridging header. That is why `Handoff` is
+  declared in `HandoffSignals.swift` and extended in `Handoff.swift`, not the other way
+  round. Its intents post the keyboard's Darwin signals rather than calling into the
+  app, for the same reason: the type has to compile where `DictationController` is not.
+- **The keyboard is deliberately taller than the stock 242 pt now** — a 50 pt bar over
+  the key grid, as Wispr Flow's is. The bottom-anchored, transparent-root layout is what
+  makes the mismatch harmless during a keyboard switch; do not pin the bar to the top,
+  and do not give the root a background, for the reasons in the next trap.
 - **Keyboard-switch glitches are diagnosed from a screen recording, not reasoning.**
   Four rounds of inference were wrong; `ffmpeg` frames from a device recording were
   right in minutes. What they showed: for one frame per switch iOS lays the

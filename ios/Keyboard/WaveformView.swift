@@ -1,17 +1,22 @@
 import UIKit
 
-/// The bars that react to the voice while dictating.
+/// The row that reacts to the voice while dictating.
+///
+/// At rest it is a line of dots; a syllable lifts the centre into a bar and travels
+/// outward, the shape Wispr Flow's listening screen has and the one people now read
+/// as "it can hear me". Twelve elements rather than nine because the row now has the
+/// whole keyboard's width to itself.
 ///
 /// Reads the level out of `LevelChannel` on a display link rather than being pushed
 /// values: the writer is an audio callback in another process, and a pull at screen
 /// refresh is both simpler and exactly as fresh as the display can show.
 final class WaveformView: UIView {
-    private let barCount = 9
+    private let barCount = 12
     private var bars: [UIView] = []
     private var displayLink: CADisplayLink?
 
     /// Per-bar smoothed heights, so neighbouring bars lag each other slightly and the
-    /// row reads as a travelling wave rather than nine copies of one number.
+    /// row reads as a travelling wave rather than twelve copies of one number.
     private var smoothed: [CGFloat]
 
     /// How hard the level is driven before clipping.
@@ -22,6 +27,15 @@ final class WaveformView: UIView {
     /// the range speech actually occupies onto the full height.
     private let floor: CGFloat = 0.18
     private let ceiling: CGFloat = 0.75
+
+    /// Element geometry. The dot is the bar at rest: width and minimum height match,
+    /// so silence is a row of circles and speech is the same shapes, taller.
+    private let barWidth: CGFloat = 6
+    private let spacing: CGFloat = 9
+
+    var barColor: UIColor = Palette.waveBar {
+        didSet { bars.forEach { $0.backgroundColor = barColor } }
+    }
 
     override init(frame: CGRect) {
         smoothed = Array(repeating: 0, count: barCount)
@@ -38,12 +52,19 @@ final class WaveformView: UIView {
     private func build() {
         for _ in 0..<barCount {
             let bar = UIView()
-            bar.backgroundColor = Palette.waveBar
-            bar.layer.cornerRadius = 2.5
+            bar.backgroundColor = barColor
+            bar.layer.cornerRadius = barWidth / 2
             bar.layer.cornerCurve = .continuous
             addSubview(bar)
             bars.append(bar)
         }
+    }
+
+    override var intrinsicContentSize: CGSize {
+        CGSize(
+            width: CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * spacing,
+            height: 44
+        )
     }
 
     override func layoutSubviews() {
@@ -52,20 +73,18 @@ final class WaveformView: UIView {
     }
 
     private func layoutBars() {
-        let width: CGFloat = 5
-        let spacing: CGFloat = 6
-        let total = CGFloat(barCount) * width + CGFloat(barCount - 1) * spacing
+        let total = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * spacing
         var x = (bounds.width - total) / 2
 
         for (index, bar) in bars.enumerated() {
-            let height = max(5, smoothed[index] * bounds.height)
+            let height = max(barWidth, smoothed[index] * bounds.height)
             bar.frame = CGRect(
                 x: x,
                 y: (bounds.height - height) / 2,
-                width: width,
+                width: barWidth,
                 height: height
             )
-            x += width + spacing
+            x += barWidth + spacing
         }
     }
 
@@ -74,9 +93,9 @@ final class WaveformView: UIView {
     func start() {
         guard displayLink == nil else { return }
         let link = CADisplayLink(target: self, selector: #selector(tick))
-        // 30 is plenty for nine bars and halves the wake-ups of a 60 Hz link inside a
-        // keyboard extension, which has a much tighter memory and CPU budget than an
-        // app does.
+        // 30 is plenty for a dozen bars and halves the wake-ups of a 60 Hz link inside
+        // a keyboard extension, which has a much tighter memory and CPU budget than
+        // an app does.
         link.preferredFramesPerSecond = 30
         link.add(to: .main, forMode: .common)
         displayLink = link
@@ -99,20 +118,23 @@ final class WaveformView: UIView {
         // Expand the band speech occupies to the full 0…1 the bars draw.
         let scaled = min(max((raw - floor) / (ceiling - floor), 0), 1)
 
-        // Shift the history along by one and seed the middle, so a syllable travels
-        // outward from the centre instead of every bar jumping together.
-        let centre = barCount / 2
-        for offset in stride(from: centre, to: 0, by: -1) {
-            smoothed[centre - offset] = smoothed[centre - offset + 1]
-            smoothed[centre + offset] = smoothed[centre + offset - 1]
+        // Shift the history outward from the two centre elements, so a syllable
+        // travels to both edges instead of every bar jumping together. With an even
+        // count the wave is seeded in the middle pair and the halves mirror.
+        let right = barCount / 2
+        let left = right - 1
+        for offset in stride(from: left, to: 0, by: -1) {
+            smoothed[left - offset] = smoothed[left - offset + 1]
+            smoothed[right + offset] = smoothed[right + offset - 1]
         }
         // Asymmetric smoothing: rise quickly so an onset is not missed, fall slowly so
         // the row does not flicker between syllables.
-        let target = scaled
-        let previous = smoothed[centre]
-        smoothed[centre] = target > previous
-            ? previous + (target - previous) * 0.6
-            : previous + (target - previous) * 0.25
+        let previous = smoothed[left]
+        let next = scaled > previous
+            ? previous + (scaled - previous) * 0.6
+            : previous + (scaled - previous) * 0.25
+        smoothed[left] = next
+        smoothed[right] = next
 
         layoutBars()
     }

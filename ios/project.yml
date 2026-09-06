@@ -47,7 +47,7 @@ targets:
         # CURRENT_PROJECT_VERSION for every TestFlight upload — App Store Connect
         # rejects a build whose (version, build) pair it has already seen.
         MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        CURRENT_PROJECT_VERSION: "2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         # The bridge is a plain C library, not a module, so Swift reaches it through
@@ -60,6 +60,8 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: Shared/WhimprFlow-Bridging-Header.h
     dependencies:
       - target: WhimprKeyboard
+        embed: true
+      - target: WhimprWidgets
         embed: true
       - framework: Frameworks/WhimprCore.xcframework
         embed: false # a static library: linked in, nothing to embed
@@ -87,7 +89,7 @@ targets:
         INFOPLIST_FILE: Keyboard/Info.plist
         CODE_SIGN_ENTITLEMENTS: Keyboard/WhimprKeyboard.entitlements
         MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        CURRENT_PROJECT_VERSION: "2"
         # Same two settings as the app target, and for the same reason — the
         # extension links the core too. Quoted because this repository's path
         # contains spaces and this setting is a space-separated list.
@@ -96,3 +98,24 @@ targets:
     dependencies:
       - framework: Frameworks/WhimprCore.xcframework
         embed: false
+
+  # ------------------------------------------------------------- the widget extension
+  # Hosts the Live Activity that stands for the standby session in the Dynamic Island.
+  # It compiles three files from Shared/ by name, not the directory: the rest of
+  # Shared/ is the bridge, the Keychain and the core's types, none of which belong in
+  # a widget and one of which (the bridging header) would not build here.
+  WhimprWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Widgets
+      - path: Shared/StandbyActivity.swift
+      - path: Shared/HandoffSignals.swift
+      - path: Shared/Palette.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.whimpr.whimprflow.widgets
+        INFOPLIST_FILE: Widgets/Info.plist
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "2"
+        SKIP_INSTALL: YES

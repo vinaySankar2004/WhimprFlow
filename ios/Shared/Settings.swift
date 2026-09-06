@@ -15,6 +15,8 @@ final class Settings {
         static let level = "settings.cleanupLevel"
         static let dictionary = "settings.dictionary"
         static let backgroundSession = "settings.backgroundSession"
+        static let standbyTimeout = "settings.standbyTimeout"
+        static let soundOnStart = "settings.soundOnStart"
         static let appearance = "settings.appearance"
     }
 
@@ -42,6 +44,26 @@ final class Settings {
         didSet { defaults.set(level.rawValue, forKey: Key.level) }
     }
 
+    /// The level as stored, readable without building a `Settings` — the keyboard's
+    /// pill shows and changes it, from a process that cannot ask the app.
+    static var storedLevel: CleanupLevel {
+        get {
+            let raw = (Handoff.defaults ?? .standard).string(forKey: Key.level) ?? ""
+            return CleanupLevel(rawValue: raw) ?? .light
+        }
+        set {
+            (Handoff.defaults ?? .standard).set(newValue.rawValue, forKey: Key.level)
+        }
+    }
+
+    /// Pick up a change the keyboard made. `level` is cached in memory for the
+    /// observation graph, so without this the app cleans the next dictation at the
+    /// level the pill *used* to show.
+    func reloadLevel() {
+        let stored = Self.storedLevel
+        if stored != level { level = stored }
+    }
+
     // MARK: - Dictionary
 
     /// The authoritative spellings and their known mishears.
@@ -55,23 +77,47 @@ final class Settings {
         }
     }
 
-    // MARK: - Background session
+    // MARK: - Standby
 
-    /// Whether the app holds a live capture session so the mic key works without a
-    /// visible app switch.
+    /// How long the app keeps the microphone ready after the last dictation.
     ///
-    /// A setting rather than always-on because it is the one feature here that iOS
-    /// may take away without saying so: the app can be suspended or killed, and the
-    /// honest fallback is opening it. Off means always bounce, which is slower and
-    /// completely reliable.
-    var keepSessionAlive: Bool {
-        didSet { defaults.set(keepSessionAlive, forKey: Key.backgroundSession) }
+    /// Ready means holding a live capture session, which is what lets the mic key
+    /// dictate without a visible app switch — and what shows the orange microphone
+    /// indicator. The timeout bounds that: after this long idle the mic is released,
+    /// the indicator goes off, and the next mic-key tap opens the app once to re-arm.
+    /// The same shape, and the same default, as Wispr Flow's session setting.
+    var standbyTimeout: StandbyTimeout {
+        didSet { defaults.set(standbyTimeout.rawValue, forKey: Key.standbyTimeout) }
+    }
+
+    /// Whether standby runs at all. Kept as a name because everything that gates
+    /// standby asks this one question.
+    var keepSessionAlive: Bool { standbyTimeout != .off }
+
+    // MARK: - Sound
+
+    /// The record-start pop. Mirrors the Mac's `sound_on_start`, default and all: the
+    /// pop is how you know the mic opened without looking, which on a phone whose
+    /// keyboard is the only thing on screen is most of the time.
+    var soundOnStart: Bool {
+        didSet { defaults.set(soundOnStart, forKey: Key.soundOnStart) }
     }
 
     private init() {
         level = CleanupLevel(rawValue: defaults.string(forKey: Key.level) ?? "") ?? .light
-        keepSessionAlive = defaults.object(forKey: Key.backgroundSession) as? Bool ?? true
+        if let raw = defaults.string(forKey: Key.standbyTimeout),
+           let stored = StandbyTimeout(rawValue: raw) {
+            standbyTimeout = stored
+        } else if let legacy = defaults.object(forKey: Key.backgroundSession) as? Bool {
+            // The switch this replaced: off stays off, on becomes the default timeout
+            // rather than "always", which is the behaviour it had and the one people
+            // asked to be rid of.
+            standbyTimeout = legacy ? .fiveMinutes : .off
+        } else {
+            standbyTimeout = .fiveMinutes
+        }
         appearance = Appearance(rawValue: defaults.string(forKey: Key.appearance) ?? "") ?? .system
+        soundOnStart = defaults.object(forKey: Key.soundOnStart) as? Bool ?? true
         if let data = defaults.data(forKey: Key.dictionary),
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let entries = object["entries"] as? [[String: Any]] {
@@ -92,6 +138,63 @@ final class Settings {
         static let chatCompletions = "\(base)/chat/completions"
         static let asrModel = "whisper-large-v3-turbo"
         static let cleanupModel = "openai/gpt-oss-120b"
+    }
+}
+
+/// How long the mic stays ready after a dictation.
+///
+/// Raw values are stable strings, not seconds, so the stored preference survives a
+/// retuned duration. `always` means until the app is quit or the switch is turned
+/// off; the Live Activity that shows it lasts at most eight hours per app visit,
+/// which the Settings footer says.
+enum StandbyTimeout: String, CaseIterable, Identifiable {
+    case off
+    case fiveMinutes = "5m"
+    case fifteenMinutes = "15m"
+    case oneHour = "60m"
+    case always
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .off: return "Off"
+        case .fiveMinutes: return "5 minutes"
+        case .fifteenMinutes: return "15 minutes"
+        case .oneHour: return "1 hour"
+        case .always: return "Always"
+        }
+    }
+
+    /// Seconds of idleness before the mic is released; nil for no limit.
+    var seconds: TimeInterval? {
+        switch self {
+        case .off, .always: return nil
+        case .fiveMinutes: return 5 * 60
+        case .fifteenMinutes: return 15 * 60
+        case .oneHour: return 60 * 60
+        }
+    }
+}
+
+extension CleanupLevel {
+    /// What the keyboard's pill and the app's picker call each level. One place, so
+    /// the two surfaces agree.
+    var label: String {
+        switch self {
+        case .none: return "Off"
+        case .messaging: return "Messaging"
+        case .light: return "Light"
+        }
+    }
+
+    /// The order the pill cycles in: the two real registers first, off last.
+    var next: CleanupLevel {
+        switch self {
+        case .light: return .messaging
+        case .messaging: return .none
+        case .none: return .light
+        }
     }
 }
 

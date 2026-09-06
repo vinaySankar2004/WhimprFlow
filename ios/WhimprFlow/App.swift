@@ -13,13 +13,13 @@ struct WhimprFlowApp: App {
             RootView()
                 .environment(dictation)
                 .preferredColorScheme(settings.appearance.colorScheme)
-                // The keyboard opens `whimprflow://dictate` when it cannot signal an
-                // already-running app. Arriving here means "start recording now".
-                .onOpenURL { url in
-                    guard url.scheme == "whimprflow", url.host == "dictate" else { return }
-                    dictation.startRecording()
-                }
                 .task {
+                    // A fresh process has no dictation in flight, whatever the last
+                    // one left in the container — a `failed` or `recording` from a
+                    // process that was killed would otherwise greet the keyboard with
+                    // a stale screen.
+                    Handoff.state = .idle
+                    Handoff.captureStartedAt = nil
                     dictation.observeKeyboard()
                     _ = await Recorder.requestPermission()
                     dictation.refreshConfiguration()
@@ -32,7 +32,12 @@ struct WhimprFlowApp: App {
             // backgrounding: the running capture engine is the only thing keeping the
             // app alive back there, and stopping it is what made every mic-key tap
             // fall back to opening the app. `.inactive` is transient and left alone.
-            case .active: dictation.startStandby()
+            case .active:
+                // The pill may have changed the level while the app was away, and a
+                // foreground visit is when the island's activity can be (re)requested.
+                settings.reloadLevel()
+                dictation.startStandby()
+                dictation.resumeActivityIfNeeded()
             case .background, .inactive: break
             @unknown default: break
             }
@@ -74,6 +79,17 @@ struct RootView: View {
                     SettingsView()
                 }
                 .onAppear(perform: dictation.refreshConfiguration)
+                // The keyboard's two ways in. `dictate` arrives when it could not
+                // signal an already-running app and means "start recording now";
+                // `settings` is its menu's Open WhimprFlow.
+                .onOpenURL { url in
+                    guard url.scheme == "whimprflow" else { return }
+                    switch url.host {
+                    case "dictate": dictation.startRecording()
+                    case "settings": showingSettings = true
+                    default: break
+                    }
+                }
         }
         .tint(Theme.accent)
     }

@@ -84,10 +84,60 @@ struct DictateView: View {
             case let .failed(reason):
                 Notice(text: reason, tone: .error)
                     .transition(.opacity)
+            case .idle where dictation.isStandbyUp:
+                StandbyCard(endsAt: dictation.standbyEndsAt) {
+                    dictation.stopStandby()
+                }
+                .transition(.opacity)
             default:
                 EmptyView()
             }
         }
+    }
+}
+
+/// What the mic is doing while nothing is being dictated, and the way to stop it.
+///
+/// The same words as the Dynamic Island's expanded view, so the app and the island
+/// never disagree about why the orange indicator is on.
+struct StandbyCard: View {
+    let endsAt: Date?
+    let release: () -> Void
+
+    var body: some View {
+        Card {
+            HStack(spacing: 14) {
+                Image(systemName: "mic.fill")
+                    .foregroundStyle(Theme.accent)
+                    .font(.title3)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Mic ready")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    if let endsAt {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text("Releases in \(remaining(from: context.date, to: endsAt)) if you don't dictate")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                    } else {
+                        Text("Until you release it")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                }
+                Spacer(minLength: 0)
+                Button("Release", action: release)
+                    .buttonStyle(.bordered)
+                    .tint(Theme.textSecondary)
+                    .font(.caption.weight(.semibold))
+            }
+        }
+    }
+
+    private func remaining(from now: Date, to end: Date) -> String {
+        let seconds = max(0, Int(end.timeIntervalSince(now)))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 }
 
@@ -239,11 +289,28 @@ struct StatusLine: View {
     var isBlocked = false
 
     var body: some View {
-        Text(isBlocked ? "Not set up yet" : text)
-            .font(.subheadline)
-            .foregroundStyle(Theme.textSecondary)
-            .multilineTextAlignment(.center)
-            .frame(minHeight: 22)
+        Group {
+            if phase == .recording, !isBlocked {
+                // Which microphone and for how long — the same two facts the
+                // keyboard's listening screen and the island show.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(listeningText(at: context.date))
+                }
+            } else {
+                Text(isBlocked ? "Not set up yet" : text)
+            }
+        }
+        .font(.subheadline)
+        .foregroundStyle(Theme.textSecondary)
+        .multilineTextAlignment(.center)
+        .frame(minHeight: 22)
+    }
+
+    private func listeningText(at now: Date) -> String {
+        let input = Handoff.inputName ?? "Microphone"
+        guard let startedAt = Handoff.captureStartedAt else { return "Listening · \(input)" }
+        let seconds = max(0, Int(now.timeIntervalSince(startedAt)))
+        return String(format: "Listening · %@ · %d:%02d", input, seconds / 60, seconds % 60)
     }
 
     private var text: String {

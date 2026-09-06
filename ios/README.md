@@ -50,20 +50,38 @@ carry a payload, so each one means only "look in the container".
 `UIBackgroundModes: audio` keeps an app resident only while audio is *active*;
 declaring the mode and idling gets the app suspended seconds after it backgrounds. So
 the app runs its capture engine in **standby** — discarding everything it hears until
-the mic key says otherwise — and that is what keeps it reachable. The orange mic
-indicator is on for as long as it is; Settings says so before the switch is turned on.
-The session runs in `.default` mode, not `.measurement`: measurement strips output
-processing too and made every other app audibly quieter all day.
+the mic key says otherwise — and that is what keeps it reachable. The session runs in
+`.default` mode, not `.measurement`: measurement strips output processing too and made
+every other app audibly quieter all day.
 
-**Silent standby was tried and failed (2026-09-05).** Keeping alive by playing zeros
-under a `.playback` session, and switching to `.playAndRecord` only when the keyboard
-asked, so the indicator would show only while dictating. Opening the mic from that
-state failed with OSStatus 560557684 (`!cat`, incompatible category) — in the
-foreground app as well as from the keyboard — and every mic-key tap then bounced to
-the app. Not diagnosed: whether it was the category switch on an active session, the
-second `AVAudioEngine` in the process, or iOS refusing a record category from the
-background (the documented `!rec` case). Reverted the same evening. A second attempt
-should begin by logging which call throws, on the device, before changing anything.
+Standby is bounded and visible. It is a **session with an idle timeout** — five
+minutes by default, 15, 60, Always or Off in Settings (`Settings.standbyTimeout`,
+`DictationController.armIdleTimer`) — which is exactly Wispr Flow's design once you
+look: their mic is held the same way, for the same default. For as long as it lasts a
+**Live Activity** puts the app's glyph in the Dynamic Island beside the orange
+indicator, and its expanded view says whether the mic is ready, listening or
+transcribing, which microphone, for how long, and offers **Finish / Discard / Release
+mic**. Those are `LiveActivityIntent`s that post the keyboard's own Darwin signals, so
+the app has one handler per action whichever surface asked; the keyboard's ≡ menu has
+the same Release. When the timeout fires the mic is released, the indicator goes off,
+the activity ends, and the next mic-key tap opens the app once to re-arm — the round
+trip Wispr's "Flow is on" screen is. Every foreground visit re-arms.
+
+Two iOS rules shape the activity code: an activity can be *requested* only from the
+foreground (updated and ended from anywhere), and the system ends every activity after
+eight hours. `StandbyActivityController` requests on `.active` and re-asks on each
+foreground; with the default timeout the eight-hour limit never shows.
+
+**Silent standby was tried and failed (2026-09-05).** Playing zeros under a
+`.playback` session and switching to `.playAndRecord` only for the dictation, so the
+indicator would show only while dictating. Opening the mic then failed with OSStatus
+560557684, in the foreground too, and every mic tap bounced to the app. The code was
+first read as `!cat`; decoded it is `!int`, `cannotInterruptOthers` — a *non-mixable*
+session activated while something else held audio. So the category switch failed, not
+recording from the background (that is `!rec`, 561145187), and whether a mixable
+`.playAndRecord` session activated in the foreground can open its input later from
+the background is still untested. A second attempt should keep one category for the
+whole session and log which call throws, decoded, on the device.
 
 Standby survives a phone call, Siri, AirPods connecting and a media-services reset:
 the recorder tracks whether it *should* be up separately from whether it is, and
@@ -148,15 +166,59 @@ ios/
   DEPLOY.md              registering App IDs, the App Group, TestFlight
   Shared/                compiled into BOTH targets
     WhimprCore.swift     the bridge; a transport with no judgement of its own
-    Handoff.swift        App Group + Darwin notifications (start/stop/cancel/result/state/alive)
+    HandoffSignals.swift the `Handoff` declaration and the Darwin signals — all the widget needs
+    Handoff.swift        the rest: App Group state (result/state/alive/input name/started-at)
+    StandbyActivity.swift the Live Activity's attributes and its three intents
     LevelChannel.swift   the live mic level, one Float in a memory-mapped file
     Settings.swift       settings, appearance, and the Keychain (every key, one per line)
     Groq.swift           Whisper + chat-completions, rotating keys on a 429 via the core's ring
     Palette.swift        the colours, both appearances, as dynamic UIColors
     Theme.swift          SwiftUI wrapper over Palette
-  WhimprFlow/            the app: Recorder (standby + capture), DictationController, views
-  Keyboard/              the extension: KeyboardViewController, WaveformView
+  WhimprFlow/            the app: Recorder (standby + capture), DictationController,
+                         StandbyActivityController, Chime (the start pop), views
+  Keyboard/              the extension — see "The keyboard" below
+  Widgets/               the widget extension: the Live Activity's UI, nothing else
   Frameworks/            generated xcframework (gitignored)
+```
+
+## The keyboard
+
+A top bar — ≡ menu, level pill, mic — over a full typing keyboard, and while a
+dictation is happening the key area becomes the listening screen. The shape is Wispr
+Flow's, adopted on purpose after looking at it side by side: it is what people who
+dictate on a phone already know.
+
+| File | Owns |
+|---|---|
+| `KeyboardViewController` | connecting the pieces to the host field and the app; the four screens (typing, listening, transcribing, failed) |
+| `TopBar` | the bar, in typing and listening forms; the ≡ menu (Open WhimprFlow · Cleanup · Release the mic) |
+| `KeyboardLayout` | the three planes as data — letters, numbers, symbols — in the stock arrangement |
+| `KeyboardView` | the key grid: geometry, touch handling across keys, popups, delete repeat |
+| `TypingEngine` | what typing does: sentence capitals honouring `autocapitalizationType`, double-space full stop, caps lock, the return key's word, smart insert of a dictation |
+| `ListeningView` | waveform, "Listening", which microphone and for how long; transcribing; failure with Try again |
+| `WaveformView` | twelve dots that rise into bars, driven from `LevelChannel` |
+
+Things about it that are not obvious from the code:
+
+- **No autocorrect and no predictions.** A third-party keyboard gets neither; Wispr's
+  has neither. What it does have is the rest of the muscle memory, in `TypingEngine`.
+- **The globe is drawn only when `needsInputModeSwitchKey` is true.** On Face ID
+  phones iOS draws it in the strip below every third-party keyboard.
+- **Touches are handled by the grid, not by buttons.** Sliding onto the right key
+  before lifting, two thumbs at once, delete repeating while held — all of it is
+  touch handling *across* keys.
+- **The pill writes the level into the shared container and posts `.settings`;** the
+  app's `Settings` caches the level and must re-read it, or the next dictation is
+  cleaned at the level the pill used to show.
+- **A dictation gets a leading space when the cursor sits after a word.** The text
+  itself is untouched — the parity test still holds byte for byte — only where it
+  lands is decided here.
+- **The start pop is the Mac's, re-made.** `Chime` synthesises it (iOS has no named
+  system sound to borrow, and Apple's files are not ours to bundle) and the recorder
+  ignores the microphone for its duration so Whisper is not handed the pop.
+- **It is taller than the stock keyboard by the height of the bar.** The
+  bottom-anchored layout described in `KeyboardViewController` is what makes that
+  safe during a keyboard switch.
 ```
 
 ## Building
@@ -205,6 +267,22 @@ To build the core alone:
 
   ```bash
   env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$HOME" ./scripts/build-ios-core.sh
+  ```
+- **The simulator shows no software keyboard while "Connect Hardware Keyboard" is
+  on**, which it is by default on a Mac — a focused field and nothing below it. Turn
+  it off before testing the keyboard, and reboot the simulator for it to take:
+
+  ```bash
+  defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
+  ```
+- **The keyboard can be enabled on a simulator without walking Settings.** The
+  enabled list is a global default inside the device; append the extension's bundle
+  id and it appears in the keyboard list at once. Full Access still has to be turned
+  on by hand in Settings → General → Keyboard → Keyboards → WhimprFlow.
+
+  ```bash
+  xcrun simctl spawn <udid> defaults write -g AppleKeyboards -array \
+    "en_US@sw=QWERTY;hw=Automatic" "emoji@sw=Emoji" "com.whimpr.whimprflow.keyboard"
   ```
 - **Do not pass `CODE_SIGNING_ALLOWED=NO` when testing on the simulator.** It builds
   and runs, but the app then carries no `application-identifier`, so every Keychain
@@ -269,7 +347,8 @@ agreement.
 
 ## Status
 
-**Verified on an iPhone 15, in daily use** (2026-09-05):
+**Verified on an iPhone 15, in daily use** (2026-09-05, the build before the keyboard
+redesign):
 
 - dictation from the keyboard in place, with no app switch — standby, the Darwin
   handoff, `insertText`;
@@ -279,17 +358,41 @@ agreement.
 - the `whimprflow://` fallback after a force-quit;
 - the Mac and iOS shells pasting identical text: `cargo test -p whimpr-ffi`.
 
+**Verified on the iPhone 17 Pro simulator** (2026-09-05, the keyboard redesign — the
+simulator is honest about layout, ActivityKit and the bridge, and about nothing that
+touches real audio or suspension):
+
+- the three planes type into a Safari field; shift stays off in a field whose
+  `autocapitalizationType` is none; the pill and the ≡ menu open; the failure notice
+  has a way back to the keys;
+- the mic key starts a dictation over the Darwin handoff and the key area becomes the
+  listening screen with the elapsed counter; ✕ discards and the keys return;
+- the Live Activity appears in the Dynamic Island when standby starts, its expanded
+  view shows the release countdown, and its **Release mic** button ends standby from
+  the widget process (the intent → Darwin → app path, end to end);
+- the app's standby card counts down and the setting migrates from the old switch;
+- `cargo test -p whimpr-ffi` green — the pipeline is untouched.
+
+**Not yet verified, and needs the phone:** the orange indicator beside the island
+glyph while idle; the indicator going off when the timeout fires and the next mic tap
+re-arming through the app; the start pop through the speaker and through AirPods, and
+that the muted lead-in keeps it out of the transcript; a dictation's text landing with
+the smart leading space; key click and haptics under Full Access; the keyboard-switch
+frames with the new, taller keyboard (screen recording, `ffmpeg`, as before); standby
+surviving a call with the activity intact; the eight-hour activity limit under
+"Always". Also unverified anywhere: the double-space full stop and caps lock by double
+tap were exercised only by reading `TypingEngine`, not on a device.
+
 **Partly exercised on the device:** key rotation (2026-09-05). Two keys stored, and
 dictation through the ring works on the phone (the first build shipped the previous
 core and reported "no API key is set" — see the Xcode relink trap in the root
 `CLAUDE.md`). That a 429 on one key actually moves a dictation to the next was
 verified only by the core's tests and the bridge round-trip in `crates/whimpr-ffi`,
-not by provoking a real limit on the device. Same standing on the Mac, where the log
+not by a live rate limit; the Mac logs each key used, masked, and the iOS Groq client
 names the key each call used.
 
 **Volume in standby** (2026-09-05): confirmed by ear that other apps play at full
-volume with WhimprFlow holding the mic, after the move to `.default` mode. The
-indicator stays on in standby; the silent-standby attempt is recorded above.
+volume with WhimprFlow holding the mic, after the move to `.default` mode.
 
 **Not yet exercised:** TestFlight. Nothing has been archived or uploaded; Part 2 of
 [DEPLOY.md](DEPLOY.md) is written but unwalked, and the globally unique App Store

@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Observation
 import UIKit
@@ -31,6 +32,16 @@ final class DictationController {
     let recorder = Recorder()
     private var settings: Settings { .shared }
     private var heartbeat: Task<Void, Never>?
+    private let activity = StandbyActivityController()
+
+    /// The idle clock. Standby releases the mic when this fires; every dictation and
+    /// every foreground visit winds it back to the full timeout.
+    private var idleTimer: Task<Void, Never>?
+    /// When standby will release the mic if nothing happens. Nil when there is no
+    /// limit or standby is not up. The app's screen shows it.
+    private(set) var standbyEndsAt: Date?
+    /// Whether standby is currently holding the mic ready.
+    private(set) var isStandbyUp = false
 
     var level: Float { recorder.level }
     var isRecording: Bool { phase == .recording }
@@ -112,22 +123,96 @@ final class DictationController {
             stopStandby()
             return
         }
-        guard heartbeat == nil else { return }
-        Handoff.markAlive()
-        heartbeat = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(Handoff.livenessWindow / 3))
-                // Standby steps aside while a dictation holds the mic; both count.
-                guard let self, self.recorder.isAlive else { return }
-                Handoff.markAlive()
+        isStandbyUp = true
+        armIdleTimer()
+        if heartbeat == nil {
+            Handoff.markAlive()
+            heartbeat = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(Handoff.livenessWindow / 3))
+                    // Standby steps aside while a dictation holds the mic; both count.
+                    guard let self, self.recorder.isAlive else { return }
+                    Handoff.markAlive()
+                }
             }
         }
+        if phase != .recording, phase != .transcribing {
+            activity.ensure(activityState(.ready))
+        }
+    }
+
+    /// Wind the idle clock back to the full timeout, or clear it when there is none.
+    ///
+    /// Called from every event that means the user is still here: standby starting,
+    /// a dictation ending however it ended, the app coming to the foreground. Not
+    /// from a dictation *starting* — the clock stops for the duration, since a long
+    /// dictation is the opposite of idle.
+    private func armIdleTimer() {
+        idleTimer?.cancel()
+        idleTimer = nil
+        guard isStandbyUp, let seconds = settings.standbyTimeout.seconds else {
+            standbyEndsAt = nil
+            return
+        }
+        let endsAt = Date().addingTimeInterval(seconds)
+        standbyEndsAt = endsAt
+        idleTimer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled, let self else { return }
+            // Never mid-dictation: the clock was stopped, but a stop that raced the
+            // sleep would otherwise drop the recording.
+            guard self.phase != .recording, self.phase != .transcribing else { return }
+            self.stopStandby()
+        }
+    }
+
+    private func pauseIdleTimer() {
+        idleTimer?.cancel()
+        idleTimer = nil
+        standbyEndsAt = nil
+    }
+
+    /// The microphone's name for people. iOS names the built-in one by its port type
+    /// ("MicrophoneBuiltIn" on the simulator, "iPhone Microphone" on a phone), and an
+    /// accessory by what its maker called it — which is the useful case, so that is
+    /// passed through and only the built-in one is spelled out.
+    private static func describe(_ port: AVAudioSessionPortDescription?) -> String? {
+        guard let port else { return nil }
+        switch port.portType {
+        case .builtInMic:
+            return UIDevice.current.userInterfaceIdiom == .pad ? "iPad Microphone" : "iPhone Microphone"
+        default:
+            return port.portName
+        }
+    }
+
+    /// What the Live Activity should say for a phase, from the state this type
+    /// already holds.
+    private func activityState(
+        _ phase: StandbyActivityAttributes.ContentState.Phase
+    ) -> StandbyActivityAttributes.ContentState {
+        StandbyActivityAttributes.ContentState(
+            phase: phase,
+            inputName: Handoff.inputName,
+            startedAt: phase == .listening ? Handoff.captureStartedAt : nil,
+            releaseAt: phase == .ready ? standbyEndsAt : nil
+        )
+    }
+
+    /// The Live Activity cannot be requested from the background. The app calls this
+    /// on every foreground so a session that started while it could not be shown —
+    /// or that iOS ended at its eight-hour limit — gets its glyph back.
+    func resumeActivityIfNeeded() {
+        activity.resumeIfNeeded()
     }
 
     /// Leave standby: release the microphone and stop claiming to be reachable.
     func stopStandby() {
         heartbeat?.cancel()
         heartbeat = nil
+        pauseIdleTimer()
+        isStandbyUp = false
+        activity.end()
         Handoff.clearAlive()
         // Never while a dictation is in flight — that would drop the recording.
         if !recorder.isCapturing {
@@ -139,6 +224,11 @@ final class DictationController {
     func applyStandbyPreference() {
         if settings.keepSessionAlive {
             startStandby()
+            // A changed timeout takes effect now, not after the next dictation.
+            armIdleTimer()
+            if isStandbyUp, phase != .recording, phase != .transcribing {
+                activity.ensure(activityState(.ready))
+            }
         } else {
             stopStandby()
         }
@@ -169,6 +259,22 @@ final class DictationController {
                 .fromOpaque(observer).takeUnretainedValue()
             Task { @MainActor in controller.cancelRecording() }
         }
+        // The keyboard's pill changed the level in the container. `Settings` caches
+        // it, so re-read or the next dictation is cleaned at the old level.
+        Handoff.observe(.settings, observer: observer) { _, observer, _, _, _ in
+            guard let observer else { return }
+            let controller = Unmanaged<DictationController>
+                .fromOpaque(observer).takeUnretainedValue()
+            Task { @MainActor in controller.settings.reloadLevel() }
+        }
+        // "Release the mic", from the keyboard's menu or the island. The next
+        // foreground visit re-arms standby; that is the designed round trip.
+        Handoff.observe(.release, observer: observer) { _, observer, _, _, _ in
+            guard let observer else { return }
+            let controller = Unmanaged<DictationController>
+                .fromOpaque(observer).takeUnretainedValue()
+            Task { @MainActor in controller.stopStandby() }
+        }
     }
 
     // MARK: - The loop
@@ -188,8 +294,19 @@ final class DictationController {
         guard phase != .recording, phase != .transcribing else { return }
         do {
             try recorder.beginCapture()
+            if settings.soundOnStart {
+                // The same pop the Mac plays, and the mic looks away while it sounds.
+                Chime.shared.playStart()
+                recorder.muteInput(for: Chime.duration)
+            }
+            pauseIdleTimer()
+            // The keyboard and the island show which mic and for how long; neither
+            // can see this process's audio session, so it is written down here.
+            Handoff.inputName = Self.describe(AVAudioSession.sharedInstance().currentRoute.inputs.first)
+            Handoff.captureStartedAt = Date()
             phase = .recording
             Handoff.state = .recording
+            if isStandbyUp { activity.ensure(activityState(.listening)) }
         } catch {
             fail(error.localizedDescription)
         }
@@ -199,7 +316,16 @@ final class DictationController {
         guard phase == .recording else { return }
         _ = recorder.endCapture()
         phase = .idle
+        settle()
+    }
+
+    /// Back to ready after a dictation ended, however it ended: the idle clock is
+    /// wound back, the island says "ready", the keyboard sees idle.
+    private func settle() {
+        Handoff.captureStartedAt = nil
         Handoff.state = .idle
+        armIdleTimer()
+        if isStandbyUp { activity.ensure(activityState(.ready)) }
     }
 
     func finishRecording() async {
@@ -207,12 +333,14 @@ final class DictationController {
         let samples = recorder.endCapture()
         phase = .transcribing
         Handoff.state = .transcribing
+        Handoff.captureStartedAt = nil
+        if isStandbyUp { activity.ensure(activityState(.transcribing)) }
 
         // A tap rather than a dictation. Nothing to send, and an empty request would
         // come back as a hallucinated sentence rather than an empty string.
         guard samples.count > Int(Recorder.sampleRate) / 4 else {
             phase = .idle
-            Handoff.state = .idle
+            settle()
             return
         }
 
@@ -228,7 +356,7 @@ final class DictationController {
             let transcript = try await recognize(samples: samples, client: client, dictionary: dictionary)
             guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 phase = .idle
-                Handoff.state = .idle
+                settle()
                 return
             }
             let finished = try await clean(
@@ -312,12 +440,15 @@ final class DictationController {
         // not installed or Full Access is off.
         UIPasteboard.general.string = finished.text
         phase = .done(finished.text)
-        Handoff.state = .idle
+        settle()
     }
 
     private func fail(_ message: String) {
         phase = .failed(message)
+        Handoff.captureStartedAt = nil
         Handoff.state = .failed
+        armIdleTimer()
+        if isStandbyUp { activity.ensure(activityState(.ready)) }
     }
 
     func clearTerminalPhase() {

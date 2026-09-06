@@ -160,17 +160,24 @@ struct SettingsView: View {
 
     private var behaviourSection: some View {
         Section {
-            Toggle("Keep the mic ready in the background", isOn: $settings.keepSessionAlive)
+            Picker("Keep the mic ready for", selection: $settings.standbyTimeout) {
+                ForEach(StandbyTimeout.allCases) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+            Toggle("Play a sound when recording starts", isOn: $settings.soundOnStart)
         } header: {
             Text("Behaviour")
         } footer: {
-            // The orange dot is the visible consequence of this switch, and someone
+            // The orange dot is the visible consequence of this setting, and someone
             // who finds it without being told will reasonably assume they are being
-            // listened to. Say it here, before they turn it on.
+            // listened to. Say it here, before they choose.
             Text("""
-            On, the mic key dictates without switching to this app. Keeping it ready means holding the microphone open, so iOS shows the orange microphone dot whenever WhimprFlow is in the background, and it uses more battery. Nothing is recorded or sent until you tap the mic key — audio is discarded until then.
+            While the mic is ready, the keyboard's mic key dictates in place without switching to this app. Ready means holding the microphone open: iOS shows the orange microphone dot, and WhimprFlow shows itself in the Dynamic Island beside it, with a button to release the mic. Nothing is recorded or sent until you tap the mic key.
 
-            Off, the mic key opens this app first. Slower, no orange dot, no background battery use.
+            After this long with no dictation the mic is released and the dot goes off. The next mic-key tap opens this app once to get it ready again; swipe back to where you were.
+
+            Off: the mic key always opens this app first. Always: ready until you release it here or from the island; the island shows it for at most eight hours per visit to this app.
             """)
         }
     }
