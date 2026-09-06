@@ -232,6 +232,13 @@ A device Xcode has not seen needs two things, both learned on the iPad:
   `xcrun xctrace list devices` gives the udid for xcodebuild; `xcrun devicectl list
   devices` gives the CoreDevice id for devicectl — they are different identifiers.
 
+Once a device has been paired by cable it stays reachable over Wi-Fi, so later
+installs need no cable: the same `devicectl` commands work with the device unlocked
+and on the same network (both the iPhone and the iPad took a build that way on
+2026-09-05). One build serves both — the Release `.app` is the same for every arm64
+device; only the destination in the *first* build for a new device matters, for
+registration.
+
 ## When something does not work
 
 | Symptom | Cause |
