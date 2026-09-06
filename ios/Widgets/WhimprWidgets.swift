@@ -139,9 +139,12 @@ struct StatusLines: View {
 struct ActionRow: View {
     let state: StandbyActivityAttributes.ContentState
     var alignment: Alignment = .center
+    /// Whether the row claims the full width (the island's bottom region) or only
+    /// what its buttons need (the Lock Screen banner, where it shares a row).
+    var expands = true
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             switch state.phase {
             case .listening:
                 Button(intent: DiscardDictationIntent()) {
@@ -167,23 +170,23 @@ struct ActionRow: View {
         .buttonBorderShape(.capsule)
         .controlSize(.small)
         .font(.caption.weight(.semibold))
-        .frame(maxWidth: .infinity, alignment: alignment)
+        .frame(maxWidth: expands ? .infinity : nil, alignment: alignment)
     }
 }
 
-/// The Lock Screen banner: icon at the leading edge, text and the action beside it,
-/// everything leading-aligned — the shape of every system activity there.
+/// The Lock Screen banner, one row: glyph, then title and status leading-aligned,
+/// then the action at the trailing edge, all centred on the same line — the shape
+/// of a system activity there, and the one that fills the banner without stacking.
 struct LockScreenView: View {
     let state: StandbyActivityAttributes.ContentState
 
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
             RingGlyph(size: 34)
-            VStack(alignment: .leading, spacing: 10) {
-                StatusLines(state: state, alignment: .leading)
-                ActionRow(state: state, alignment: .leading)
-            }
-            Spacer(minLength: 0)
+            StatusLines(state: state, alignment: .leading)
+                .layoutPriority(1)
+            Spacer(minLength: 8)
+            ActionRow(state: state, alignment: .trailing, expands: false)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
