@@ -111,8 +111,11 @@ struct StatusLines: View {
             if let startedAt = state.startedAt {
                 HStack(spacing: 4) {
                     if let input = state.inputName { Text(input) ; Text("·") }
+                    // A timer Text grows to fill its row unless capped; the cap must
+                    // still fit "12:34" on the Lock Screen, where the font is larger
+                    // than in the island — 48 pt squeezed it into "1:––".
                     Text(timerInterval: startedAt...startedAt.addingTimeInterval(20 * 60), countsDown: false)
-                        .frame(maxWidth: 44, alignment: .leading)
+                        .frame(maxWidth: 64, alignment: .leading)
                 }
             } else if let input = state.inputName {
                 Text(input)
@@ -124,7 +127,7 @@ struct StatusLines: View {
                 HStack(spacing: 4) {
                     Text("Releases in")
                     Text(timerInterval: Date()...releaseAt, countsDown: true)
-                        .frame(maxWidth: 48, alignment: .leading)
+                        .frame(maxWidth: 64, alignment: .leading)
                 }
             } else {
                 Text("Tap the keyboard's mic to dictate")
