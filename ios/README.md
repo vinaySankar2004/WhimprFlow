@@ -360,8 +360,10 @@ agreement.
 
 ## Status
 
-**Verified on an iPhone 15, in daily use** (2026-09-05, the build before the keyboard
-redesign):
+**Verified on an iPhone 15, in daily use** (2026-09-05; the keyboard redesign was
+installed the same evening and reported working in first use, and two device
+screenshots confirmed the orange indicator beside the island glyph and the Lock Screen
+banner counting down):
 
 - dictation from the keyboard in place, with no app switch — standby, the Darwin
   handoff, `insertText`;
@@ -387,9 +389,8 @@ touches real audio or suspension):
 - the app's standby card counts down and the setting migrates from the old switch;
 - `cargo test -p whimpr-ffi` green — the pipeline is untouched.
 
-**Not yet verified, and needs the phone:** the orange indicator beside the island
-glyph while idle; the indicator going off when the timeout fires and the next mic tap
-re-arming through the app; the start pop through the speaker and through AirPods, and
+**Not yet verified, and needs the phone:** the indicator going off when the timeout
+fires and the next mic tap re-arming through the app; the start pop through the speaker and through AirPods, and
 that the muted lead-in keeps it out of the transcript; a dictation's text landing with
 the smart leading space; key click and haptics under Full Access; the keyboard-switch
 frames with the new, taller keyboard (screen recording, `ffmpeg`, as before); standby
