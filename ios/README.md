@@ -218,8 +218,9 @@ Things about it that are not obvious from the code:
 - **The globe is drawn only when `needsInputModeSwitchKey` is true.** On Face ID
   phones iOS draws it in the strip below every third-party keyboard.
 - **Touches are handled by the grid, not by buttons.** Sliding onto the right key
-  before lifting, two thumbs at once, delete repeating while held — all of it is
-  touch handling *across* keys.
+  before lifting, two thumbs at once, delete repeating while held, the space-bar
+  trackpad (hold, then drag to move the cursor; the keys dim), the iPad flick — all
+  of it is touch handling *across* keys.
 - **The pill writes the level into the shared container and posts `.settings`;** the
   app's `Settings` caches the level and must re-read it, or the next dictation is
   cleaned at the level the pill used to show.
@@ -383,8 +384,8 @@ banner counting down):
 
 **Verified on the iPad Air 11" (2026-09-05, his screenshot in landscape):** the stock
 iPad arrangement with the flick secondaries, the bar scaled up, keys in stock
-proportions. Shift, caps lock and the flick were then fixed and reinstalled, not
-re-checked.
+proportions. Shift, caps lock, the flick and the space-bar trackpad were then fixed or added and
+reinstalled on both devices, not re-checked.
 
 **Verified on the iPhone 17 Pro simulator** (2026-09-05, the keyboard redesign — the
 simulator is honest about layout, ActivityKit and the bridge, and about nothing that

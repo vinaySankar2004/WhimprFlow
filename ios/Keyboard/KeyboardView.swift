@@ -9,6 +9,8 @@ protocol KeyboardViewDelegate: AnyObject {
     func keyboardViewDidLongPressGlobe(_ view: KeyboardView)
     /// A finger drew a path across the letters instead of tapping one.
     func keyboardView(_ view: KeyboardView, didSwipe path: [CGPoint])
+    /// Space-bar trackpad: move the cursor by this many characters.
+    func keyboardView(_ view: KeyboardView, moveCursorBy offset: Int)
 }
 
 /// The key grid, drawn and hit-tested by hand.
@@ -115,6 +117,13 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
     /// iPad flick: a short downward drag on a letter types its secondary label.
     private var touchStarts: [UITouch: CGPoint] = [:]
     private var flicked: Set<UITouch> = []
+    /// Space-bar trackpad: hold the space bar, then drag to move the cursor, as the
+    /// stock keyboard does. The keys dim to say the mode changed; lifting ends it
+    /// without typing a space.
+    private var spaceHold: Timer?
+    private var cursorTouch: UITouch?
+    private var cursorLastX: CGFloat = 0
+    private let cursorStep: CGFloat = 9
     private let trail = CAShapeLayer()
     private let hint = UILabel()
     private var hintTimer: Timer?
@@ -374,14 +383,45 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
             case .character:
                 if metrics.popups { showPopup(over: view) }
                 if plane == .letters { swipePaths[touch] = [touch.location(in: self)] }
+            case .space:
+                spaceHold?.invalidate()
+                spaceHold = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: false) { [weak self] _ in
+                    guard let self, self.active[touch] === view else { return }
+                    self.cursorTouch = touch
+                    self.cursorLastX = touch.location(in: self).x
+                    self.setCursorMode(true)
+                }
             default:
                 break
             }
         }
     }
 
+    private func setCursorMode(_ on: Bool) {
+        for view in keyViews.flatMap({ $0 }) where view.key != .space {
+            UIView.animate(withDuration: 0.12) { view.alpha = on ? 0.3 : 1 }
+        }
+        if on { UISelectionFeedbackGenerator().selectionChanged() }
+    }
+
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
+            if touch === cursorTouch {
+                let x = touch.location(in: self).x
+                let steps = Int((x - cursorLastX) / cursorStep)
+                if steps != 0 {
+                    cursorLastX += CGFloat(steps) * cursorStep
+                    delegate?.keyboardView(self, moveCursorBy: steps)
+                }
+                continue
+            }
+            // A finger that leaves the space bar before the hold lands is sliding,
+            // not asking for the trackpad.
+            if spaceHold != nil, active[touch]?.key == .space, let start = touchStarts[touch],
+               hypot(touch.location(in: self).x - start.x, touch.location(in: self).y - start.y) > 12 {
+                spaceHold?.invalidate()
+                spaceHold = nil
+            }
             // A flick: down a little, not sideways, on a key with a secondary. It
             // wins over swipe typing because it is decided within the first key.
             if metrics.pad, !flicked.contains(touch), !swiping.contains(touch),
@@ -434,6 +474,16 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
             touchStarts.removeValue(forKey: touch)
+            if touch === cursorTouch {
+                cursorTouch = nil
+                setCursorMode(false)
+                active.removeValue(forKey: touch)?.isPressed = false
+                continue
+            }
+            if active[touch]?.key == .space {
+                spaceHold?.invalidate()
+                spaceHold = nil
+            }
             if flicked.remove(touch) != nil, let view = active.removeValue(forKey: touch) {
                 view.isPressed = false
                 view.showsSecondary = false
@@ -469,6 +519,12 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
             touchStarts.removeValue(forKey: touch)
+            if touch === cursorTouch {
+                cursorTouch = nil
+                setCursorMode(false)
+            }
+            spaceHold?.invalidate()
+            spaceHold = nil
             if flicked.remove(touch) != nil { active[touch]?.showsSecondary = false }
             swiping.remove(touch)
             swipePaths.removeValue(forKey: touch)

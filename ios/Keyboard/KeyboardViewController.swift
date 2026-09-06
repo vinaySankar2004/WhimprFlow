@@ -445,6 +445,12 @@ extension KeyboardViewController: KeyboardViewDelegate {
         handleInputModeList(from: view, with: UIEvent())
     }
 
+    func keyboardView(_ view: KeyboardView, moveCursorBy offset: Int) {
+        textDocumentProxy.adjustTextPosition(byCharacterOffset: offset)
+        // Moving into or out of a word changes what shift and autocorrect should do.
+        syncTyping()
+    }
+
     func keyboardView(_ view: KeyboardView, didSwipe path: [CGPoint]) {
         if screen == .failed { show(.typing) }
         let candidates = decoder.decode(path: path, centres: view.letterCentres(), keyWidth: view.letterKeyWidth)
