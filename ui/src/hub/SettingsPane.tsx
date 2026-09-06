@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { font, palette } from "../tokens/values";
 import { theme } from "./theme";
 import { Button, Card, Dot, PageTitle, Segmented } from "./ui";
@@ -10,7 +10,9 @@ import {
   requestAccessibility,
   requestInputMonitoring,
   requestMicrophone,
-  setApiKey,
+  addApiKey,
+  listApiKeys,
+  removeApiKey,
   type CleanupLevel,
   type AsrMode,
   type CleanupMode,
@@ -282,14 +284,7 @@ function EngineCard({
 
       {browsing === "open_ai" && (
         <>
-          <KeyField
-            label="API key"
-            configured={status.has_openai_key}
-            onSave={(k) => {
-              setApiKey("openai", k);
-              setTimeout(refresh, 400);
-            }}
-          />
+          <KeyList count={status.openai_key_count} refresh={refresh} />
           <div style={{ marginTop: 12, display: "flex", gap: 6, alignItems: "center" }}>
             <span style={{ fontSize: 12.5, color: theme.textMuted }}>Preset:</span>
             {ENDPOINTS.map((p) => {
@@ -374,31 +369,89 @@ function SectionTitle({ children, sub }: { children: React.ReactNode; sub?: stri
   );
 }
 
-function KeyField({
-  label,
-  configured,
-  onSave,
-}: {
-  label: string;
-  configured: boolean;
-  onSave: (key: string) => void;
-}) {
+/**
+ * The stored keys, masked, with a way to add one and remove one. More than one key
+ * rotates: when the endpoint rate limits a key, the next one takes over until the
+ * first is free again. The keys themselves never reach this component — the backend
+ * lists them masked and the input is cleared the moment a key is handed over.
+ */
+function KeyList({ count, refresh }: { count: number; refresh: () => void }) {
+  const [keys, setKeys] = useState<string[]>([]);
   const [value, setValue] = useState("");
   const [saved, setSaved] = useState(false);
+  const load = () => void listApiKeys("openai").then(setKeys);
+  useEffect(load, [count]);
+
+  async function add() {
+    const k = value.trim();
+    if (!k) return;
+    await addApiKey("openai", k);
+    setValue("");
+    setSaved(true);
+    load();
+    setTimeout(refresh, 400);
+  }
+  async function remove(index: number) {
+    await removeApiKey("openai", index);
+    setSaved(false);
+    load();
+    setTimeout(refresh, 400);
+  }
+
+  const configured = keys.length > 0;
   return (
     <div style={{ marginTop: 16 }}>
       <div style={{ fontSize: 13, marginBottom: 7, display: "flex", alignItems: "center", color: theme.textBody }}>
         <Dot ok={configured} />
-        {label} {configured ? "— configured" : "— not set"}
+        API keys{" "}
+        {configured ? `— ${keys.length} configured` : "— not set"}
       </div>
+      {keys.map((masked, i) => (
+        <div
+          key={`${i}-${masked}`}
+          style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}
+        >
+          <code
+            style={{
+              flex: 1,
+              fontFamily: font.mono,
+              fontSize: 13,
+              color: theme.textBody,
+              background: theme.cardBgSubtle,
+              border: `1px solid ${theme.border}`,
+              borderRadius: 10,
+              padding: "7px 12px",
+            }}
+          >
+            {masked}
+          </code>
+          <button
+            onClick={() => void remove(i)}
+            title="Remove this key"
+            style={{
+              background: "none",
+              border: "none",
+              color: theme.textMuted,
+              cursor: "pointer",
+              fontSize: 12.5,
+              fontFamily: font.ui,
+            }}
+          >
+            Remove
+          </button>
+        </div>
+      ))}
       <div style={{ display: "flex", gap: 8 }}>
         <input
           type="password"
           value={value}
-          placeholder={configured ? "Enter a new key to replace" : "Paste your API key"}
+          placeholder={configured ? "Add another key" : "Paste your API key"}
           onChange={(e) => {
             setValue(e.target.value);
             setSaved(false);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void add();
           }}
           style={{
             flex: 1,
@@ -412,17 +465,13 @@ function KeyField({
             outline: "none",
           }}
         />
-        <Button
-          onClick={() => {
-            onSave(value);
-            setValue("");
-            setSaved(true);
-          }}
-        >
-          Save
-        </Button>
+        <Button onClick={() => void add()}>Add</Button>
       </div>
-      {saved && <div style={{ fontSize: 12, color: theme.accentDeep, marginTop: 6 }}>Saved to keychain ✓</div>}
+      <div style={{ fontSize: 12, color: saved ? theme.accentDeep : theme.textMuted, marginTop: 6 }}>
+        {saved
+          ? "Saved to keychain ✓"
+          : "Add more than one and WhimprFlow moves to the next when one is rate limited, then back when it frees up."}
+      </div>
     </div>
   );
 }

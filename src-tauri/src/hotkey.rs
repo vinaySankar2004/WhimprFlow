@@ -546,27 +546,27 @@ mod imp {
             })
     }
 
-    /// Read an API key from an env var or the OS keychain (never a plaintext file).
-    fn read_key(account: &str, env_var: &str) -> Option<String> {
-        if let Ok(k) = std::env::var(env_var) {
-            let k = k.trim().to_string();
-            if !k.is_empty() {
-                return Some(k);
+    /// The keys for the OpenAI-*compatible* cloud mode, in preference order. One
+    /// keychain entry — one key per line — serves whichever endpoint
+    /// `openai_base_url` points at, so switching from Groq to OpenAI is a URL change,
+    /// not a second credential store. `GROQ_API_KEY` is honoured alongside
+    /// `OPENAI_API_KEY` because the default endpoint is Groq and looking for a
+    /// variable named after the wrong vendor is a confusing dead end; an env var
+    /// replaces the stored list rather than joining it. Never a plaintext file.
+    fn read_openai_keys() -> Vec<String> {
+        for var in ["GROQ_API_KEY", "OPENAI_API_KEY"] {
+            if let Ok(k) = std::env::var(var) {
+                let k = k.trim();
+                if !k.is_empty() {
+                    return vec![k.to_string()];
+                }
             }
         }
-        keyring::Entry::new("com.whimpr.whimprflow", account)
+        keyring::Entry::new("com.whimpr.whimprflow", "openai_api_key")
             .ok()
             .and_then(|e| e.get_password().ok())
-            .map(|k| k.trim().to_string())
-            .filter(|k| !k.is_empty())
-    }
-    /// The key for the OpenAI-*compatible* cleanup mode. One keychain entry serves
-    /// whichever endpoint `openai_base_url` points at, so switching from Groq to
-    /// OpenAI is a URL change, not a second credential store. `GROQ_API_KEY` is
-    /// honoured alongside `OPENAI_API_KEY` because the default endpoint is Groq and
-    /// looking for a variable named after the wrong vendor is a confusing dead end.
-    fn read_openai_key() -> Option<String> {
-        read_key("openai_api_key", "GROQ_API_KEY").or_else(|| read_key("openai_api_key", "OPENAI_API_KEY"))
+            .map(|text| whimpr_core::KeyRing::from_stored(&text).keys().to_vec())
+            .unwrap_or_default()
     }
 
     /// A snapshot of the current settings.
@@ -625,24 +625,26 @@ mod imp {
     /// at startup and whenever a key or model changes, so edits take effect live.
     pub fn rebuild_providers() {
         let settings = current_settings();
-        let openai = read_openai_key().map(|k| {
+        let keys = read_openai_keys();
+        let openai = (!keys.is_empty()).then(|| {
             whimpr_cleanup::OpenAiProvider::with_base_url(
-                k,
+                keys.clone(),
                 settings.openai_model.clone(),
                 Some(settings.openai_base_url.clone()),
             )
         });
-        // The same key serves both stages: one Groq account, one credential.
-        let cloud_asr = read_openai_key().map(|k| {
+        // The same keys serve both stages: one Groq account per key, one credential.
+        // Each provider keeps its own rate-limit clocks, since the caps are per model.
+        let cloud_asr = (!keys.is_empty()).then(|| {
             Arc::new(whimpr_asr::CloudAsr::new(
-                k,
+                keys.clone(),
                 whimpr_core::GROQ_ASR_MODEL,
                 whimpr_core::GROQ_ASR_URL,
             ))
         });
         eprintln!(
-            "[whimpr] cloud key present: {} (asr mode: {:?})",
-            openai.is_some(),
+            "[whimpr] cloud keys: {} (asr mode: {:?})",
+            keys.len(),
             settings.asr_mode
         );
         match CLOUD_ASR.get() {

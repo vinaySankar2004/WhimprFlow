@@ -48,7 +48,9 @@ it — **do not ask them to paste the key to you, and do not type it in for them
 2. **API Keys → Create API Key**, then copy it.
 3. Paste it into the **Groq API key** step in the WhimprFlow window.
 
-It goes into their macOS Keychain, never into a file.
+It goes into their macOS Keychain, never into a file. More than one key can be added
+under Settings → Cleanup Engine; when Groq rate limits one, WhimprFlow moves to the
+next and comes back when the first frees up.
 
 **4. Tell them the one thing no script can do.** macOS will not let any program grant
 itself Accessibility — there is no flag, no API, and `tccutil` can only *reset* a

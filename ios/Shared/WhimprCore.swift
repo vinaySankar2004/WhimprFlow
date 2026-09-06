@@ -151,6 +151,32 @@ enum WhimprCore {
         )
     }
 
+    // MARK: Key rotation
+
+    /// A ring from the stored keys. Opaque: hand it back to the two ops below.
+    static func keyRingNew(keys: [String]) throws -> [String: Any] {
+        try callObject(["op": "key_ring_new", "keys": keys])
+    }
+
+    /// Which key to send with right now, or how long until one is free.
+    static func keyRingPick(ring: [String: Any], now: UInt64) throws -> KeyPick {
+        let result = try callObject(["op": "key_ring_pick", "ring": ring, "now": now])
+        if let index = result["index"] as? Int { return .key(index) }
+        return .wait(seconds: result["wait_secs"] as? Int ?? 60)
+    }
+
+    /// The endpoint answered 429 for the key at `index`. The retry hint in the
+    /// header or body is parsed on the other side; this returns the updated ring.
+    static func keyRingLimited(
+        ring: [String: Any], index: Int, now: UInt64, retryAfterHeader: String?, body: String
+    ) throws -> [String: Any] {
+        var request: [String: Any] = [
+            "op": "key_ring_limited", "ring": ring, "index": index, "now": now, "body": body,
+        ]
+        if let retryAfterHeader { request["retry_after_header"] = retryAfterHeader }
+        return try callObject(request)
+    }
+
     /// Second half: keep the prompted transcript, or fall back to the unprompted one.
     static func asrAcceptPrompted(
         unprompted: String,
@@ -253,6 +279,56 @@ struct Finished {
         self.text = text
         engine = Engine(rawValue: payload["engine"] as? String ?? "") ?? .raw
         degraded = payload["degraded"] as? String
+    }
+}
+
+/// What `keyRingPick` answers.
+enum KeyPick {
+    case key(Int)
+    case wait(seconds: Int)
+}
+
+/// The stored keys and, for each, until when the endpoint said it was rate limited.
+///
+/// A class because the clocks must outlive a request: a key marked limited during one
+/// dictation is what the next dictation skips. The policy — which key, for how long,
+/// what the retry hint means — is the core's, reached over the bridge; this holds the
+/// state and serializes access to it.
+final class KeyRing {
+    private var ring: [String: Any]
+    private let lock = NSLock()
+    let count: Int
+
+    init(keys: [String]) throws {
+        ring = try WhimprCore.keyRingNew(keys: keys)
+        count = (ring["keys"] as? [String])?.count ?? 0
+    }
+
+    private static var now: UInt64 { UInt64(Date().timeIntervalSince1970) }
+
+    enum Choice {
+        case key(index: Int, value: String)
+        case wait(seconds: Int)
+    }
+
+    func pick() throws -> Choice {
+        lock.lock(); defer { lock.unlock() }
+        switch try WhimprCore.keyRingPick(ring: ring, now: Self.now) {
+        case let .key(index):
+            guard let keys = ring["keys"] as? [String], keys.indices.contains(index) else {
+                throw WhimprCore.Failure.bridge("key_ring_pick chose a key that is not there")
+            }
+            return .key(index: index, value: keys[index])
+        case let .wait(seconds):
+            return .wait(seconds: seconds)
+        }
+    }
+
+    func limited(index: Int, retryAfterHeader: String?, body: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        ring = try WhimprCore.keyRingLimited(
+            ring: ring, index: index, now: Self.now, retryAfterHeader: retryAfterHeader, body: body
+        )
     }
 }
 

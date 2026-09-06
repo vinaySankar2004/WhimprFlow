@@ -620,8 +620,13 @@ impl Engine {
                      the Hub, or export it for this run."
                 )
             })?;
-        let provider =
-            whimpr_cleanup::OpenAiProvider::with_base_url(key, model.clone(), Some(url.clone()));
+        // One key, deliberately: the harness measures the prompt, and a second key
+        // would only hide how often the first one is limited.
+        let provider = whimpr_cleanup::OpenAiProvider::with_base_url(
+            vec![key],
+            model.clone(),
+            Some(url.clone()),
+        );
         Ok(Engine::Cloud { provider, model, url, waited: Duration::ZERO })
     }
 
@@ -685,10 +690,11 @@ impl Engine {
                             if !msg.contains("429") || waited.as_secs() > 90 {
                                 return Err(e);
                             }
-                            let secs = retry_after_secs(&msg).unwrap_or(12.0) + 0.5;
+                            let secs =
+                                whimpr_core::cloud::retry_after_secs(None, &msg).unwrap_or(12.0) + 0.5;
                             println!("   rate limited, waiting {secs:.0}s");
-                            std::thread::sleep(Duration::from_secs_f32(secs));
-                            *waited += Duration::from_secs_f32(secs);
+                            std::thread::sleep(Duration::from_secs_f64(secs));
+                            *waited += Duration::from_secs_f64(secs);
                         }
                     }
                 }
@@ -704,12 +710,6 @@ impl Drop for Engine {
             let _ = child.wait();
         }
     }
-}
-
-/// Seconds out of a rate-limit message's "Please try again in 9.6825s".
-fn retry_after_secs(msg: &str) -> Option<f32> {
-    let tail = msg.split("try again in ").nth(1)?;
-    tail.split('s').next()?.trim().parse().ok()
 }
 
 /// One cleanup round-trip through the selected engine, with the same pre- and

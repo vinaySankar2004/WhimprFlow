@@ -7,7 +7,7 @@ struct SettingsView: View {
     @State private var settings = Settings.shared
 
     @State private var keyDraft = ""
-    @State private var keyIsSet = APIKey.isSet
+    @State private var keys = APIKey.loadAll()
     @State private var saveError: String?
     @State private var check: ConnectionCheck = .idle
 
@@ -47,26 +47,21 @@ struct SettingsView: View {
 
     private var keySection: some View {
         Section {
-            SecureField(keyIsSet ? "Replace the stored key" : "gsk_…", text: $keyDraft)
+            ForEach(Array(keys.enumerated()), id: \.offset) { index, key in
+                Text(APIKey.mask(key))
+                    .font(.body.monospaced())
+                    .swipeActions {
+                        Button("Remove", role: .destructive) { removeKey(at: index) }
+                    }
+            }
+
+            SecureField(keys.isEmpty ? "gsk_…" : "Add another key", text: $keyDraft)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .font(.body.monospaced())
 
-            HStack {
-                Button(keyIsSet ? "Replace key" : "Save key") { saveKey() }
-                    .disabled(keyDraft.trimmingCharacters(in: .whitespaces).isEmpty)
-
-                Spacer()
-
-                if keyIsSet {
-                    Button("Remove", role: .destructive) {
-                        _ = APIKey.save("")
-                        keyIsSet = APIKey.isSet
-                        saveError = nil
-                        check = .idle
-                    }
-                }
-            }
+            Button(keys.isEmpty ? "Save key" : "Add key") { saveKey() }
+                .disabled(keyDraft.trimmingCharacters(in: .whitespaces).isEmpty)
 
             if let saveError {
                 Label(saveError, systemImage: "exclamationmark.triangle.fill")
@@ -92,7 +87,7 @@ struct SettingsView: View {
                     }
                 }
             }
-            .disabled(!keyIsSet || check == .running)
+            .disabled(keys.isEmpty || check == .running)
 
             // On its own line and in full. A refusal collapsed to "HTTP 403" tells
             // you a number; the sentence underneath it tells you whether to change
@@ -109,9 +104,9 @@ struct SettingsView: View {
                 EmptyView()
             }
         } header: {
-            Text("Groq API key")
+            Text("Groq API keys")
         } footer: {
-            Text("Stored in the iOS Keychain, never in a file and never in the shared container. The keyboard extension never sees it — the app makes every network call.")
+            Text("Stored in the iOS Keychain, never in a file and never in the shared container. The keyboard extension never sees them — the app makes every network call. Add more than one and dictation moves to the next key when one is rate limited, then back when it frees up. Swipe a key to remove it.")
         }
     }
 
@@ -201,27 +196,38 @@ struct SettingsView: View {
 
     /// Save, and say so when it does not work.
     ///
-    /// `keyIsSet` is re-read from the Keychain rather than assumed from a successful
-    /// return, so the switch that shows "Replace key" can only ever reflect a key
-    /// that is genuinely readable back.
+    /// `keys` is re-read from the Keychain rather than assumed from a successful
+    /// return, so the list can only ever show keys that are genuinely readable back.
     private func saveKey() {
-        switch APIKey.save(keyDraft) {
+        switch APIKey.add(keyDraft) {
         case .success:
             saveError = nil
             keyDraft = ""
         case let .failure(error):
             saveError = error.localizedDescription
         }
-        keyIsSet = APIKey.isSet
+        keys = APIKey.loadAll()
+        check = .idle
+    }
+
+    private func removeKey(at index: Int) {
+        if case let .failure(error) = APIKey.remove(at: index) {
+            saveError = error.localizedDescription
+        } else {
+            saveError = nil
+        }
+        keys = APIKey.loadAll()
         check = .idle
     }
 
     // MARK: - Connection check
 
-    /// A real request, not a reachability ping: the useful question is whether *this
-    /// key* is accepted by *this endpoint*, which nothing but a call can answer.
+    /// A real request, not a reachability ping: the useful question is whether *a
+    /// stored key* is accepted by *this endpoint*, which nothing but a call can
+    /// answer. Runs through the same ring dictation uses, so with several keys it
+    /// checks the one dictation would send with next.
     private func runCheck() async {
-        guard let key = APIKey.load() else {
+        guard !keys.isEmpty else {
             check = .failed("no key")
             return
         }
@@ -232,7 +238,7 @@ struct SettingsView: View {
                 level: .light,
                 dictionary: DictionaryStore()
             )
-            _ = try await GroqClient(apiKey: key).cleanup(prepared: prepared)
+            _ = try await GroqClient(ring: KeyRing(keys: keys)).cleanup(prepared: prepared)
             check = .ok("Reachable — the key works and \(Settings.Groq.cleanupModel) answered.")
         } catch {
             // The error's own description, not a summary of it: these are the words

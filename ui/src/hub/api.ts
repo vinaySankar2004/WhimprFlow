@@ -56,6 +56,7 @@ export const EMPTY_STATUS: Status = {
   microphone: false,
   input_monitoring: false,
   has_openai_key: false,
+  openai_key_count: 0,
   local_state: "loading",
   local_model: null,
   asr_model: null,
@@ -69,6 +70,8 @@ export interface Status {
   microphone: boolean;
   input_monitoring: boolean;
   has_openai_key: boolean;
+  /** Stored cloud keys. More than one rotates when one is rate limited. */
+  openai_key_count: number;
   /** Load state of the on-device cleanup model. */
   local_state: LocalModelState;
   /** GGUF filename in use, when `local_state` is "ready". */
@@ -251,9 +254,26 @@ export async function revealLogs(): Promise<void> {
   }
 }
 
-export async function setApiKey(provider: "openai", key: string): Promise<void> {
+/** The stored keys, masked to their ends. The keys never reach the webview. */
+export async function listApiKeys(provider: "openai"): Promise<string[]> {
   try {
-    await invoke<void>("set_api_key", { provider, key });
+    return await invoke<string[]>("list_api_keys", { provider });
+  } catch {
+    return []; /* browser preview */
+  }
+}
+
+export async function addApiKey(provider: "openai", key: string): Promise<void> {
+  try {
+    await invoke<void>("add_api_key", { provider, key });
+  } catch {
+    /* browser preview */
+  }
+}
+
+export async function removeApiKey(provider: "openai", index: number): Promise<void> {
+  try {
+    await invoke<void>("remove_api_key", { provider, index });
   } catch {
     /* browser preview */
   }

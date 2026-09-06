@@ -51,10 +51,15 @@ final class DictationController {
     private(set) var hasAPIKey = APIKey.isSet
     private(set) var hasMicPermission = Recorder.hasPermission
 
-    /// Re-read the two things the observation graph cannot see for itself.
+    /// The keys with their rate-limit clocks, kept across dictations so a limited
+    /// key stays skipped for as long as Groq asked. Rebuilt when the list changes.
+    private var ring: KeyRing? = try? KeyRing(keys: APIKey.loadAll())
+
+    /// Re-read the things the observation graph cannot see for itself.
     func refreshConfiguration() {
         hasAPIKey = APIKey.isSet
         hasMicPermission = Recorder.hasPermission
+        ring = try? KeyRing(keys: APIKey.loadAll())
     }
 
     // MARK: - Lifecycle
@@ -191,11 +196,11 @@ final class DictationController {
             return
         }
 
-        guard let key = APIKey.load() else {
+        guard let ring, ring.count > 0 else {
             fail("no API key is set")
             return
         }
-        let client = GroqClient(apiKey: key)
+        let client = GroqClient(ring: ring)
         let dictionary = settings.dictionary
         let level = settings.level
 

@@ -453,6 +453,8 @@ struct StatusReport {
     microphone: bool,
     input_monitoring: bool,
     has_openai_key: bool,
+    /// How many keys are stored for the cloud endpoint; more than one rotates.
+    openai_key_count: usize,
     /// "loading" | "ready" | "missing" — the local cleanup worker's model.
     local_state: &'static str,
     /// GGUF filename actually in use, when `local_state` is "ready".
@@ -473,6 +475,7 @@ fn get_status() -> StatusReport {
         microphone: paste::microphone_granted(),
         input_monitoring: paste::input_monitoring_granted(),
         has_openai_key: has_key("openai_api_key"),
+        openai_key_count: stored_keys("openai_api_key").len(),
         local_state: local.state,
         local_model: local.model,
         asr_model: hotkey::asr_model_name(),
@@ -514,12 +517,58 @@ fn reveal_logs() {
     let _ = std::process::Command::new("open").arg("-R").arg(&path).status();
 }
 
-fn has_key(account: &str) -> bool {
+/// The keys stored for `account`, one per line in a single Keychain item. A key
+/// saved before there was a list is a one-line item and reads as a ring of one.
+fn stored_keys(account: &str) -> whimpr_core::KeyRing {
     keyring::Entry::new("com.whimpr.whimprflow", account)
         .ok()
         .and_then(|e| e.get_password().ok())
-        .map(|k| !k.trim().is_empty())
-        .unwrap_or(false)
+        .map(|text| whimpr_core::KeyRing::from_stored(&text))
+        .unwrap_or_default()
+}
+
+fn has_key(account: &str) -> bool {
+    !stored_keys(account).is_empty()
+}
+
+fn key_account(provider: &str) -> Result<&'static str, String> {
+    match provider {
+        "openai" => Ok("openai_api_key"),
+        _ => Err(format!("unknown provider {provider}")),
+    }
+}
+
+/// Write the whole ring back to the Keychain (or remove the item when it is empty),
+/// then rebuild the providers so the change takes effect on the next dictation.
+fn write_keys(account: &str, ring: &whimpr_core::KeyRing) -> Result<(), String> {
+    let entry =
+        keyring::Entry::new("com.whimpr.whimprflow", account).map_err(|e| e.to_string())?;
+    // Delete any existing item first so the new one is created by (and readable to)
+    // this app — a key added via the `security` CLI isn't readable by the app.
+    let _ = entry.delete_credential();
+    if !ring.is_empty() {
+        let text = ring.to_stored();
+        entry.set_password(&text).map_err(|e| e.to_string())?;
+        // Read it straight back. A store that accepts writes and keeps nothing is not
+        // hypothetical: keyring 3 silently substitutes an in-memory mock when no
+        // platform-store feature is enabled, so this exact call returned Ok while the
+        // Keychain stayed empty and the Hub went on reporting "no key set". Cheap, runs
+        // once per key change, and turns that whole class of failure into a message.
+        match keyring::Entry::new("com.whimpr.whimprflow", account)
+            .and_then(|e| e.get_password())
+        {
+            Ok(stored) if stored == text => {}
+            _ => {
+                return Err(
+                    "the key was accepted but could not be read back from the Keychain — \
+                     it was not saved"
+                        .to_string(),
+                )
+            }
+        }
+    }
+    hotkey::rebuild_providers();
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -565,42 +614,36 @@ fn request_input_monitoring() {
     }
 }
 
-/// Save (or clear, when empty) an API key in the OS keychain, then rebuild providers
-/// so it takes effect immediately.
+/// The stored keys, masked to their ends — enough for the Hub to list them, never
+/// enough to use. The keys themselves do not leave the Keychain for the webview.
 #[tauri::command]
-fn set_api_key(provider: String, key: String) -> Result<(), String> {
-    let account = match provider.as_str() {
-        "openai" => "openai_api_key",
-        _ => return Err(format!("unknown provider {provider}")),
-    };
-    let entry =
-        keyring::Entry::new("com.whimpr.whimprflow", account).map_err(|e| e.to_string())?;
-    let key = key.trim();
-    // Delete any existing item first so the new one is created by (and readable to)
-    // this app — a key added via the `security` CLI isn't readable by the app.
-    let _ = entry.delete_credential();
-    if !key.is_empty() {
-        entry.set_password(key).map_err(|e| e.to_string())?;
-        // Read it straight back. A store that accepts writes and keeps nothing is not
-        // hypothetical: keyring 3 silently substitutes an in-memory mock when no
-        // platform-store feature is enabled, so this exact call returned Ok while the
-        // Keychain stayed empty and the Hub went on reporting "no key set". Cheap, runs
-        // once per key change, and turns that whole class of failure into a message.
-        match keyring::Entry::new("com.whimpr.whimprflow", account)
-            .and_then(|e| e.get_password())
-        {
-            Ok(stored) if stored == key => {}
-            _ => {
-                return Err(
-                    "the key was accepted but could not be read back from the Keychain — \
-                     it was not saved"
-                        .to_string(),
-                )
-            }
-        }
+fn list_api_keys(provider: String) -> Result<Vec<String>, String> {
+    Ok(stored_keys(key_account(&provider)?).masked())
+}
+
+/// Add a key to the OS keychain list. Adding one already present is a no-op.
+#[tauri::command]
+fn add_api_key(provider: String, key: String) -> Result<(), String> {
+    let account = key_account(&provider)?;
+    let mut ring = stored_keys(account);
+    if key.trim().is_empty() {
+        return Err("the key is empty".to_string());
     }
-    hotkey::rebuild_providers();
-    Ok(())
+    if !ring.add(&key) {
+        return Ok(());
+    }
+    write_keys(account, &ring)
+}
+
+/// Remove the key at `index` in the order `list_api_keys` reports.
+#[tauri::command]
+fn remove_api_key(provider: String, index: usize) -> Result<(), String> {
+    let account = key_account(&provider)?;
+    let mut ring = stored_keys(account);
+    if !ring.remove(index) {
+        return Err("no key at that position".to_string());
+    }
+    write_keys(account, &ring)
 }
 
 pub fn run() {
@@ -625,7 +668,9 @@ pub fn run() {
             open_keyboard_settings,
             stop_dictation,
             cancel_dictation,
-            set_api_key,
+            list_api_keys,
+            add_api_key,
+            remove_api_key,
             reveal_logs
         ])
         // The red button hides the Hub, it does not close it. Closing would DESTROY

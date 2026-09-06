@@ -15,7 +15,7 @@ llama.cpp worker for cleanup.
 it, and adding one back should be a deliberate decision, not a reflex. There is also
 an **iOS/iPadOS app** in `ios/`: a cloud-only keyboard-plus-app pair that links
 `whimpr-core` rather than reimplementing it. It shares the prompt, levels, gates,
-dictionary and pipeline ordering, and nothing else. Read
+dictionary, pipeline ordering and key rotation, and nothing else. Read
 **[ios/README.md](ios/README.md)** before touching it — the constraint the whole
 design follows from (a keyboard extension cannot record audio, at all) is not
 guessable from the code.
@@ -354,7 +354,9 @@ These are not hypotheticals; each one bit during development.
   the shell linger, as `apply_action` does.
 - **Gates prefer raw.** When cleanup output looks over-edited, paste the raw
   transcript. A wrong-but-clean paste is worse than an untidy-but-faithful one.
-- **API keys go in the OS keychain, never a file.** Audio never leaves the machine;
+- **API keys go in the OS keychain, never a file** — one item, every key one per line,
+  on both platforms, and which key to send with is `whimpr_core::cloud::KeyRing`'s
+  decision, reached over the bridge on iOS. Audio never leaves the machine;
   only the transcript does, and only in an explicitly chosen cloud mode.
 - **Both cleanup providers share one prompt** (`cleanup::build_messages`) so they
   cannot drift.

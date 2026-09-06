@@ -6,7 +6,7 @@ import {
   requestAccessibility,
   requestMicrophone,
   requestInputMonitoring,
-  setApiKey,
+  addApiKey,
   type FnKeyAction,
   type Status,
 } from "./api";
@@ -137,7 +137,7 @@ function Step({
  * Inline rather than "go to Settings and find the Cleanup Engine pane": on a
  * cloud-only install this is a required step, and a required step that sends you
  * somewhere else to do it is one people stop at. The key never touches this
- * component's props or any file — `setApiKey` hands it straight to the Keychain.
+ * component's props or any file — `addApiKey` hands it straight to the Keychain.
  */
 function KeyField({ onSaved, disabled }: { onSaved: () => void; disabled: boolean }) {
   const [value, setValue] = useState("");
@@ -148,7 +148,7 @@ function KeyField({ onSaved, disabled }: { onSaved: () => void; disabled: boolea
     if (!trimmed || saving) return;
     setSaving(true);
     try {
-      await setApiKey("openai", trimmed);
+      await addApiKey("openai", trimmed);
       // Clear it out of component state the moment it is stored; there is no reason
       // for the key to sit in the render tree afterwards.
       setValue("");

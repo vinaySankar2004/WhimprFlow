@@ -7,7 +7,9 @@ import Foundation
 /// a difference here is a difference in what gets pasted, and the whole point of
 /// linking the core was that the two platforms behave alike.
 struct GroqClient {
-    let apiKey: String
+    /// Every stored key with its rate-limit clocks. Shared across dictations so a
+    /// key marked limited stays skipped until the endpoint's own wait has passed.
+    let ring: KeyRing
     var session: URLSession = .shared
 
     enum Failure: LocalizedError {
@@ -17,6 +19,8 @@ struct GroqClient {
         /// beats a clean half of one, so this is an error and not a result.
         case truncated
         case notConfigured
+        /// Every key is rate limited; `seconds` until the first one frees up.
+        case allLimited(keys: Int, seconds: Int)
 
         /// Written for whoever is holding the phone, not for whoever wrote this.
         ///
@@ -44,7 +48,7 @@ struct GroqClient {
                         + "Groq blocks VPN and datacenter addresses, so try turning it "
                         + "off. \(Self.detail(body))"
                 case 429:
-                    return "Groq is rate limiting — the daily free quota may be spent. Try again later."
+                    return "Groq is rate limiting this key. Try again later, or add another key in Settings."
                 case 500...599:
                     return "Groq is having trouble (error \(code)). Try again in a moment."
                 default:
@@ -53,6 +57,11 @@ struct GroqClient {
             case .empty: return "Groq returned no text."
             case .truncated: return "The reply was cut off before it finished."
             case .notConfigured: return "No API key is set."
+            case let .allLimited(keys, seconds):
+                let wait = seconds >= 120 ? "\(seconds / 60) minutes" : "\(seconds) seconds"
+                return keys == 1
+                    ? "Groq is rate limiting your key; it frees up in about \(wait). Adding a second key in Settings covers this."
+                    : "All \(keys) keys are rate limited; the next frees up in about \(wait)."
             }
         }
 
@@ -86,7 +95,6 @@ struct GroqClient {
     func transcribe(wav: Data, prompt: String?) async throws -> String {
         var request = URLRequest(url: URL(string: Settings.Groq.transcriptions)!)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         let boundary = "whimpr.\(UUID().uuidString)"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -154,7 +162,6 @@ struct GroqClient {
     private func postChat(_ body: [String: Any]) async throws -> String {
         var request = URLRequest(url: URL(string: Settings.Groq.chatCompletions)!)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -176,16 +183,38 @@ struct GroqClient {
 
     // MARK: - Transport
 
+    /// Send with the first key that is not rate limited, moving to the next on a
+    /// 429 until one answers or none is left. The authorization header is set here
+    /// and nowhere else, so no request can go out under a key the ring did not pick.
     private func send(_ request: URLRequest) async throws -> [String: Any] {
-        let (data, response) = try await session.data(for: request)
-        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(code) else {
-            throw Failure.http(code, String(data: data, encoding: .utf8) ?? "")
+        var request = request
+        while true {
+            let index: Int
+            switch try ring.pick() {
+            case let .key(i, key):
+                index = i
+                request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            case let .wait(seconds):
+                throw Failure.allLimited(keys: ring.count, seconds: seconds)
+            }
+            let (data, response) = try await session.data(for: request)
+            let http = response as? HTTPURLResponse
+            let code = http?.statusCode ?? 0
+            let body = String(data: data, encoding: .utf8) ?? ""
+            if code == 429 {
+                try ring.limited(
+                    index: index,
+                    retryAfterHeader: http?.value(forHTTPHeaderField: "Retry-After"),
+                    body: body
+                )
+                continue
+            }
+            guard (200..<300).contains(code) else { throw Failure.http(code, body) }
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw Failure.empty
+            }
+            return json
         }
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw Failure.empty
-        }
-        return json
     }
 
     /// Remembered for the process, so a rejected parameter costs one wasted call

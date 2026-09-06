@@ -95,17 +95,22 @@ final class Settings {
     }
 }
 
-/// The API key, in the Keychain and nowhere else.
+/// The API keys, in the Keychain and nowhere else.
 ///
 /// Never in `UserDefaults`, never in the App Group, never in a file — and the
-/// keyboard extension never needs it, because the app makes every network call. That
-/// is not only tidier: a keyboard is the one process on the device that sees every
-/// keystroke, and it has no business holding a credential.
+/// keyboard extension never needs them, because the app makes every network call.
+/// That is not only tidier: a keyboard is the one process on the device that sees
+/// every keystroke, and it has no business holding a credential.
+///
+/// One Keychain item holds every key, one per line, the same layout the Mac uses.
+/// A key stored before there was a list is a one-line item and reads as a list of one.
 enum APIKey {
     private static let service = "com.whimpr.whimprflow"
     private static let account = "groq.api.key"
 
-    static func load() -> String? {
+    /// Every stored key, in the order they were added — which is the order they are
+    /// tried in.
+    static func loadAll() -> [String] {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -116,10 +121,38 @@ enum APIKey {
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
               let data = item as? Data,
-              let key = String(data: data, encoding: .utf8),
-              !key.isEmpty
-        else { return nil }
-        return key
+              let text = String(data: data, encoding: .utf8)
+        else { return [] }
+        var keys: [String] = []
+        for line in text.split(separator: "\n") {
+            let key = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !key.isEmpty && !keys.contains(key) { keys.append(key) }
+        }
+        return keys
+    }
+
+    /// Append a key. Adding one already stored changes nothing.
+    static func add(_ key: String) -> Result<Void, SaveError> {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .success(()) }
+        var keys = loadAll()
+        guard !keys.contains(trimmed) else { return .success(()) }
+        keys.append(trimmed)
+        return saveAll(keys)
+    }
+
+    static func remove(at index: Int) -> Result<Void, SaveError> {
+        var keys = loadAll()
+        guard keys.indices.contains(index) else { return .success(()) }
+        keys.remove(at: index)
+        return saveAll(keys)
+    }
+
+    /// The ends of a key, for a settings list: enough to tell two apart, never enough
+    /// to use. Display only, so it lives here rather than crossing the bridge.
+    static func mask(_ key: String) -> String {
+        guard key.count >= 12 else { return "••••" }
+        return "\(key.prefix(4))…\(key.suffix(4))"
     }
 
     /// Why a save did not happen. Surfaced rather than swallowed: a silently failed
@@ -142,9 +175,8 @@ enum APIKey {
         }
     }
 
-    /// Store (or replace) the key. Passing an empty string removes it.
-    static func save(_ key: String) -> Result<Void, SaveError> {
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Store the whole list. An empty list removes the item.
+    static func saveAll(_ keys: [String]) -> Result<Void, SaveError> {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -153,10 +185,11 @@ enum APIKey {
         // Delete first rather than SecItemUpdate: an update against a missing item
         // fails, and branching on that is more code than simply replacing.
         SecItemDelete(base as CFDictionary)
-        guard !trimmed.isEmpty else { return .success(()) }
+        let text = keys.joined(separator: "\n")
+        guard !text.isEmpty else { return .success(()) }
 
         var add = base
-        add[kSecValueData as String] = Data(trimmed.utf8)
+        add[kSecValueData as String] = Data(text.utf8)
         // The key is needed while dictating, which can happen from a locked-screen
         // keyboard; `AfterFirstUnlock` is the loosest setting that still keeps it
         // out of a backup restored onto another device.
@@ -172,5 +205,5 @@ enum APIKey {
         }
     }
 
-    static var isSet: Bool { load() != nil }
+    static var isSet: Bool { !loadAll().isEmpty }
 }

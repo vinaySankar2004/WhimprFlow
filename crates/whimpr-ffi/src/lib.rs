@@ -42,6 +42,7 @@ use std::ffi::{c_char, CStr, CString};
 use serde::{Deserialize, Serialize};
 use whimpr_core::asr::prompt::{accept_prompted, build_initial_prompt};
 use whimpr_core::cleanup::{CleanupLevel, VocabEntry};
+use whimpr_core::cloud::{retry_after_secs, KeyRing};
 use whimpr_core::dictionary::DictionaryStore;
 use whimpr_core::pipeline::{self, Engine, Prepared};
 
@@ -107,6 +108,33 @@ enum Op {
         #[serde(default)]
         vocab: Vec<VocabEntry>,
     },
+
+    /// A ring from a list of keys. Swift holds the result as an opaque object and
+    /// hands it back to the two ops below; it never reads the clocks inside.
+    KeyRingNew { keys: Vec<String> },
+
+    /// Which key to send with, right now. `index` is `null` when every key is rate
+    /// limited, and `wait_secs` then says how long until one is not.
+    KeyRingPick { ring: KeyRing, now: u64 },
+
+    /// The endpoint answered 429 for the key at `index`. Returns the updated ring;
+    /// the retry hint is parsed here so Swift never has to.
+    KeyRingLimited {
+        ring: KeyRing,
+        index: usize,
+        now: u64,
+        #[serde(default)]
+        retry_after_header: Option<String>,
+        #[serde(default)]
+        body: String,
+    },
+}
+
+/// What [`Op::KeyRingPick`] answers.
+#[derive(Debug, Serialize)]
+struct Pick {
+    index: Option<usize>,
+    wait_secs: Option<u64>,
 }
 
 /// What [`Op::AsrBiasPrompt`] answers.
@@ -128,7 +156,8 @@ enum Response {
 
 /// The bridge's version. Bumped when a request or response shape changes in a way
 /// Swift must notice; not tied to the crate version, which moves for other reasons.
-const BRIDGE_VERSION: u32 = 1;
+/// 2: the `key_ring_*` ops.
+const BRIDGE_VERSION: u32 = 2;
 
 fn dispatch(op: Op) -> Result<serde_json::Value, String> {
     let value = match op {
@@ -182,6 +211,26 @@ fn dispatch(op: Op) -> Result<serde_json::Value, String> {
             prompted,
             vocab,
         } => serde_json::json!(accept_prompted(&unprompted, &prompted, &vocab)),
+
+        Op::KeyRingNew { keys } => to_value(&KeyRing::new(keys))?,
+
+        Op::KeyRingPick { ring, now } => {
+            let index = ring.pick(now);
+            let wait_secs = if index.is_none() { ring.wait_secs(now) } else { None };
+            to_value(&Pick { index, wait_secs })?
+        }
+
+        Op::KeyRingLimited {
+            mut ring,
+            index,
+            now,
+            retry_after_header,
+            body,
+        } => {
+            let secs = retry_after_secs(retry_after_header.as_deref(), &body);
+            ring.report_limited(index, now, secs);
+            to_value(&ring)?
+        }
     };
     Ok(value)
 }
@@ -289,7 +338,32 @@ mod tests {
 
     #[test]
     fn version_reports_the_bridge_number() {
-        assert_eq!(ok(serde_json::json!({"op": "version"}))["bridge"], 1);
+        assert_eq!(ok(serde_json::json!({"op": "version"}))["bridge"], 2);
+    }
+
+    /// The ring is opaque to Swift: it goes out of `key_ring_new`, back into
+    /// `key_ring_pick` and `key_ring_limited`, and must survive the trip with its
+    /// clocks — a ring that forgot a limit would send the same dead key again.
+    #[test]
+    fn a_key_ring_rotates_across_the_bridge() {
+        let ring = ok(serde_json::json!({"op": "key_ring_new", "keys": ["gsk_a", "gsk_b", "gsk_a"]}));
+        assert_eq!(ring["keys"].as_array().unwrap().len(), 2, "duplicate kept: {ring}");
+        let pick = ok(serde_json::json!({"op": "key_ring_pick", "ring": ring, "now": 1000}));
+        assert_eq!(pick["index"], 0);
+
+        let ring = ok(serde_json::json!({
+            "op": "key_ring_limited", "ring": ring, "index": 0, "now": 1000,
+            "body": "{\"error\":{\"message\":\"Please try again in 2m5s.\"}}",
+        }));
+        let pick = ok(serde_json::json!({"op": "key_ring_pick", "ring": ring, "now": 1000}));
+        assert_eq!(pick["index"], 1, "did not move to the second key: {pick}");
+
+        let ring = ok(serde_json::json!({"op": "key_ring_limited", "ring": ring, "index": 1, "now": 1000}));
+        let pick = ok(serde_json::json!({"op": "key_ring_pick", "ring": ring, "now": 1000}));
+        assert!(pick["index"].is_null(), "{pick}");
+        assert_eq!(pick["wait_secs"], 60, "the unhinted limit is a minute: {pick}");
+        let pick = ok(serde_json::json!({"op": "key_ring_pick", "ring": ring, "now": 1125}));
+        assert_eq!(pick["index"], 0, "the first key is preferred once free: {pick}");
     }
 
     /// The whole point of the bridge: Swift sends a transcript, gets the messages to

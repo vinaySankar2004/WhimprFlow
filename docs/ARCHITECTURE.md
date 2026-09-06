@@ -187,6 +187,18 @@ daily cap lands. Pasting raw there returns text with the fillers still in it and
 a log line to explain why, so it reads as "cleanup is broken" rather than "the quota
 ran out". Raw stays the last resort: no engine available, or the gates rejected.
 
+**Several keys rotate before any of that.** `whimpr_core::cloud::KeyRing` holds the
+stored keys in the order they were added and, per key, until when the endpoint said it
+was limited; `pick` returns the first free one, so the user's own key carries the load
+and the others fill its gaps. A provider tries the picked key, and on a 429 marks it
+for as long as the `Retry-After` header or Groq's prose hint ("try again in 16m58s")
+asks and moves to the next; only when every key is marked does it fail, with the same
+429-shaped error the fallback chain already handles. The clocks persist across
+dictations, so inside a limit window the dead key costs no round trip. Cleanup and
+cloud ASR each hold their own ring over the same keys, because the caps are per model.
+The policy is pure and passed `now`, so iOS runs the identical one through the bridge
+(`key_ring_new` / `key_ring_pick` / `key_ring_limited`) rather than a Swift copy.
+
 **The local worker is only preloaded when local cleanup is the selected engine.**
 Loading it means paging in a 2.3 GB model that then stays resident for the life of the
 app — measured at 2.2 GB on a machine whose `cleanup_mode` was the cloud, held around
@@ -897,8 +909,10 @@ is why a new `Settings` or `SessionRecord` field needs `#[serde(default)]` — w
 it one unknown shape fails the whole parse and silently resets everything saved.
 
 Two things deliberately live elsewhere. **API keys** go in the OS keychain (service
-`com.whimpr.whimprflow`), never a file. **Audio** is never persisted at all: samples
-exist in memory from `StartCapture` until transcription and are then dropped.
+`com.whimpr.whimprflow`, one item holding every key one per line, so a key stored
+before there was a list still reads), never a file; the Hub sees them masked to their
+ends and never whole. **Audio** is never persisted at all: samples exist in memory from
+`StartCapture` until transcription and are then dropped.
 
 ### Diagnostics reach a file, not nowhere
 

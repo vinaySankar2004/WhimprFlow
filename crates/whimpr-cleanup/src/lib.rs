@@ -6,11 +6,13 @@
 //! enhancement, never a gate.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use whimpr_core::cleanup::{
     build_messages, max_tokens_for, CleanupContext, CleanupProvider, ProviderId,
 };
+use whimpr_core::cloud::{retry_after_secs, KeyRing};
 
 /// Default OpenAI Chat Completions endpoint.
 const OPENAI_DEFAULT_URL: &str = "https://api.openai.com/v1/chat/completions";
@@ -21,21 +23,24 @@ const OPENAI_DEFAULT_URL: &str = "https://api.openai.com/v1/chat/completions";
 /// `https://openrouter.ai/api/v1/chat/completions`.
 pub struct OpenAiProvider {
     client: reqwest::blocking::Client,
-    api_key: String,
+    /// Every key the user gave for this endpoint, and which are rate limited. Owned
+    /// here rather than shared with cloud ASR because a vendor's caps are per model:
+    /// a key that has spent its cleanup quota can still transcribe.
+    keys: Mutex<KeyRing>,
     model: String,
     /// Full chat-completions URL. Defaults to OpenAI's when empty.
     url: String,
 }
 
 impl OpenAiProvider {
-    pub fn new(api_key: String, model: impl Into<String>) -> Self {
-        Self::with_base_url(api_key, model, None)
+    pub fn new(keys: Vec<String>, model: impl Into<String>) -> Self {
+        Self::with_base_url(keys, model, None)
     }
 
     /// `base_url` is the API root (e.g. `https://openrouter.ai/api/v1`), without
     /// the `/chat/completions` suffix. `None` or empty uses OpenAI directly.
     pub fn with_base_url(
-        api_key: String,
+        keys: Vec<String>,
         model: impl Into<String>,
         base_url: Option<String>,
     ) -> Self {
@@ -49,9 +54,81 @@ impl OpenAiProvider {
         };
         Self {
             client,
-            api_key,
+            keys: Mutex::new(KeyRing::new(keys)),
             model: model.into(),
             url,
+        }
+    }
+
+    /// The first key that is not rate limited, or the error the caller falls back on.
+    ///
+    /// The message carries "429" and a "try again in" hint on purpose: the caller's
+    /// fallback chain and `cleanup_check`'s retry both read it the way they read the
+    /// endpoint's own answer.
+    fn pick(&self) -> anyhow::Result<(usize, String)> {
+        let ring = self.keys.lock().unwrap();
+        let now = unix_now();
+        match ring.pick(now) {
+            Some(i) => Ok((i, ring.keys()[i].clone())),
+            None => anyhow::bail!(
+                "OpenAI HTTP 429: every key ({}) is rate limited. Please try again in {}s",
+                ring.len(),
+                ring.wait_secs(now).unwrap_or(0)
+            ),
+        }
+    }
+
+    /// POST with the first usable key, moving to the next on a 429 until one answers
+    /// or none is left. A key that is limited stays marked for as long as the
+    /// endpoint asked, so the dictations that follow inside that window skip the
+    /// dead key — and the network round trip — outright.
+    fn post(
+        &self,
+        body: &mut serde_json::Value,
+        mut low_reasoning: bool,
+    ) -> anyhow::Result<reqwest::blocking::Response> {
+        loop {
+            let (index, key) = self.pick()?;
+            let mut resp = self.client.post(&self.url).bearer_auth(&key).json(&*body).send()?;
+
+            // A 400 is how an endpoint says it does not know a parameter, and the
+            // allowlist in `takes_reasoning_effort` is a guess about vendors, not a
+            // contract with them. Drop the optimization and retry rather than let it
+            // cost the user cleanup entirely: on a cloud-only install there is no
+            // local model to fall back to, so a rejected parameter would mean raw,
+            // filler-ridden pastes forever. Remembered process-wide, so this costs
+            // one wasted call and not one per dictation.
+            if resp.status() == reqwest::StatusCode::BAD_REQUEST && low_reasoning {
+                eprintln!(
+                    "[whimpr] endpoint rejected reasoning_effort — retrying without it, \
+                     and not sending it again this run"
+                );
+                REASONING_EFFORT_REFUSED.store(true, Ordering::Relaxed);
+                body.as_object_mut().map(|b| b.remove("reasoning_effort"));
+                low_reasoning = false;
+                resp = self.client.post(&self.url).bearer_auth(&key).json(&*body).send()?;
+            }
+
+            if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let header = resp
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+                let detail = resp.text().unwrap_or_default();
+                let secs = retry_after_secs(header.as_deref(), &detail);
+                let mut ring = self.keys.lock().unwrap();
+                ring.report_limited(index, unix_now(), secs);
+                eprintln!(
+                    "[whimpr] cloud key {} of {} is rate limited for {}s{}",
+                    index + 1,
+                    ring.len(),
+                    secs.map(|s| s.ceil() as u64).unwrap_or(60),
+                    if ring.pick(unix_now()).is_some() { " — trying the next" } else { "" }
+                );
+                continue;
+            }
+            return Ok(resp);
         }
     }
 }
@@ -98,34 +175,7 @@ impl CleanupProvider for OpenAiProvider {
             body["reasoning_effort"] = serde_json::json!("low");
         }
 
-        let mut resp = self
-            .client
-            .post(&self.url)
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()?;
-
-        // A 400 is how an endpoint says it does not know a parameter, and the
-        // allowlist above is a guess about vendors, not a contract with them. Drop
-        // the optimization and retry rather than let it cost the user cleanup
-        // entirely: on a cloud-only install there is no local model to fall back to,
-        // so a rejected parameter would mean raw, filler-ridden pastes forever.
-        // Remembered process-wide, so this costs one wasted call and not one per
-        // dictation.
-        if resp.status() == reqwest::StatusCode::BAD_REQUEST && asked_for_low_reasoning {
-            eprintln!(
-                "[whimpr] endpoint rejected reasoning_effort — retrying without it, \
-                 and not sending it again this run"
-            );
-            REASONING_EFFORT_REFUSED.store(true, Ordering::Relaxed);
-            body.as_object_mut().map(|b| b.remove("reasoning_effort"));
-            resp = self
-                .client
-                .post(&self.url)
-                .bearer_auth(&self.api_key)
-                .json(&body)
-                .send()?;
-        }
+        let resp = self.post(&mut body, asked_for_low_reasoning)?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -171,6 +221,13 @@ impl CleanupProvider for OpenAiProvider {
     }
 }
 
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Set once an endpoint has answered 400 to `reasoning_effort`, so the parameter is
 /// not sent again for the rest of the run. Deliberately process-wide rather than
 /// per-provider: the answer is a property of the endpoint and model, both of which
@@ -189,7 +246,7 @@ fn takes_reasoning_effort(model: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::takes_reasoning_effort;
+    use super::*;
 
     #[test]
     fn reasoning_effort_goes_to_the_models_that_take_it() {
@@ -206,5 +263,15 @@ mod tests {
         for m in ["gpt-4o-mini", "gpt-4.1", "claude-haiku-4-5", "llama-3.3-70b-versatile"] {
             assert!(!takes_reasoning_effort(m), "{m}");
         }
+    }
+
+    /// No keys is an error the caller can fall back on, not a panic, and the error
+    /// reads like the endpoint's own 429 so the fallback chain treats it the same.
+    #[test]
+    fn no_usable_key_is_a_rate_limit_error() {
+        let p = OpenAiProvider::new(vec![], "m");
+        let err = p.pick().unwrap_err().to_string();
+        assert!(err.contains("429"), "{err}");
+        assert!(err.contains("try again in"), "{err}");
     }
 }

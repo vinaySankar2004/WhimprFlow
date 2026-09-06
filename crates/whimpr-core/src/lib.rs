@@ -11,6 +11,7 @@
 
 pub mod asr;
 pub mod cleanup;
+pub mod cloud;
 pub mod dictionary;
 pub mod pipeline;
 pub mod settings;
@@ -20,6 +21,7 @@ pub mod types;
 
 pub use asr::{AsrEngine, AsrEngineId, Transcript};
 pub use cleanup::{CleanupContext, CleanupLevel, CleanupProvider, ProviderId, VocabEntry};
+pub use cloud::KeyRing;
 pub use dictionary::{DictSource, DictionaryEntry, DictionaryStore};
 pub use pipeline::{Engine, Finished, Prepared};
 pub use settings::{

@@ -6,7 +6,7 @@ use whimpr_core::{CleanupContext, CleanupLevel, CleanupProvider};
 
 fn main() -> anyhow::Result<()> {
     let key = std::env::var("OPENAI_API_KEY")?;
-    let provider = OpenAiProvider::new(key, "gpt-4o-mini");
+    let provider = OpenAiProvider::new(vec![key], "gpt-4o-mini");
 
     let samples = [
         "um so i think we should uh meet at 2 actually 3 tomorrow you know to talk about the the project",

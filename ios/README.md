@@ -138,8 +138,8 @@ ios/
     WhimprCore.swift     the bridge; a transport with no judgement of its own
     Handoff.swift        App Group + Darwin notifications (start/stop/cancel/result/state/alive)
     LevelChannel.swift   the live mic level, one Float in a memory-mapped file
-    Settings.swift       settings, appearance, and the Keychain
-    Groq.swift           Whisper + chat-completions
+    Settings.swift       settings, appearance, and the Keychain (every key, one per line)
+    Groq.swift           Whisper + chat-completions, rotating keys on a 429 via the core's ring
     Palette.swift        the colours, both appearances, as dynamic UIColors
     Theme.swift          SwiftUI wrapper over Palette
   WhimprFlow/            the app: Recorder (standby + capture), DictationController, views
@@ -266,6 +266,12 @@ agreement.
   recordings pulled apart frame by frame (see the notes in `KeyboardViewController`);
 - the `whimprflow://` fallback after a force-quit;
 - the Mac and iOS shells pasting identical text: `cargo test -p whimpr-ffi`.
+
+**Installed but not exercised on the device:** key rotation (2026-09-05). The build
+with the key list and the ring installs and launches on the phone; that a 429 on one
+key actually moves a dictation to the next was verified only by the core's tests and
+the bridge round-trip in `crates/whimpr-ffi`, not by provoking a real limit with two
+keys on the device. Same standing on the Mac.
 
 **Not yet exercised:** TestFlight. Nothing has been archived or uploaded; Part 2 of
 [DEPLOY.md](DEPLOY.md) is written but unwalked, and the globally unique App Store

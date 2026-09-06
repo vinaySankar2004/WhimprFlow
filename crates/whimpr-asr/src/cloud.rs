@@ -11,9 +11,11 @@
 //! sends a transcript.
 
 use std::io::Cursor;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use whimpr_core::asr::{AsrCaps, AsrEngine, AsrEngineId, Transcript};
+use whimpr_core::cloud::{retry_after_secs, KeyRing};
 
 /// Groq transcribes far faster than realtime, so this is a stall guard, not a budget.
 /// It is generous because the whole clip is uploaded first and a phone tether is a
@@ -23,24 +25,46 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// Speech recognition over HTTP against a Groq-hosted Whisper.
 pub struct CloudAsr {
     client: reqwest::blocking::Client,
-    api_key: String,
+    /// The same keys cleanup holds, with their own clocks: the vendor's caps are per
+    /// model, so a key limited for cleanup may still transcribe and vice versa.
+    keys: Mutex<KeyRing>,
     model: String,
     url: String,
 }
 
 impl CloudAsr {
-    pub fn new(api_key: String, model: impl Into<String>, url: impl Into<String>) -> Self {
+    pub fn new(keys: Vec<String>, model: impl Into<String>, url: impl Into<String>) -> Self {
         let client = reqwest::blocking::Client::builder()
             .timeout(TIMEOUT)
             .build()
             .expect("failed to build HTTP client");
         Self {
             client,
-            api_key,
+            keys: Mutex::new(KeyRing::new(keys)),
             model: model.into(),
             url: url.into(),
         }
     }
+
+    fn pick(&self) -> anyhow::Result<(usize, String)> {
+        let ring = self.keys.lock().unwrap();
+        let now = unix_now();
+        match ring.pick(now) {
+            Some(i) => Ok((i, ring.keys()[i].clone())),
+            None => anyhow::bail!(
+                "cloud ASR HTTP 429: every key ({}) is rate limited. Please try again in {}s",
+                ring.len(),
+                ring.wait_secs(now).unwrap_or(0)
+            ),
+        }
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 impl AsrEngine for CloudAsr {
@@ -64,44 +88,61 @@ impl AsrEngine for CloudAsr {
         }
         let wav = encode_wav_16k_mono(pcm16k)?;
 
-        let mut form = reqwest::blocking::multipart::Form::new()
-            .text("model", self.model.clone())
-            // Plain text back: no segments, no timestamps, nothing to parse around.
-            .text("response_format", "text")
-            // Pinned rather than auto-detected. Whisper's language ID is unreliable on
-            // short push-to-talk clips and a wrong guess does not mis-spell a word, it
-            // silently *translates* the whole utterance.
-            .text("language", "en")
-            .text("temperature", "0")
-            .part(
-                "file",
-                reqwest::blocking::multipart::Part::reader(Cursor::new(wav))
-                    .file_name("utterance.wav")
-                    .mime_str("audio/wav")?,
-            );
-        // The same conditioning the local engine gets, so `accept_prompted` is still
-        // comparing like with like across the two passes. Without this the dictionary
-        // would quietly stop working the moment cloud ASR was selected.
-        if let Some(p) = initial_prompt {
-            form = form.text("prompt", p.to_string());
-        }
+        // One attempt per usable key: a 429 marks that key for as long as the
+        // endpoint asked and moves on, and `pick` is the exit when none is left.
+        loop {
+            let (index, key) = self.pick()?;
+            let mut form = reqwest::blocking::multipart::Form::new()
+                .text("model", self.model.clone())
+                // Plain text back: no segments, no timestamps, nothing to parse around.
+                .text("response_format", "text")
+                // Pinned rather than auto-detected. Whisper's language ID is unreliable
+                // on short push-to-talk clips and a wrong guess does not mis-spell a
+                // word, it silently *translates* the whole utterance.
+                .text("language", "en")
+                .text("temperature", "0")
+                .part(
+                    "file",
+                    reqwest::blocking::multipart::Part::reader(Cursor::new(wav.clone()))
+                        .file_name("utterance.wav")
+                        .mime_str("audio/wav")?,
+                );
+            // The same conditioning the local engine gets, so `accept_prompted` is
+            // still comparing like with like across the two passes. Without this the
+            // dictionary would quietly stop working the moment cloud ASR was selected.
+            if let Some(p) = initial_prompt {
+                form = form.text("prompt", p.to_string());
+            }
 
-        let resp = self
-            .client
-            .post(&self.url)
-            .bearer_auth(&self.api_key)
-            .multipart(form)
-            .send()?;
+            let resp = self.client.post(&self.url).bearer_auth(&key).multipart(form).send()?;
 
-        let status = resp.status();
-        let body = resp.text().unwrap_or_default();
-        if !status.is_success() {
-            anyhow::bail!("cloud ASR HTTP {status}: {body}");
+            let status = resp.status();
+            let header = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            let body = resp.text().unwrap_or_default();
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let secs = retry_after_secs(header.as_deref(), &body);
+                let mut ring = self.keys.lock().unwrap();
+                ring.report_limited(index, unix_now(), secs);
+                eprintln!(
+                    "[whimpr] cloud ASR key {} of {} is rate limited for {}s",
+                    index + 1,
+                    ring.len(),
+                    secs.map(|s| s.ceil() as u64).unwrap_or(60)
+                );
+                continue;
+            }
+            if !status.is_success() {
+                anyhow::bail!("cloud ASR HTTP {status}: {body}");
+            }
+            return Ok(Transcript {
+                text: body.trim().to_string(),
+                confidence: None,
+            });
         }
-        Ok(Transcript {
-            text: body.trim().to_string(),
-            confidence: None,
-        })
     }
 }
 
