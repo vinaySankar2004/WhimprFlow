@@ -81,14 +81,14 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
             cornerRadius: 5.5, fontSize: 22, popups: true, pad: false
         )
         /// Measured off the stock keyboard on an 11" iPad: landscape keys are about
-        /// 81 × 71 pt with 13-pt gaps; portrait about 55 × 55 with 10. Ours are a
-        /// little shorter, since there is a bar above them the stock one lacks.
+        /// 81 × 71 pt with 13-pt gaps; portrait about 55 × 55 with 10. Tuned taller
+        /// twice on his iPad after that; the gaps stayed, the keys grew from inside.
         static let padPortrait = Metrics(
-            keyHeight: 58, rowGap: 10, gap: 10, sideMargin: 10, topPad: 10, bottomPad: 8,
+            keyHeight: 62, rowGap: 10, gap: 10, sideMargin: 10, topPad: 10, bottomPad: 8,
             cornerRadius: 8, fontSize: 24, popups: false, pad: true
         )
         static let padLandscape = Metrics(
-            keyHeight: 68, rowGap: 13, gap: 13, sideMargin: 14, topPad: 12, bottomPad: 10,
+            keyHeight: 74, rowGap: 13, gap: 13, sideMargin: 14, topPad: 12, bottomPad: 10,
             cornerRadius: 10, fontSize: 26, popups: false, pad: true
         )
 
