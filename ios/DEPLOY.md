@@ -210,6 +210,28 @@ year. Setting a calendar reminder for day 80 is cheaper than being told it broke
 
 ---
 
+## Installing on a new device over the cable
+
+A device Xcode has not seen needs two things, both learned on the iPad:
+
+- **Developer Mode** (Settings → Privacy & Security, at the bottom) — the toggle is
+  hidden until a development request has reached the device *and* it has restarted.
+  Attempt a build against it once, restart the iPad, then it is there.
+- **Registration in the team**, which automatic signing does only when asked:
+
+  ```bash
+  cd ios && ./../scripts/build-ios-core.sh && xcodebuild -project WhimprFlow.xcodeproj \
+    -scheme WhimprFlow -sdk iphoneos -configuration Release -destination "id=<udid>" \
+    -allowProvisioningUpdates -allowProvisioningDeviceRegistration build
+  xcrun devicectl device install app --device <coredevice-id> <path to WhimprFlow.app>
+  xcrun devicectl device process launch --device <coredevice-id> com.whimpr.whimprflow
+  ```
+
+  Without `-allowProvisioningDeviceRegistration` the build fails with "Device isn't
+  registered in your developer account" even with `-allowProvisioningUpdates`.
+  `xcrun xctrace list devices` gives the udid for xcodebuild; `xcrun devicectl list
+  devices` gives the CoreDevice id for devicectl — they are different identifiers.
+
 ## When something does not work
 
 | Symptom | Cause |
