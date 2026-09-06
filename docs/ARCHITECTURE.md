@@ -211,7 +211,7 @@ prompt. A fixed ceiling is not a safety limit, it is a silent truncation: cleanu
 returns the same words the speaker said, so a long dictation needs a proportionally
 long completion, and when it runs out the text stops mid-sentence and gets pasted
 that way. The gates cannot catch it — losing the last tenth of a message is nowhere
-near the 55% over-deletion threshold, so it reads as a pass. Measured under the old
+near the 65% over-deletion threshold, so it reads as a pass. Measured under the old
 fixed 512: a 380-word dictation came back ending on the word "Essentially", 45 words
 short, with nothing logged. The cloud path additionally checks `finish_reason` and
 fails on `length`, because a complete raw transcript beats a clean half of one.
@@ -361,29 +361,57 @@ the two providers on the same footing, which is the same reason they share one p
 It makes runs repeatable, not bit-identical — batching and kernel nondeterminism
 upstream are not ours to control.
 
-The suite costs ~19k prompt tokens against Groq's free 8k-per-minute ceiling, so it
-*will* be rate limited partway through and waits out the delay the API names. The app's
-answer to a 429 is different and stays different — it falls back to the local model,
-because someone waiting on a paste cannot wait 12 seconds.
+Every cloud call carries the whole system prompt and few-shot block — about 2,100
+prompt tokens, measured — so the suite costs ~50k tokens against Groq's free
+8k-per-minute ceiling, and it *will* be rate limited partway through and waits out the
+delay the API names. The same key also has a **200k-tokens-per-day** cap, shared with
+the app: a full run spends a quarter of it, and the app itself gets roughly 95
+dictations a day before the daily line. Run `--only <case>` for the cases a change
+touches. The app's answer to a 429 is different and stays different — it falls back to
+the local model, because someone waiting on a paste cannot wait 12 seconds.
 
 **Gates are the safety net.** An LLM asked to tidy a transcript will sometimes
 rewrite it. `cleanup::gates::evaluate` rejects the output and pastes the raw
 transcript instead when it sees:
 
-- novelty ratio above the level's ceiling (output words that were never spoken)
-- a must-preserve token vanishing (number, URL, email, code-ish token)
-- over-deletion (shrank >55%, measured *after* discounting the filler rule 1 authorized
+- novelty ratio above the level's ceiling of 0.40 (output words that were never
+  spoken). An emoji is exempt when the transcript contains the word "emoji" — the
+  glyph is by definition not in the raw text, and in a short message it is half the
+  output. An emoji nobody asked for still counts.
+- a must-preserve token vanishing (number, URL, email, code-ish token), compared
+  case-insensitively because Messaging lowercases the paste and a real "Amazon.com"
+  was rejected as lost for coming back as "amazon.com"
+- over-deletion (shrank >65%, measured *after* discounting the filler rule 1 authorized
   removing — otherwise the gate punishes cleanup for doing its job: a real 70-word
-  dictation at speaking density, cleaned correctly, shrank 56% and was rejected, so the
-  raw transcript with every filler intact is what reached the cursor. Cleanup looked
-  switched off precisely when it had worked best, and the better the model the more
-  often it happened. The discount is bounded to the authorized filler list and nothing
-  else, the same shape as the vocab carve-out on novelty.)
+  dictation at speaking density, cleaned correctly, shrank 56% and was rejected at the
+  original 55% line, so the raw transcript with every filler intact is what reached the
+  cursor. Cleanup looked switched off precisely when it had worked best, and the better
+  the model the more often it happened. The discount is bounded to the authorized
+  filler list plus a spoken emoji request and nothing else, the same shape as the vocab
+  carve-out on novelty.) The ceiling widens to 80% when the transcript contains an
+  unambiguous self-correction cue ("scratch that", "no wait", "never mind", "make
+  that", "I meant"): rule 3 tells the model to delete the abandoned wording, and the
+  abandoned wording is routinely most of the utterance. Two real dictations — "Okay, so
+  I want to talk about... actually, um, scratch that. Let's talk about how life is."
+  and a stumbled start corrected twice over — cleaned correctly, shrank 63% and 58%,
+  and were rejected, so the raw text with "scratch that" still in it is what got
+  pasted, which reads as the app ignoring the cue. "actually", "sorry", "wait" and "I
+  mean" do not widen it; they are too common in speech that corrects nothing.
 - hallucination (grew beyond punctuation)
 - a banned pattern (added greeting/sign-off, or an assistant-style reply)
 
 A wrong-but-clean paste is worse than an untidy-but-faithful one, so the gates
-prefer the raw text whenever they are unsure.
+prefer the raw text whenever they are unsure. But the thresholds were set against a
+4B model and loosened once the cloud model became the path in use: what the gates
+exist to catch — the model answering a request, or summarizing — lands at a 0.9
+shrink or a 0.7 novelty ratio, far past either line, and what lived just under the old
+lines was correct cleanup of speech-dense dictation.
+
+**A spoken emoji request is rendered by the model, not by a table.** Rule 10 of the
+prompt turns "laughing emoji" into 😂 and a bare "emoji" into whichever fits the
+sentence, with one few-shot demonstration; the gates above make room for the glyph. It
+applies at Light and Messaging alike because both send the prompt, and not at None
+because nothing does. `cleanup_check` carries a `Renders` case group for it.
 
 **A dictation that is itself a request gets answered rather than written down**, on
 the small local model, and the over-deletion gate is what catches it. Measured with
@@ -410,7 +438,7 @@ prompt — and treats those spellings as expected rather than novel. This is not
 convenience parameter: a dictionary correction replaces a mis-heard token with a
 spelling that by definition is not in the raw transcript, so without it every
 custom-vocabulary fix reads as the model inventing a word. On a short dictation
-("hey monvi" → "Hey Manvi.") that is a 0.5 novelty ratio against a 0.34 ceiling, so
+("hey monvi" → "Hey Manvi.") that is a 0.5 novelty ratio against a 0.40 ceiling, so
 the gate threw the fix away and pasted the mishear — the dictionary appeared to
 work on long sentences and silently do nothing on short ones. Only the authorized
 spellings are exempted, so a rewrite that happens to mention a dictionary name is

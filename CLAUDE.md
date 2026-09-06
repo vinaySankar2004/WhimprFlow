@@ -197,6 +197,23 @@ These are not hypotheticals; each one bit during development.
   measuring, or it punishes cleanup for working: a real 70-word dictation cleaned
   correctly by the 120b shrank 56%, tripped the 55% line, and got the raw pasted with
   every filler intact. The better the model, the more often that fires.
+- **The over-deletion gate widens on a real self-correction cue, and must not widen on
+  "actually" or "sorry".** A resolved "scratch that" legitimately drops most of the
+  utterance — two real dictations shrank 63% and 58% and were rejected at the old 55%
+  line, so the raw text with the cue still in it was pasted and read as the app
+  ignoring the cue. Only cues that cannot be an ordinary word (`CORRECTION_CUES`) buy
+  the 80% ceiling; the rest are too common in speech that corrects nothing, and the
+  gate's job — catching a model that answers or summarizes, at a 0.9 shrink — still
+  has to hold with the wider line. Same shape for a spoken emoji: the gates discount
+  the words that asked for it and exempt the glyph from novelty, but only when the
+  transcript says "emoji". Do not exempt emoji unconditionally.
+- **The local worker must decode token bytes itself.** llama-cpp-2's `token_to_piece`
+  sizes its output to the token's byte count, so a byte that completes a 4-byte
+  character the decoder was holding from earlier tokens has nowhere to go and is
+  dropped — every astral-plane emoji vanished, leaving a double space, while ❤️ and
+  other BMP characters survived. The symptom is "say laughing emoji and get nothing",
+  on the local path only. `token_to_piece_bytes` plus a reservation the decoder sizes
+  is the fix; do not go back to the convenience method.
 - **A green local `cleanup_check` says nothing about a cloud install.** The two models
   fail in opposite directions: the 4B answers dictation that is a request, and the 20B
   does not but over-triggers on correction cues where the 4B does not — it returned

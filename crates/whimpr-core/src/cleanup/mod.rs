@@ -111,7 +111,7 @@ const MAX_COMPLETION_TOKENS: u32 = 4096;
 /// a silent truncation: cleanup returns the same words the speaker said, so a long
 /// dictation needs a proportionally long completion, and when it runs out the text
 /// simply stops mid-sentence and gets pasted that way. The gates cannot save you —
-/// losing the last 12% of a message is far under the 55% over-deletion threshold,
+/// losing the last 12% of a message is far under the 65% over-deletion threshold,
 /// so it reads as a pass. Measured: a 380-word dictation under the old fixed 512
 /// came back ending on the word "Essentially", 45 words short, with nothing logged.
 ///

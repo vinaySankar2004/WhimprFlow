@@ -16,6 +16,7 @@ use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
+use llama_cpp_2::TokenToStringError;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -118,7 +119,15 @@ fn generate(backend: &LlamaBackend, model: &LlamaModel, req: &Request) -> anyhow
     // quietly evicts the beginning of the prompt, which loses the instructions and
     // the demonstrations while still returning fluent-looking text.
     let n_ctx = (n_prompt + req.max_tokens + 64).clamp(4096, 16_384) as u32;
-    let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx));
+    // The batch has to hold the whole prompt too: it is submitted in one `decode`,
+    // and llama.cpp *aborts the process* — GGML_ASSERT, not an error — when the
+    // batch exceeds `n_batch`, which defaults to 2048. The prompt sat just under
+    // that until one more rule and one more demonstration pushed a 70-word dictation
+    // over it, and every long dictation on the local path then killed the worker
+    // mid-request, which the app reads as a dead engine and pastes raw.
+    let ctx_params = LlamaContextParams::default()
+        .with_n_ctx(NonZeroU32::new(n_ctx))
+        .with_n_batch(n_ctx);
     let mut ctx = model.new_context(backend, ctx_params)?;
 
     let mut batch = LlamaBatch::new(n_ctx as usize, 1);
@@ -135,14 +144,20 @@ fn generate(backend: &LlamaBackend, model: &LlamaModel, req: &Request) -> anyhow
 
     // ONE decoder for the whole generation, not one per token. A multi-byte UTF-8
     // character can straddle two tokens, and only a decoder that carries the partial
-    // bytes across the boundary can reassemble it; the deprecated `token_to_str`
-    // news up a fresh decoder per call, which is why upstream deprecated it.
+    // bytes across the boundary can reassemble it.
     //
-    // Measured, so nobody re-litigates this: with Qwen3-4B, emoji, ZWJ flags, CJK
-    // and combining accents all round-trip cleanly through the OLD path too — the
-    // detokenizer evidently hands back whole characters for these. So this is the
-    // correct API rather than a fix for an observed bug. Keep it anyway: correctness
-    // here costs nothing and does not depend on a tokenizer's incidental behavior.
+    // The bytes are decoded here rather than through the library's `token_to_piece`,
+    // which is that same decoder behind a bug: it decodes each token into a String
+    // sized to that token's bytes, on the assumption that a byte yields at most one
+    // character. A byte that COMPLETES a character the decoder was holding from
+    // earlier tokens yields the whole character, which does not fit, and encoding_rs
+    // reports the output as full and drops it. Qwen3-4B emits a 4-byte emoji as
+    // separate byte tokens, so every one of them vanished — measured: "hilarious 😂
+    // see you 🎉 thanks ❤️ ok 🤦‍♂️" came back as "hilarious  see you  thanks ❤️ ok ♂️",
+    // every astral-plane character gone and the BMP ones intact. The earlier note
+    // here claiming emoji round-tripped cleanly was measured on characters that
+    // happen to fit in one token. Reserving what the decoder says it may need is
+    // the whole fix.
     let mut decoder = encoding_rs::UTF_8.new_decoder();
 
     while n_cur <= limit {
@@ -152,7 +167,19 @@ fn generate(backend: &LlamaBackend, model: &LlamaModel, req: &Request) -> anyhow
             break;
         }
         // `true` = render special tokens, matching the old Special::Tokenize.
-        out.push_str(&model.token_to_piece(token, &mut decoder, true, None)?);
+        let bytes = match model.token_to_piece_bytes(token, 8, true, None) {
+            // A negative size is the size that would have been needed.
+            Err(TokenToStringError::InsufficientBufferSpace(need)) => {
+                model.token_to_piece_bytes(token, need.unsigned_abs() as usize, true, None)?
+            }
+            other => other?,
+        };
+        let need = decoder
+            .max_utf8_buffer_length(bytes.len())
+            .unwrap_or(bytes.len() * 4 + 16);
+        out.reserve(need);
+        // With the reservation above the result can only be InputEmpty.
+        let _ = decoder.decode_to_string(&bytes, &mut out, false);
         batch.clear();
         batch.add(token, n_cur, &[0], true)?;
         n_cur += 1;

@@ -51,10 +51,17 @@
 //!   cargo run -p whimpr-llm-worker --example cleanup_check --release [-- <model.gguf>]
 //!   cargo run -p whimpr-llm-worker --example cleanup_check --release -- --messaging
 //!   cargo run -p whimpr-llm-worker --example cleanup_check --release -- --cloud
+//!   cargo run -p whimpr-llm-worker --example cleanup_check --release -- --cloud --only emoji
 //!
 //! `--cloud` needs no setup: the endpoint comes from the app's `settings.json` and the
 //! key from the app's own Keychain entry, so it measures the configuration actually in
 //! use. `GROQ_API_KEY` / `OPENAI_API_KEY` override it for a one-off run.
+//!
+//! `--only <text>` runs the cases whose name contains it. The full suite costs about
+//! 40k tokens on the cloud, which is a fifth of Groq's free *daily* cap — and the cap
+//! is shared with the app, so a full run while the key is in use can push real
+//! dictations onto the local fallback for the rest of the day. Run the cases the
+//! change touches.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -78,6 +85,9 @@ enum Want {
     /// A correction cue appears but no correction was made. Nothing may be dropped:
     /// `kept` lists the words that vanish if the cue is matched as a keyword.
     Preserves,
+    /// A spoken emoji request must come back as a glyph: `gone` names the cue words,
+    /// `kept` the sentence around them, and the paste must contain an emoji.
+    Renders,
 }
 
 struct Case {
@@ -115,6 +125,28 @@ const CASES: &[Case] = &[
         said: "the total comes to fifty dollars scratch that sixty dollars",
         gone: &["scratch", "fifty"],
         kept: &["sixty", "total"],
+        known_limit: None,
+    },
+    Case {
+        // Real dictation, and a real gate rejection: the model resolved the
+        // correction exactly as rule 3 asks, the text shrank 63%, and the old 55%
+        // over-deletion line threw the cleanup away — so the raw transcript, "scratch
+        // that" and all, is what got pasted. Read by the speaker as the app ignoring
+        // the cue. The gate now widens to 80% when an unambiguous cue is present.
+        name: "real: a self-correction that abandons most of the utterance",
+        want: Want::Cleans,
+        said: "okay so i want to talk about actually um scratch that let's talk about how life is",
+        gone: &["scratch", "um"],
+        kept: &["life"],
+        known_limit: None,
+    },
+    Case {
+        // Real dictation, same shape, rejected at 58%.
+        name: "real: a stumbled start corrected twice over",
+        want: Want::Cleans,
+        said: "okay so i just noticed something that you know actually sorry i noticed something that actually scratched that i noticed that it works well on light but it does not work on messaging",
+        gone: &["scratched", "you know"],
+        kept: &["works", "light", "messaging"],
         known_limit: None,
     },
     Case {
@@ -267,6 +299,45 @@ const CASES: &[Case] = &[
         kept: &["second", "paragraph", "twice", "mean"],
         known_limit: None,
     },
+    // ---- Renders: a spoken emoji request becomes the emoji ----
+    Case {
+        // The named form, mid-message. The glyph replaces "laughing emoji" and the
+        // sentence continues past it.
+        name: "a named emoji request",
+        want: Want::Renders,
+        said: "haha that was hilarious laughing emoji see you tomorrow",
+        gone: &["emoji", "laughing"],
+        kept: &["hilarious", "tomorrow"],
+        known_limit: None,
+    },
+    Case {
+        // Held out from FEW_SHOT: a different name, at the very end, so a pass is
+        // the rule generalizing and not the demonstration being echoed.
+        name: "a named emoji request ending the message",
+        want: Want::Renders,
+        said: "thanks for dinner last night it was so good heart emoji",
+        gone: &["emoji", "heart"],
+        kept: &["dinner", "good"],
+        known_limit: None,
+    },
+    Case {
+        // The bare form: no name, the model picks one that fits the sentence.
+        name: "a bare emoji request",
+        want: Want::Renders,
+        said: "that was so much fun emoji thanks for having me",
+        gone: &["emoji"],
+        kept: &["fun", "thanks", "having"],
+        known_limit: None,
+    },
+    Case {
+        // The word used as a word. Rule 10 must not fire, and no glyph may appear.
+        name: "talking about emoji is not a request for one",
+        want: Want::Preserves,
+        said: "i never use emoji in work email it looks unprofessional",
+        gone: &[],
+        kept: &["never", "emoji", "email", "unprofessional"],
+        known_limit: None,
+    },
 ];
 
 /// Openers that mean the model answered or acknowledged instead of transcribing.
@@ -287,13 +358,20 @@ fn main() -> anyhow::Result<()> {
         CleanupLevel::Light
     };
     let cloud = args.iter().any(|a| a == "--cloud");
+    let only = args
+        .iter()
+        .position(|a| a == "--only")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.to_lowercase());
     let mut engine = if cloud {
         Engine::cloud()?
     } else {
         let model = args
             .iter()
-            .find(|a| !a.starts_with("--"))
-            .cloned()
+            .enumerate()
+            .filter(|(i, a)| !a.starts_with("--") && args.get(i.wrapping_sub(1)).map(|p| p != "--only").unwrap_or(true))
+            .map(|(_, a)| a.clone())
+            .next()
             .unwrap_or_else(default_model);
         if !std::path::Path::new(&model).exists() {
             anyhow::bail!("model not found: {model}");
@@ -308,6 +386,9 @@ fn main() -> anyhow::Result<()> {
     let mut stale = 0usize;
 
     for case in CASES {
+        if only.as_deref().is_some_and(|o| !case.name.to_lowercase().contains(o)) {
+            continue;
+        }
         println!("── {} ──", case.name);
         let words = case.said.split_whitespace().count();
         println!("   said:      {} ({words} words)", elide(case.said, 150));
@@ -364,6 +445,12 @@ fn main() -> anyhow::Result<()> {
             if let Some(tell) = REPLY_TELLS.iter().find(|t| opener.starts_with(**t)) {
                 problems.push(format!("answered instead of transcribing (opens {tell:?})"));
             }
+        }
+        let has_emoji = out.pasted.chars().any(|c| !c.is_ascii() && !c.is_alphanumeric() && !c.is_whitespace() && !c.is_ascii_punctuation());
+        match case.want {
+            Want::Renders if !has_emoji => problems.push("no emoji in the paste".to_string()),
+            Want::Preserves if has_emoji => problems.push("an emoji appeared that nobody asked for".to_string()),
+            _ => {}
         }
 
         match (problems.is_empty(), case.known_limit) {
@@ -476,7 +563,14 @@ impl Engine {
             .arg(model)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            // The worker's stderr is llama.cpp's load log, thousands of lines, so it
+            // is dropped — except when the worker dies mid-case, which reads as "EOF
+            // while parsing" and nothing else. WORKER_STDERR=1 shows the panic.
+            .stderr(if std::env::var_os("WORKER_STDERR").is_some() {
+                Stdio::inherit()
+            } else {
+                Stdio::null()
+            })
             .spawn()?;
         let stdin = child.stdin.take().expect("stdin");
         let stdout = BufReader::new(child.stdout.take().expect("stdout"));
@@ -572,8 +666,8 @@ impl Engine {
             // `build_messages`, and applies the same scaled token budget.
             //
             // Retries on 429 rather than failing the run. Every case carries the whole
-            // system prompt and few-shot block — about 1,600 prompt tokens — so the
-            // suite costs roughly 19k tokens against Groq's free 8,000-per-minute
+            // system prompt and few-shot block — about 2,100 prompt tokens — so the
+            // suite costs roughly 50k tokens against Groq's free 8,000-per-minute
             // ceiling and *will* hit it partway through. Nothing is wrong when it does,
             // and a harness that dies two thirds of the way in stops being run. The
             // app's own answer to a 429 is different and stays different: it falls

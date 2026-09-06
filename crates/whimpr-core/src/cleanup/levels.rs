@@ -52,7 +52,8 @@ impl CleanupLevel {
                  period ending a line, use commas sparingly.\n\
                  Casual means casual WORD CHOICE — keep contractions and slang exactly as \
                  spoken (\"gonna\" stays \"gonna\"), fix only clearly broken grammar, add \
-                 nothing. It does NOT mean leaving the speech in. Fillers, hesitations and \
+                 nothing the speaker did not ask for (an emoji they asked for by name is \
+                 asked for). It does NOT mean leaving the speech in. Fillers, hesitations and \
                  stutters come out here in full, exactly as at every other level: a chat \
                  message is still written, not transcribed. \"like\", \"you know\", \"I mean\" \
                  and \"basically\" are the ones that survive if you let them."
@@ -74,10 +75,17 @@ impl CleanupLevel {
     /// rewrites. Messaging edits no harder than Light, so it shares the ceiling —
     /// lowercasing and dropping punctuation are invisible to the gate, which
     /// normalizes case and strips punctuation before comparing.
+    ///
+    /// 0.40 rather than the original 0.34: on a short dictation one normalized token
+    /// is a large fraction of the output ("twenty five dollars please" → "$25
+    /// please" is 0.5), and a full rewrite is 0.7 and up — the room between is
+    /// legitimate edits by a model that can be trusted with them. A rewrite of a
+    /// two-word dictation ("hey monvi" → "Hey Manvi." with no dictionary) is still
+    /// 0.5 and still caught.
     pub fn max_novelty_ratio(self) -> f32 {
         match self {
             CleanupLevel::None => 0.0,
-            CleanupLevel::Messaging | CleanupLevel::Light => 0.34,
+            CleanupLevel::Messaging | CleanupLevel::Light => 0.40,
         }
     }
 }

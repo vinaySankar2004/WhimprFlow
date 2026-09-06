@@ -15,7 +15,7 @@ pub enum GateReason {
     EditRatioTooHigh { ratio: f32, ceiling: f32 },
     /// A must-preserve token (number, URL, email, code-ish token) vanished.
     LostEntity(String),
-    /// Output shrank more than 40% — likely dropped content.
+    /// Output shrank past the over-deletion ceiling — likely dropped content.
     OverDeletion { shrink: f32 },
     /// Output grew beyond punctuation — likely added content.
     Hallucination,
@@ -78,9 +78,11 @@ pub fn evaluate(
         }
     }
 
-    // 2) Must-preserve entities present in raw must survive in cleaned.
+    // 2) Must-preserve entities present in raw must survive in cleaned. Compared
+    // case-insensitively: the Messaging register lowercases everything, and a real
+    // "Amazon.com" was rejected as lost because it came back as "amazon.com".
     for ent in must_preserve_entities(raw) {
-        if !cleaned.contains(&ent) {
+        if !cleaned_lc.contains(&ent.to_lowercase()) {
             return GateVerdict::Fail(GateReason::LostEntity(ent));
         }
     }
@@ -94,25 +96,37 @@ pub fn evaluate(
     // content loss. Same widening as the vocab carve-out below, and needed for the
     // same reason: without it the gate punishes cleanup for doing its job. Measured
     // on a real 70-word dictation at speaking density, cleanup that correctly removed
-    // every filler shrank the text 56% and was rejected at the 55% line, so the raw
-    // transcript — every filler intact — is what reached the cursor. Cleanup looked
-    // switched off precisely when it had worked best, and the better the model the
-    // more often it would happen.
-    let filler_chars = filler_mass(raw);
-    let raw_len = (raw.chars().count() as f32 - filler_chars).max(1.0);
+    // every filler shrank the text 56% and was rejected at the then 55% line, so the
+    // raw transcript — every filler intact — is what reached the cursor. Cleanup
+    // looked switched off precisely when it had worked best, and the better the
+    // model the more often it would happen.
+    //
+    // A spoken emoji request is discounted the same way: "laughing emoji" is fourteen
+    // characters that rule 10 turns into one.
+    let discounted = filler_mass(raw) + emoji_cue_mass(raw);
+    let raw_len = (raw.chars().count() as f32 - discounted).max(1.0);
     let clean_len = cleaned.chars().count() as f32;
     let shrink = (raw_len - clean_len) / raw_len;
-    if shrink > 0.55 {
+    let ceiling = if has_correction_cue(&raw_lc) {
+        OVER_DELETION_CEILING_AFTER_CORRECTION
+    } else {
+        OVER_DELETION_CEILING
+    };
+    if shrink > ceiling {
         return GateVerdict::Fail(GateReason::OverDeletion { shrink });
     }
-    if clean_len > raw_len * 1.6 {
+    // Growth is measured against the whole transcript, discounts and all: what was
+    // authorized for deletion is still text the speaker produced, and on a short
+    // message the discount alone can leave almost nothing to grow from ("thanks
+    // laughing emoji" -> "Thanks 😂" is not a hallucination).
+    if clean_len > raw.chars().count() as f32 * 1.6 {
         return GateVerdict::Fail(GateReason::Hallucination);
     }
 
     // 4) Novelty: how many output words were never spoken. Deletions (fillers) and
     // casing/punctuation don't count; a full rewrite does. Spellings the dictionary
     // authorized for this utterance are not novel — they were spoken, ASR just wrote
-    // them down wrong.
+    // them down wrong. Neither is an emoji, when the speaker asked for one.
     let ratio = novelty_ratio(raw, cleaned, &authorized_spellings(vocab));
     let ceiling = level.max_novelty_ratio();
     if ratio > ceiling {
@@ -120,6 +134,48 @@ pub fn evaluate(
     }
 
     GateVerdict::Pass
+}
+
+/// How much of the (filler-discounted) raw text cleanup may drop before the gate
+/// reads it as content loss.
+///
+/// 0.65 rather than the original 0.55 because the gate exists to catch the model
+/// *answering* or *summarizing* a dictation, and both land far past either line:
+/// the 4B's reply to a request is ~9% of the input (a 0.91 shrink), and a genuine
+/// summary halves the word count and then some. What lives between 0.55 and 0.65
+/// is legitimate cleanup of a filler-dense or self-corrected dictation, which is
+/// what the line was rejecting.
+const OVER_DELETION_CEILING: f32 = 0.65;
+
+/// The ceiling when the transcript contains an unambiguous self-correction cue.
+///
+/// Rule 3 tells the model to delete the abandoned wording, and the abandoned wording
+/// is routinely most of the utterance: "Okay, so I want to talk about... actually,
+/// um, scratch that. Let's talk about how life is." cleans correctly to the last
+/// sentence, a 0.63 shrink, and a real "I noticed something that, you know, actually,
+/// sorry, I noticed something that... actually, scratched that. I noticed that it
+/// works well on light" cleans to its final clause at 0.58. Both were rejected, so
+/// the raw text — "scratch that" and all — is what got pasted, and the speaker
+/// concluded the app ignores the cue. Only the cues that cannot be an ordinary
+/// word widen the gate: "actually", "sorry", "wait" and "I mean" are far too common
+/// in speech that corrects nothing.
+const OVER_DELETION_CEILING_AFTER_CORRECTION: f32 = 0.80;
+
+/// Self-correction cues that are never anything else. Lowercase; matched as
+/// substrings of the lowercased transcript, so "scratched that" hits "scratch".
+const CORRECTION_CUES: &[&str] = &[
+    "scratch that",
+    "scratched that",
+    "strike that",
+    "no wait",
+    "never mind",
+    "nevermind",
+    "make that",
+    "i meant",
+];
+
+fn has_correction_cue(raw_lc: &str) -> bool {
+    CORRECTION_CUES.iter().any(|c| raw_lc.contains(c))
 }
 
 /// The fillers rule 1 authorizes cleanup to delete, longest first so "you know" is
@@ -162,6 +218,44 @@ fn filler_mass(raw: &str) -> f32 {
         i += lower[i..].chars().next().map_or(1, char::len_utf8);
     }
     total as f32
+}
+
+/// The word that asks for an emoji, normalized.
+fn is_emoji_cue(tok: &str) -> bool {
+    matches!(normalize_tok(tok).as_str(), "emoji" | "emojis")
+}
+
+/// How many characters of `raw` are a spoken emoji request that rule 10 replaces
+/// with a single glyph: the cue word and up to two words before it ("laughing
+/// emoji", "thumbs up emoji", "a crying emoji"), each with its following space.
+///
+/// Two words rather than one because the common names are two words long, and a
+/// short message is where the discount matters — "thumbs up emoji" on its own
+/// becomes "👍", which counted at one word is an 83% shrink. Two words over-count
+/// on "send me an emoji" by the length of "me an", which is harmless at the
+/// ceiling this feeds.
+fn emoji_cue_mass(raw: &str) -> f32 {
+    let toks: Vec<&str> = raw.split_whitespace().collect();
+    let mut counted = vec![false; toks.len()];
+    for (i, t) in toks.iter().enumerate() {
+        if is_emoji_cue(t) {
+            for c in &mut counted[i.saturating_sub(2)..=i] {
+                *c = true;
+            }
+        }
+    }
+    toks.iter()
+        .zip(&counted)
+        .filter(|(_, c)| **c)
+        .map(|(t, _)| t.chars().count() + 1)
+        .sum::<usize>() as f32
+}
+
+/// A token made only of non-ASCII symbols: an emoji, possibly with a variation
+/// selector, skin tone or ZWJ sequence attached. Never a word in any script,
+/// because letters are alphanumeric and this requires none.
+fn is_emoji_token(tok: &str) -> bool {
+    !tok.is_empty() && tok.chars().all(|c| !c.is_ascii() && !c.is_alphanumeric())
 }
 
 /// Tokens that must survive cleanup verbatim: URLs, emails, and *substantial*
@@ -215,7 +309,12 @@ fn authorized_spellings(vocab: &[VocabEntry]) -> HashSet<String> {
 /// a genuine rewrite or hallucination (new content words) drives this up. A couple
 /// of legitimate normalizations ("seven" -> "7") add a little, which the per-level
 /// ceiling leaves room for.
+///
+/// An emoji is exempt when the transcript asked for one: the glyph is by definition
+/// not in the raw text, and in a short message it is a large fraction of the output
+/// ("thanks 😂" is half novel). An emoji nobody asked for still counts.
 fn novelty_ratio(raw: &str, cleaned: &str, authorized: &HashSet<String>) -> f32 {
+    let emoji_requested = raw.split_whitespace().any(is_emoji_cue);
     let raw_set: HashSet<String> = raw
         .split_whitespace()
         .map(normalize_tok)
@@ -232,6 +331,7 @@ fn novelty_ratio(raw: &str, cleaned: &str, authorized: &HashSet<String>) -> f32 
     let novel = clean_toks
         .iter()
         .filter(|t| !raw_set.contains(*t) && !authorized.contains(*t))
+        .filter(|t| !(emoji_requested && is_emoji_token(t)))
         .count();
     novel as f32 / clean_toks.len() as f32
 }
@@ -293,11 +393,115 @@ mod tests {
     #[test]
     fn over_deletion_fails() {
         let raw = "the quarterly report is due on friday please review the budget section";
-        let clean = "Report due Friday."; // dropped >40%
+        let clean = "Report due Friday."; // a summary: dropped three quarters
         assert!(matches!(
             evaluate(raw, clean, CleanupLevel::Light, NO_VOCAB),
             GateVerdict::Fail(GateReason::OverDeletion { .. })
         ));
+    }
+
+    /// The two real rejections that loosened this gate. Each is a self-correction
+    /// the model resolved exactly as rule 3 asks, and each shrank past the old 55%
+    /// line — so the raw text, cue and all, was what got pasted.
+    #[test]
+    fn a_resolved_self_correction_may_drop_most_of_the_utterance() {
+        let raw = "Okay, so I want to talk about... Actually, um, scratch that. Let's talk about how life is.";
+        let clean = "Let's talk about how life is."; // 0.63 shrink
+        assert!(
+            evaluate(raw, clean, CleanupLevel::Light, NO_VOCAB).passed(),
+            "a resolved correction is not over-deletion"
+        );
+        let raw = "Okay, so I just noticed something that, you know, actually, sorry, I noticed \
+                   something that... Actually, scratched that. I noticed that it works well on \
+                   light, but it does not work on messaging.";
+        let clean = "I noticed that it works well on light, but it does not work on messaging.";
+        assert!(evaluate(raw, clean, CleanupLevel::Light, NO_VOCAB).passed());
+    }
+
+    /// The wider ceiling a correction cue buys must still catch the failure the gate
+    /// exists for: the model answering the dictation instead of writing it down.
+    #[test]
+    fn a_correction_cue_does_not_excuse_answering_the_dictation() {
+        let raw = "can you remove the stuff from the speech recognition page scratch that \
+                   ignore everything else just for speech recognition can you just say \
+                   either on this mac or cloud";
+        let clean = "On this Mac or cloud.";
+        assert!(matches!(
+            evaluate(raw, clean, CleanupLevel::Light, NO_VOCAB),
+            GateVerdict::Fail(GateReason::OverDeletion { .. })
+        ));
+    }
+
+    /// Only the unambiguous cues widen the gate. "actually" and "sorry" appear in
+    /// speech that corrects nothing, and a summary that happens to sit near one must
+    /// not slip through on their account.
+    #[test]
+    fn an_ambiguous_cue_word_does_not_widen_the_gate() {
+        let raw = "sorry i actually think the quarterly report is due on friday so please \
+                   review the budget section before the meeting tomorrow";
+        let clean = "Report due Friday, review budget."; // 0.72 shrink
+        assert!(matches!(
+            evaluate(raw, clean, CleanupLevel::Light, NO_VOCAB),
+            GateVerdict::Fail(GateReason::OverDeletion { .. })
+        ));
+    }
+
+    /// A spoken emoji request comes back as one glyph: not novel, not deletion.
+    #[test]
+    fn a_requested_emoji_is_neither_novel_nor_deletion() {
+        assert!(evaluate(
+            "haha that was hilarious laughing emoji see you tomorrow",
+            "Haha, that was hilarious 😂 See you tomorrow.",
+            CleanupLevel::Messaging,
+            NO_VOCAB
+        )
+        .passed());
+        // The whole message is the request, and the name is two words long.
+        assert!(evaluate("thumbs up emoji", "👍", CleanupLevel::Light, NO_VOCAB).passed());
+        // A bare "emoji" with no name, mid-sentence.
+        assert!(evaluate(
+            "that was so much fun emoji thanks for having me",
+            "That was so much fun 🎉 Thanks for having me.",
+            CleanupLevel::Light,
+            NO_VOCAB
+        )
+        .passed());
+        // A ZWJ sequence is still one emoji token.
+        assert!(evaluate("thanks facepalm emoji", "Thanks 🤦‍♂️", CleanupLevel::Light, NO_VOCAB).passed());
+    }
+
+    /// Nobody asked for one, so it is a word the model invented like any other.
+    #[test]
+    fn an_uninvited_emoji_is_novel() {
+        assert!(matches!(
+            evaluate("thanks", "Thanks 😊", CleanupLevel::Light, NO_VOCAB),
+            GateVerdict::Fail(GateReason::EditRatioTooHigh { .. })
+        ));
+    }
+
+    #[test]
+    fn emoji_cue_mass_counts_the_name_and_the_cue() {
+        // "laughing " + "emoji " = 9 + 6.
+        assert_eq!(emoji_cue_mass("laughing emoji"), 15.0);
+        // Two words back, so "hilarious " (10) is counted too.
+        assert_eq!(emoji_cue_mass("hilarious laughing emoji"), 25.0);
+        // "never " + "use " + "emoji " = 6 + 4 + 6: two words back, and no further.
+        assert_eq!(emoji_cue_mass("i never use emoji in email"), 16.0);
+        assert_eq!(emoji_cue_mass("no cue here"), 0.0);
+    }
+
+    /// The Messaging register lowercases the paste, and "Amazon.com" is the same
+    /// address as "amazon.com".
+    #[test]
+    fn entity_check_ignores_case() {
+        assert!(evaluate("Amazon.com", "amazon.com", CleanupLevel::Messaging, NO_VOCAB).passed());
+        assert!(evaluate(
+            "order 84213 shipped",
+            "order 84213 shipped",
+            CleanupLevel::Messaging,
+            NO_VOCAB
+        )
+        .passed());
     }
 
     /// The measured regression. A real 70-word dictation at speaking density, cleaned
