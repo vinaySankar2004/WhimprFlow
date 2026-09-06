@@ -103,6 +103,10 @@ final class TypingEngine {
             return refreshShift()
         case .shift:
             return toggleShift()
+        case .capsLock:
+            manualShift = true
+            shift = shift == .locked ? .off : .locked
+            return true
         case .tab:
             proxy.insertText("\t")
             typedWordLength = 0

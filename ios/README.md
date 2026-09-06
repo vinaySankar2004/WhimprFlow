@@ -234,8 +234,8 @@ Things about it that are not obvious from the code:
   bottom-anchored layout described in `KeyboardViewController` is what makes that
   safe during a keyboard switch.
 - **The iPad has its own arrangement, the stock one.** `KeyboardLayout.padRows`: tab
-  and delete flank the top row, return ends the home row, shift sits at both ends of
-  the third, and the bottom row is globe · .?123 · mic · space · .?123 · hide. Numbers
+  and delete flank the top row, caps lock opens the home row and return ends it,
+  shift sits at both ends of the third, and the bottom row is globe · .?123 · mic · space · .?123 · hide. Numbers
   and symbols are secondary labels on the letters, typed with a downward flick, so
   the grid stays four rows. `KeyboardView.Metrics` picks phone, iPad portrait or iPad
   landscape from the device and the width, and the height constraint follows it; the

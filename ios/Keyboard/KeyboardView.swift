@@ -319,7 +319,7 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
                 case .character: return unit
                 case .tab: return unit * 1.3
                 case .delete: return row.count == 11 ? unit * 2.6 + m.gap : unit * 1.3
-                case .shift, .plane where isFirst:
+                case .shift, .capsLock, .plane where isFirst:
                     return rowIndex == 2 ? unit * 2.15 : unit * 1.65
                 case .shift, .plane where isLast && rowIndex == 2:
                     return unit * 1.6
@@ -367,8 +367,8 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
             view.isPressed = true
             delegate?.keyboardViewDidTouchKey(self)
             switch view.key {
-            case .shift:
-                delegate?.keyboardView(self, didCommit: .shift)
+            case .shift, .capsLock:
+                delegate?.keyboardView(self, didCommit: view.key)
             case .delete:
                 delegate?.keyboardView(self, didCommit: .delete)
                 startDeleteRepeat()
@@ -457,7 +457,7 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
             guard let current = active[touch] else { continue }
             // Shift and delete act on touch-down and do not slide; a finger that
             // wanders off delete should keep deleting, not start typing.
-            if current.key == .shift || current.key == .delete || current.key == .globe { continue }
+            if current.key == .shift || current.key == .capsLock || current.key == .delete || current.key == .globe { continue }
             guard let next = keyView(at: touch.location(in: self)), next !== current else { continue }
             guard !next.key.isModifier else { continue }
             current.isPressed = false
@@ -501,7 +501,7 @@ final class KeyboardView: UIView, UIInputViewAudioFeedback {
             guard let view = active.removeValue(forKey: touch) else { continue }
             view.isPressed = false
             switch view.key {
-            case .shift:
+            case .shift, .capsLock:
                 break
             case .delete:
                 stopDeleteRepeat()
@@ -715,6 +715,11 @@ final class KeyView: UIView {
         case .tab:
             image.image = UIImage(systemName: "arrow.right.to.line", withConfiguration: UIImage.SymbolConfiguration(pointSize: symbolSize - 2, weight: .regular))
             accessibilityLabel = "tab"
+        case .capsLock:
+            let locked = shift == .locked
+            image.image = UIImage(systemName: locked ? "capslock.fill" : "capslock", withConfiguration: UIImage.SymbolConfiguration(pointSize: symbolSize, weight: .regular))
+            if locked { baseColor = Palette.control }
+            accessibilityLabel = locked ? "caps lock on" : "caps lock"
         case .hide:
             image.image = UIImage(systemName: "keyboard.chevron.compact.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: symbolSize, weight: .regular))
             accessibilityLabel = "hide keyboard"

@@ -29,6 +29,8 @@ enum Key: Hashable {
     case plane(Plane)
     /// iPad only, as on the stock keyboard there.
     case tab
+    /// iPad only: caps lock, one tap on or off, at the start of the home row.
+    case capsLock
     /// iPad only: dismiss the keyboard.
     case hide
     /// iPad only: the same as the bar's mic, where the stock keyboard puts its own.
@@ -105,7 +107,7 @@ enum KeyboardLayout {
         case .letters:
             return [
                 [.tab] + chars("qwertyuiop") + [.delete],
-                [.shift] + chars("asdfghjkl") + [.return],
+                [.capsLock] + chars("asdfghjkl") + [.return],
                 [.shift] + chars("zxcvbnm,.") + [.shift],
                 bottom,
             ]
